@@ -23,10 +23,15 @@ const (
 
 // Match describes one matching line, delivered to Sink.Matched.
 //
-// Line and any other []byte field are views into the Searcher's internal
-// rolling buffer and are valid ONLY for the duration of the Matched
-// call. A Sink that needs to retain the bytes (or the Match itself)
-// after returning must copy them.
+// The *Match pointer itself, and Line (and any other []byte field), are
+// valid ONLY for the duration of the Matched call. A Searcher
+// implementation may reuse/pool a single Match value across many calls
+// (mutating it in place before each Matched call) rather than allocate
+// one per match — this is the expected zero-allocation implementation,
+// not merely a possibility callers must defend against. A Sink that
+// needs to retain the bytes, or any field, after Matched returns MUST
+// copy them; retaining the pointer or the Line slice itself is a bug
+// that will read corrupted or unrelated data on the next call.
 //
 // LineNumber is populated only when the Searcher has line numbering
 // enabled (Searcher.LineNumbers); HasLineNumber reports whether it is
@@ -45,8 +50,9 @@ type Match struct {
 }
 
 // Ctx describes one context line (-A/-B/-C), delivered to Sink.Context.
-// Same validity contract as Match: Line is a buffer view valid only for
-// the duration of the call.
+// Same validity and reuse/pooling contract as Match: the *Ctx pointer
+// and Line are valid, and may be mutated by the Searcher for the next
+// call, only for the duration of the current Context call.
 type Ctx struct {
 	Line          []byte
 	LineNumber    int64
@@ -71,7 +77,10 @@ type Sink interface {
 	// still calls Finish. err aborts the whole walk when non-nil.
 	Begin(path string) (search bool, err error)
 
-	// Matched is called once per matching line, in stream order.
+	// Matched is called once per matching line, in stream order. Per
+	// Match's doc comment, m (and its Line field) may be a reused/pooled
+	// value the Searcher mutates before every call — valid only until
+	// Matched returns; copy anything that must outlive the call.
 	// Returning more=false aborts the rest of that file's search (used
 	// by -q/-l/-m early exit); it does not abort the overall walk.
 	Matched(m *Match) (more bool, err error)
