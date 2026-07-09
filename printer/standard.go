@@ -85,18 +85,40 @@ func (p *Standard) Begin(path string) (bool, error) {
 	return true, nil
 }
 
-// Matched implements search.Sink.
+// Matched implements search.Sink. Per search's documented line-boundary
+// convention (search's lineStep: "Line terminators are considered part
+// of the line they terminate"), m.Line includes its trailing '\n' when
+// one exists in the source -- trimLineTerminator strips it once here so
+// writeLine's own unconditional '\n' doesn't double up, and so the
+// gap-detection byte-offset math in writeSeparatorIfGap (which already
+// accounts for one terminator byte via its own "+1") sees the same
+// terminator-free length convention it was written against.
 func (p *Standard) Matched(m *search.Match) (bool, error) {
-	p.writeSeparatorIfGap(m.LineNumber, m.HasLineNumber, m.Offset, len(m.Line))
-	p.writeLine(m.Line, m.LineNumber, m.HasLineNumber, ':')
+	line := trimLineTerminator(m.Line)
+	p.writeSeparatorIfGap(m.LineNumber, m.HasLineNumber, m.Offset, len(line))
+	p.writeLine(line, m.LineNumber, m.HasLineNumber, ':')
 	return true, nil
 }
 
-// Context implements search.Sink.
+// Context implements search.Sink. See Matched's doc for why the line is
+// trimmed before use.
 func (p *Standard) Context(c *search.Ctx) (bool, error) {
-	p.writeSeparatorIfGap(c.LineNumber, c.HasLineNumber, c.Offset, len(c.Line))
-	p.writeLine(c.Line, c.LineNumber, c.HasLineNumber, '-')
+	line := trimLineTerminator(c.Line)
+	p.writeSeparatorIfGap(c.LineNumber, c.HasLineNumber, c.Offset, len(line))
+	p.writeLine(line, c.LineNumber, c.HasLineNumber, '-')
 	return true, nil
+}
+
+// trimLineTerminator strips a single trailing '\n' from line, if
+// present. A CRLF file's '\r' is left untouched -- it is ordinary line
+// content per PLAN.md's CRLF edge case ("\r stays in the line bytes"),
+// matching rg exactly: only the '\n' search's line-boundary scan treats
+// as a terminator is ever removed.
+func trimLineTerminator(line []byte) []byte {
+	if n := len(line); n > 0 && line[n-1] == '\n' {
+		return line[:n-1]
+	}
+	return line
 }
 
 // Finish implements search.Sink: flushes the accumulated buffer to Dest

@@ -58,6 +58,30 @@ func TestCount_Color(t *testing.T) {
 	}
 }
 
+// TestCount_ShowPathFalse mirrors `rg -c hello a/b/foo.txt` when
+// a/b/foo.txt is the single explicit file named on the command line: rg
+// prints a bare count with no path prefix at all (verified against the
+// real rg binary -- unlike Standard, Count has no Heading mode, so
+// ShowPath=false must suppress the "path:" prefix entirely, not just
+// switch to a heading line).
+func TestCount_ShowPathFalse(t *testing.T) {
+	dest, out := newTestDest()
+	p := NewCount(dest)
+	p.ShowPath = false
+
+	p.Begin("a/b/foo.txt")
+	p.Matched(&search.Match{Line: []byte(fooLine1)})
+	p.Matched(&search.Match{Line: []byte(fooLine3)})
+	if err := p.Finish("a/b/foo.txt", &search.Stats{Matched: true}); err != nil {
+		t.Fatal(err)
+	}
+
+	want := "2\n"
+	if got := out.String(); got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
 // TestFilesWithMatches_AbortsEarly mirrors `rg -l hello a/b/foo.txt`:
 // just "path", and Matched must return more=false after the first hit.
 func TestFilesWithMatches_AbortsEarly(t *testing.T) {

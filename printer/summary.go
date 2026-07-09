@@ -16,15 +16,24 @@ type Count struct {
 	// Color enables coloring the path (matching rg's -c --color=always
 	// behavior, which colors only the path, not the count).
 	Color bool
+	// ShowPath controls whether "path:" is prepended at all. Like
+	// Standard.ShowPath, callers should set this false for the
+	// single-explicit-file case (rg prints a bare count with no path
+	// prefix there) -- Count has no way to know how many files are being
+	// searched, so this must be driven from outside. Unlike Standard,
+	// there is no Heading concept for -c: this is the only path-display
+	// switch Count has.
+	ShowPath bool
 
 	buf   []byte
 	path  []byte
 	count int64
 }
 
-// NewCount returns a Count printer flushing completed files to dest.
+// NewCount returns a Count printer flushing completed files to dest, with
+// ShowPath defaulting to true (the common multi-file case).
 func NewCount(dest *Dest) *Count {
-	return &Count{dest: dest, buf: getBuf()}
+	return &Count{dest: dest, buf: getBuf(), ShowPath: true}
 }
 
 var _ search.Sink = (*Count)(nil)
@@ -55,12 +64,14 @@ func (p *Count) Finish(path string, stats *search.Stats) error {
 	if p.count == 0 {
 		return nil
 	}
-	if p.Color {
-		p.buf = appendColoredBytes(p.buf, ansiPath, p.path)
-	} else {
-		p.buf = append(p.buf, p.path...)
+	if p.ShowPath {
+		if p.Color {
+			p.buf = appendColoredBytes(p.buf, ansiPath, p.path)
+		} else {
+			p.buf = append(p.buf, p.path...)
+		}
+		p.buf = append(p.buf, ':')
 	}
-	p.buf = append(p.buf, ':')
 	p.buf = strconv.AppendInt(p.buf, p.count, 10)
 	p.buf = append(p.buf, '\n')
 	return p.dest.Write(p.buf)

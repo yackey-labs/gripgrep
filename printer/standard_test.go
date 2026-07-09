@@ -56,6 +56,39 @@ func TestStandard_PipedBasic(t *testing.T) {
 	}
 }
 
+// TestStandard_LineIncludesTerminator is a regression test for an M2
+// integration bug: search.Searcher's real Match/Ctx.Line values include
+// their trailing '\n' (search's line-boundary scan treats the
+// terminator as part of the line -- see search/lines.go's lineStep doc),
+// but Standard's own unit tests (like TestStandard_PipedBasic above) all
+// feed terminator-free fixture strings, which silently masked a
+// double-newline bug (and matching wrong gap-detection math) that only
+// showed up once cmd/gg wired a real Searcher in front of a real
+// Standard. Feed a Line WITH the terminator here, matching what the
+// Searcher really sends.
+func TestStandard_LineIncludesTerminator(t *testing.T) {
+	dest, out := newTestDest()
+	p := NewStandard(dest)
+
+	if _, err := p.Begin("a/b/foo.txt"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.Matched(&search.Match{Line: []byte(fooLine3 + "\n"), LineNumber: 3, HasLineNumber: true, Offset: 0}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.Matched(&search.Match{Line: []byte(fooLine4 + "\n"), LineNumber: 4, HasLineNumber: true, Offset: int64(len(fooLine3) + 1)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Finish("a/b/foo.txt", &search.Stats{Matched: true, MatchCount: 2}); err != nil {
+		t.Fatal(err)
+	}
+
+	want := "a/b/foo.txt:3:" + fooLine3 + "\n" + "a/b/foo.txt:4:" + fooLine4 + "\n"
+	if got := out.String(); got != want {
+		t.Errorf("got:\n%q\nwant:\n%q (must not double the newline, and must not treat contiguous lines as a gap)", got, want)
+	}
+}
+
 // TestStandard_NoLineNumbers mirrors `rg --no-line-number cat
 // a/b/foo.txt`: "path:text" with no line number field at all.
 func TestStandard_NoLineNumbers(t *testing.T) {
