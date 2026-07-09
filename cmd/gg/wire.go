@@ -115,7 +115,7 @@ func execute(cfg *Config, stdout, stderr io.Writer) int {
 		defer pool.Put(unit)
 		unit.searcher.BinaryMode = resolveBinaryMode(cfg.Binary, explicit)
 
-		f, ferr := os.Open(e.Path)
+		f, ferr := openRaw(e.Path)
 		if ferr != nil {
 			fmt.Fprintf(stderr, "gg: %s: %s\n", e.Path, ferr)
 			anyError.Store(true)
