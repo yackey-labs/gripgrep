@@ -22,6 +22,7 @@ package gripgrep_test
 
 import (
 	"bytes"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
@@ -65,8 +66,6 @@ func TestGoldenVsRipgrep(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Skip("TODO(M2): enable once cmd/gg implements the v1 flag matrix")
-
 			rgOut, rgErr, rgCode := run(t, "rg", tc.args)
 			ggOut, ggErr, ggCode := run(t, ggBin, tc.args)
 
@@ -86,6 +85,59 @@ func TestGoldenVsRipgrep(t *testing.T) {
 					diff, rgOut, ggOut, rgErr, ggErr)
 			}
 		})
+	}
+}
+
+// TestGoldenVsRipgrep_ContextOrdering closes the sort-normalization
+// blind spot this file's top comment documents: TestGoldenVsRipgrep's
+// "context" case only proves gg and rg produce the same *set* of lines,
+// not that "--" block boundaries and within-block ordering match.
+//
+// This deliberately targets a single explicit file (not a directory):
+// with more than one file in play, gg's and rg's walk order can
+// legitimately differ file-to-file even at -j1 (each tool's own
+// unsorted-readdir traversal strategy, not a correctness contract --
+// verified empirically: pinning -j1 over testdata/corpus still
+// reordered which *file* came first between the two tools, which would
+// make a byte-for-byte multi-file comparison flaky for a reason that has
+// nothing to do with context-block correctness). A single file removes
+// that variable entirely, so a raw byte-for-byte diff here can only mean
+// a real within-file context/grouping bug -- exactly what this test
+// exists to catch.
+//
+// The fixture has two matches far enough apart that -C1 must produce two
+// separate blocks joined by "--": lines 1-2 (match then trailing
+// context) and lines 5-6 (leading context then match), with lines 3-4
+// excluded from both.
+func TestGoldenVsRipgrep_ContextOrdering(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "blocks.txt")
+	content := "hello block one\n" +
+		"context after one\n" +
+		"filler A\n" +
+		"filler B\n" +
+		"context before two\n" +
+		"hello block two\n"
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, thisFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("could not determine test file location")
+	}
+	ggBin := buildGG(t, filepath.Dir(thisFile))
+
+	args := []string{"-j1", "-n", "-C", "1", "hello", path}
+
+	rgOut, rgErr, rgCode := run(t, "rg", args)
+	ggOut, ggErr, ggCode := run(t, ggBin, args)
+
+	if rgCode != ggCode {
+		t.Errorf("exit code mismatch: rg=%d gg=%d\nrg stderr: %s\ngg stderr: %s", rgCode, ggCode, rgErr, ggErr)
+	}
+	if !bytes.Equal(rgOut, ggOut) {
+		t.Errorf("raw (unsorted, -j1, single-file) stdout mismatch:\n--- rg stdout ---\n%s\n--- gg stdout ---\n%s", rgOut, ggOut)
 	}
 }
 
