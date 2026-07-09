@@ -193,6 +193,58 @@ func TestDirOnlyAndFileBothLiteral(t *testing.T) {
 	}
 }
 
+// TestMatchZeroAllocs is a regular test, not a benchmark: an allocation
+// regression on Set.Match must fail `go test`, not require someone to
+// eyeball `go test -bench`. Covers one representative path per fast
+// class plus the regex fallback and a whitelist override, mirroring the
+// benchmarks below.
+//
+// `make test` runs everything under -race (PLAN.md's binding race
+// coverage requirement), and the race detector's own instrumentation
+// adds allocations that don't exist in a normal build — confirmed here:
+// this test is 0 allocs/op without -race (matching the -benchmem
+// numbers) but reports nonzero under -race. That's a known limitation of
+// combining AllocsPerRun with -race, not a regression, so the strict
+// assertion is skipped (not deleted) when raceDetectorEnabled.
+func TestMatchZeroAllocs(t *testing.T) {
+	if raceDetectorEnabled {
+		t.Skip("testing.AllocsPerRun is not reliable under -race: the race detector's own instrumentation allocates; see BenchmarkMatch* (-benchmem, no -race) for the real 0-allocs/op numbers")
+	}
+
+	var b Builder
+	for _, p := range realisticGitignore {
+		b.Add(p)
+	}
+	s, err := b.Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cases := []struct {
+		name  string
+		path  string
+		isDir bool
+	}{
+		{"literal-hit", "node_modules", true},
+		{"extension-hit", "src/main.pyc", false},
+		{"no-match-shallow", "main.go", false},
+		{"no-match-deep", "internal/pkg/service/handlers/http/middleware/logging.go", false},
+		{"regex-fallback-hit", "src/api/types.generated.go", false},
+		{"whitelist-override", "important.log", false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			path := []byte(c.path)
+			allocs := testing.AllocsPerRun(1000, func() {
+				_ = s.Match(path, c.isDir)
+			})
+			if allocs != 0 {
+				t.Errorf("Set.Match(%q, isDir=%v) = %v allocs/op, want 0", c.path, c.isDir, allocs)
+			}
+		})
+	}
+}
+
 func TestBuilderChaining(t *testing.T) {
 	var b Builder
 	b.Add("*.log").Add("!keep.log")
