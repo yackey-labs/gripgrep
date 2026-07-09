@@ -127,6 +127,14 @@ type Config struct {
 	Threads int        // -j/--threads; 0 = auto (rg's None)
 	Binary  BinaryMode // resolved from -a/--text and -uuu; last one processed wins
 	Mmap    MmapMode   // --mmap/--no-mmap
+
+	// Help/Version are -h/--help and -V/--version: when either is set,
+	// ParseArgs returns immediately (skipping the "at least one pattern"
+	// requirement below) so `gg --help` and `gg -V` work with no
+	// pattern argument, matching rg. The caller (run) checks these
+	// before doing anything else.
+	Help    bool
+	Version bool
 }
 
 // parseState holds parser-transient data that isn't part of the final
@@ -418,6 +426,22 @@ func buildV1Flags() []*flagSpec {
 				return nil
 			},
 		},
+
+		// --- Meta (rg parity: print and exit 0, no pattern required) ---
+		{
+			long: "help", short: 'h', kind: kindSwitch,
+			applySwitch: func(cfg *Config, _ *parseState, _ bool) error {
+				cfg.Help = true
+				return nil
+			},
+		},
+		{
+			long: "version", short: 'V', kind: kindSwitch,
+			applySwitch: func(cfg *Config, _ *parseState, _ bool) error {
+				cfg.Version = true
+				return nil
+			},
+		},
 	}
 }
 
@@ -434,11 +458,13 @@ type notImplementedFlag struct {
 // PLAN.md's explicit "Not in v1" line -- replace, multiline, PCRE2,
 // non-UTF-8 encodings, compressed files, --sort, JSON, -o -- plus a
 // handful of flags an rg user is very likely to type that aren't named
-// there: --help/--version, -L/--follow, -f/--file (the file-based
-// alternative to -e), -x/--line-regexp, and --binary (reachable in v1
-// only indirectly via -uuu, but not as a flag of its own yet). This is
-// intentionally not the full ~100-flag rg surface -- see the M0 handoff
-// note for why that would be scope inflation for this task.
+// there: -L/--follow, -f/--file (the file-based alternative to -e),
+// -x/--line-regexp, and --binary (reachable in v1 only indirectly via
+// -uuu, but not as a flag of its own yet). -h/--help and -V/--version
+// are real flags (see buildV1Flags), not in this list, per M2's rg-parity
+// fix. This is intentionally not the full ~100-flag rg surface -- see
+// the M0 handoff note for why that would be scope inflation for this
+// task.
 var notImplementedFlags = []notImplementedFlag{
 	{long: "replace", short: 'r', label: "-r/--replace"},
 	{long: "multiline", short: 'U', label: "-U/--multiline"},
@@ -454,8 +480,6 @@ var notImplementedFlags = []notImplementedFlag{
 	{long: "line-regexp", short: 'x', label: "-x/--line-regexp"},
 	{long: "follow", short: 'L', label: "-L/--follow"},
 	{long: "file", short: 'f', label: "-f/--file"},
-	{long: "help", short: 'h', label: "-h/--help"},
-	{long: "version", short: 'V', label: "-V/--version"},
 }
 
 // byLongName indexes v1Flags by every long spelling that should resolve
@@ -554,6 +578,14 @@ func ParseArgs(args []string) (*Config, error) {
 			// both ordinary positionals at the parser level.
 			ps.positionals = append(ps.positionals, arg)
 		}
+	}
+
+	if cfg.Help || cfg.Version {
+		// rg parity: `gg --help`/`gg -V` work with no pattern argument at
+		// all -- skip the "at least one pattern" requirement below
+		// entirely. The caller (run) checks these flags first and exits
+		// before touching Patterns/Paths.
+		return cfg, nil
 	}
 
 	if ps.sawPattern {
