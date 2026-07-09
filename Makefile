@@ -1,16 +1,28 @@
 GOAMD64 ?= v3
 PGO_PROFILE := cmd/gg/default.pgo
 
-.PHONY: build test vet bench bench-e2e pgo pgo-collect clean
+.PHONY: build test vet cover bench bench-e2e pgo pgo-collect clean
 
 build:
 	go build -o gg ./cmd/gg
 
+# -race is mandatory, not optional: walk's work-stealing deque/quiescence
+# and printer's per-worker buffer flush are exactly the kind of real
+# concurrency -race exists to catch. Per PLAN.md's "Test coverage
+# requirements" (Race coverage), this is the one true `make test`.
 test:
-	go test ./...
+	go test -race ./...
 
 vet:
 	go vet ./...
+
+# Per-package coverage report, run with -race for consistency with
+# `test`. PLAN.md's "Test coverage requirements" sets a floor of ≥80%
+# line coverage per package (func-level breakdown below the floor line;
+# the named edge-case tests in PLAN.md outrank the raw number).
+cover:
+	go test -race -coverprofile=coverage.out ./...
+	go tool cover -func=coverage.out
 
 # Per-package Go benchmarks (go test -bench), not the hyperfine e2e loop.
 bench:
