@@ -141,6 +141,62 @@ func TestGoldenVsRipgrep_ContextOrdering(t *testing.T) {
 	}
 }
 
+// TestGoldenVsRipgrep_BinaryMatchBeforeNUL is a regression test for
+// task #20: a walk-discovered (not explicitly-named) binary file whose
+// first NUL byte comes well after a real match must still show that
+// match, followed by rg's "WARNING: stopped searching binary file after
+// match..." line -- NOT the total, silent exclusion gg used to apply to
+// every BinaryQuit file regardless of where its matches fell (verified
+// against the real rg binary on ../ripgrep/tests/data/sherlock-nul.txt,
+// which has this same shape: real matches print, then that exact
+// warning).
+//
+// The fixture is deliberately larger than search.DefaultBufferSize
+// (64KB) with its one match on line 1 and its NUL near the very end, so
+// the match and the NUL fall in different underlying reads even in the
+// real gg binary (not just in a search-package unit test with a
+// shrunk buffer). It lives in its own temp directory rather than
+// testdata/corpus deliberately: a pooled search.Searcher's read buffer
+// can grow permanently past 64KB after handling corpus/longline.txt (a
+// single line forcing ensureCapacity's doubling), which would then pull
+// this fixture's NUL into the SAME oversized read as its match --
+// mirroring how rg's own eager buffer reuse works, but making the
+// pass/fail of this specific case depend on incidental walk/worker
+// ordering rather than the behavior under test. See -j1's own
+// per-worker-buffer-growth caveat in TestGoldenVsRipgrep_ContextOrdering.
+func TestGoldenVsRipgrep_BinaryMatchBeforeNUL(t *testing.T) {
+	dir := t.TempDir()
+	var content []byte
+	content = append(content, "chunktest_matchbeforenul first line\n"...)
+	filler := []byte("filler filler filler filler filler filler filler filler\n")
+	for len(content) < 70000 {
+		content = append(content, filler...)
+	}
+	content = append(content, 0)
+	content = append(content, "chunktest_matchbeforenul after nul should not appear in quit mode\n"...)
+	if err := os.WriteFile(filepath.Join(dir, "chunkbinary.bin"), content, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, thisFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("could not determine test file location")
+	}
+	ggBin := buildGG(t, filepath.Dir(thisFile))
+
+	args := []string{"-j1", "-n", "chunktest_matchbeforenul", dir}
+
+	rgOut, rgErr, rgCode := run(t, "rg", args)
+	ggOut, ggErr, ggCode := run(t, ggBin, args)
+
+	if rgCode != ggCode {
+		t.Errorf("exit code mismatch: rg=%d gg=%d\nrg stderr: %s\ngg stderr: %s", rgCode, ggCode, rgErr, ggErr)
+	}
+	if !bytes.Equal(rgOut, ggOut) {
+		t.Errorf("raw stdout mismatch:\n--- rg stdout ---\n%s\n--- gg stdout ---\n%s", rgOut, ggOut)
+	}
+}
+
 // sortedLines splits out on '\n', drops the single trailing empty
 // element a terminal newline produces, and sorts the result so that
 // nondeterministic parallel-search completion order doesn't cause a
