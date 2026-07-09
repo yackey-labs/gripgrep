@@ -21,3 +21,6 @@ mem.prof
 
 # Bench corpus lives in /dev/shm, never in-repo; only stray local logs excluded
 /internal/bench/*.log
+
+# local benchmark corpora (large, never committed)
+/benchmark-data/
