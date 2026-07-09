@@ -1,26 +1,84 @@
 # gripgrep
 
-`gripgrep` is a ripgrep-class recursive code search tool written in pure
-Go. It aims to match or beat `rg` on real-world queries and ships as both
-a reusable library (`glob`, `walk`, `match`, `search`, `printer`) and a
-CLI, `gg`. See [PLAN.md](PLAN.md) for the full architecture, performance
-design decisions, and milestone breakdown.
+`gripgrep` (`gg`) is a ripgrep-class recursive code search tool written in
+**pure Go** — no cgo, no wasm, no FFI. It exists to answer one question:
+can Go compete with Rust's flagship CLI on its home turf?
 
-**Status:** M0 scaffold. Package interfaces are frozen; implementations
-are stubs (`// TODO(M1-<pkg>)`) that compile and return zero values or
-`ErrNotImplemented`. `cmd/gg` does not search yet.
+It ships as both a CLI (`gg`, a drop-in `rg` workalike for the flags it
+supports) and a set of reusable library packages (`glob`, `walk`, `match`,
+`search`, `printer`) you can embed in your own tools.
+
+**Status: working, correct, and honestly not as fast as ripgrep yet.**
+This is a live work-in-progress and the numbers below are the real ones.
+
+## Where we stand vs ripgrep
+
+Correctness first: for every flag `gg` ships, output is verified against
+real `rg` — a 17-case golden end-to-end suite plus manual full-tree diffs
+(literal, `-i`, `-w`, `-c`, `-l`, regex, `-g`, context, binary handling)
+on the ripgrep source tree itself, byte-identical after sort-normalization.
+Every layer also has a differential oracle: `glob` is fuzzed against real
+`git check-ignore`, `walk` diffs against `rg --files`, `match` fuzzes
+against Go's stdlib regexp, `search` against a naive oracle.
+
+Speed, measured with hyperfine (warm cache, same box, same corpus — only
+the gg:rg ratio is meaningful):
+
+| Benchmark | gg vs rg | Trend |
+|---|---|---|
+| Linux kernel tree (built, ~104k files), literal, gitignore-aware | **2.48× slower** | was 3.74×; three profile-driven fixes so far |
+| Single large file (~800MB), literal | **1.61× slower** | mmap + intra-file parallelism in flight |
+| Single large file, regex with literal | **2.10× slower** | same levers |
+
+Micro-level, the core engine is already in ripgrep's class: the literal
+prefilter scans at **9.8 GB/s** (0 allocs/op), and the searcher's fast
+path streams at 4.6 GB/s. The remaining gap is architectural plumbing —
+file-open syscall overhead, gitignore glob dispatch, rolling-buffer
+copies — and it is shrinking commit by commit. Two levers rg doesn't
+have are still on the table: intra-file parallelism (rg searches each
+file on one core) and higher walker thread caps.
+
+The optimization log lives in the commit history (`git log --grep "M3
+perf"`); dead ends are documented alongside wins.
+
+## Why this is plausible at all
+
+ripgrep's dominance is ~80% "stay out of the regex engine": extract
+required literals from the pattern, scan with SIMD, and only run the
+engine on candidate lines. Go's `bytes.IndexByte`/`bytes.Index` are
+hand-written AVX2 assembly — the same class of primitive rg's memchr
+uses. gripgrep ports ripgrep's whole literal-extraction architecture
+(inner-literal trick, byte-rarity ranking, class expansion, quality
+gates) on top of them, so the (much slower) Go regexp engine almost
+never runs. The architecture notes in
+[docs/research/](docs/research/) document exactly which ripgrep
+mechanisms were ported and why.
+
+## Install
+
+```
+go install github.com/yackey-labs/gripgrep/cmd/gg@latest
+```
+
+## CLI usage
+
+```
+gg [flags] PATTERN [PATH...]
+```
+
+1:1 rg compatibility is the contract for every implemented flag — same
+names, same defaults, same output bytes, same exit codes (0 match /
+1 no match / 2 error). Currently implemented: `-F -i -s -S -w -e`,
+`--hidden --no-ignore -g -u/-uu/-uuu --max-filesize`, `-n/-N -c -l -q
+--color -A/-B/-C -v`, `-j -a`. rg flags that gg doesn't implement yet
+fail loudly with exit 2 — never silently ignored.
 
 ## Library usage
-
-The core packages compose a search pipeline: `walk` finds files,
-`match` compiles a pattern, `search` drives the matcher over each file's
-bytes, and a `search.Sink` (e.g. `printer.Standard`) reports results.
 
 ```go
 package main
 
 import (
-	"fmt"
 	"os"
 
 	"github.com/yackey-labs/gripgrep/match"
@@ -35,16 +93,14 @@ func main() {
 		CaseMode: match.CaseSmart,
 	})
 	if err != nil {
-		fmt.Fprintln(os.Stderr, err) // expected for now: match.ErrNotImplemented
+		panic(err)
 	}
 
-	s := search.New(search.Searcher{
-		Matcher:     m,
-		LineNumbers: true,
-	})
-	sink := printer.NewStandard(os.Stdout)
+	dest := printer.NewDest(os.Stdout)
+	sink := printer.NewStandard(dest)
+	s := search.New(search.Searcher{Matcher: m, LineNumbers: true})
 
-	err = walk.Walk([]string{"."}, walk.Options{}, func(e *walk.Entry) walk.WalkState {
+	_ = walk.Walk([]string{"."}, walk.Options{}, func(e *walk.Entry) walk.WalkState {
 		if e.Type != walk.TypeFile {
 			return walk.Continue
 		}
@@ -52,51 +108,45 @@ func main() {
 		if ferr != nil {
 			return walk.Continue
 		}
-		defer f.Close()
 		_ = s.Search(e.Path, f, sink)
+		f.Close()
 		return walk.Continue
 	})
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err) // expected for now: walk.ErrNotImplemented
-	}
 }
 ```
 
-This compiles against the frozen M0 interfaces today; once M1 lands real
-implementations, the same code performs a real search.
-
-## CLI usage (target, v1)
-
-```
-gg [flags] PATTERN [PATH...]
-```
-
-See PLAN.md's "v1 CLI scope" for the full flag matrix
-(`-F -i -S -w -e`, `--hidden --no-ignore -g -u/-uu/-uuu --max-filesize`,
-`-n -c -l -q --color -A/-B/-C -v`, `-j -a --mmap/--no-mmap`).
+Note: `walk.Walk` calls the visitor from multiple goroutines; for
+parallel use, give each worker its own `Searcher` + `Standard` sharing
+one `Dest` (see `cmd/gg/wire.go` for the real wiring, including
+`sync.Pool` sharing and binary-mode selection).
 
 ## Dev workflow
 
 ```
 make build      # go build -o gg ./cmd/gg
-make test       # go test ./...
-make vet        # go vet ./...
-make bench      # go test -bench=. -benchmem ./...  (per-package Go benchmarks)
-make bench-e2e  # hyperfine correctness gate + timing vs rg (needs internal/bench/setup.sh once)
-make pgo        # GOAMD64=v3 build using cmd/gg/default.pgo, once one is collected
-```
-
-Golden end-to-end tests (`gg` vs `rg` byte-for-byte, over `testdata/corpus`)
-live in `e2e_test.go`, gated behind the `e2e` build tag and currently
-`t.Skip`'d pending M2:
-
-```
-go test -tags e2e -v .
+make test       # go test -race ./...
+make cover      # coverage report (floor: 80%/package)
+make bench      # per-package Go benchmarks (-benchmem)
+make bench-e2e  # hyperfine timing vs rg (run internal/bench/setup.sh once)
+go test -tags e2e .   # golden gg-vs-rg end-to-end suite (needs rg on PATH)
 ```
 
 ## Docs
 
-- [PLAN.md](PLAN.md) — architecture, performance design decisions, milestones
-- [docs/research/ripgrep-internals.md](docs/research/ripgrep-internals.md)
-- [docs/research/go-performance.md](docs/research/go-performance.md)
-- [docs/research/benchmarking.md](docs/research/benchmarking.md)
+- [PLAN.md](PLAN.md) — architecture, binding performance decisions, test mandates, milestones
+- [docs/research/ripgrep-internals.md](docs/research/ripgrep-internals.md) — how rg actually gets its speed
+- [docs/research/go-performance.md](docs/research/go-performance.md) — the Go-specific playbook
+- [docs/research/benchmarking.md](docs/research/benchmarking.md) — methodology, corpora, pitfalls
+
+## Credit
+
+This project would not exist without [ripgrep](https://github.com/BurntSushi/ripgrep)
+by Andrew Gallant ([@BurntSushi](https://github.com/BurntSushi)) — both as
+the bar to clear and as the reference implementation whose designs,
+semantics, and test cases this project ports (see
+[LICENSE-THIRD-PARTY](LICENSE-THIRD-PARTY)). If you need the fastest,
+most battle-tested grep today, use ripgrep.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
