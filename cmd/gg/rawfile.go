@@ -36,7 +36,14 @@ type rawFile struct {
 // shape (*fs.PathError) so existing "gg: %s: %s" error reporting is
 // unaffected.
 func openRaw(path string) (*rawFile, error) {
-	fd, err := syscall.Open(path, syscall.O_RDONLY, 0)
+	var fd int
+	var err error
+	for {
+		fd, err = syscall.Open(path, syscall.O_RDONLY, 0)
+		if err != syscall.EINTR {
+			break
+		}
+	}
 	if err != nil {
 		return nil, &fs.PathError{Op: "open", Path: path, Err: err}
 	}
@@ -46,18 +53,33 @@ func openRaw(path string) (*rawFile, error) {
 // Read implements io.Reader via a direct read(2) syscall. read(2)
 // signals EOF as a zero-length, error-free return; Read translates
 // that into io.EOF itself, since raw syscall.Read does not.
+//
+// A bare read(2) can return EINTR if a signal interrupts it before any
+// data is transferred; os.File's Read retries this internally (via
+// poll.FD, part of the machinery this type deliberately bypasses), so
+// this loop reproduces that one behavior explicitly rather than
+// surfacing EINTR as an error to the caller.
 func (f *rawFile) Read(p []byte) (int, error) {
-	n, err := syscall.Read(f.fd, p)
-	if err != nil {
-		return n, &fs.PathError{Op: "read", Path: f.path, Err: err}
+	for {
+		n, err := syscall.Read(f.fd, p)
+		if err == syscall.EINTR {
+			continue
+		}
+		if err != nil {
+			return n, &fs.PathError{Op: "read", Path: f.path, Err: err}
+		}
+		if n == 0 {
+			return 0, io.EOF
+		}
+		return n, nil
 	}
-	if n == 0 {
-		return 0, io.EOF
-	}
-	return n, nil
 }
 
-// Close implements io.Closer via a direct close(2) syscall.
+// Close implements io.Closer via a direct close(2) syscall. Unlike Read
+// and openRaw, this deliberately does not retry on EINTR: on Linux the
+// file descriptor is always released even when close(2) reports EINTR,
+// so retrying risks closing an unrelated fd that has since been reused
+// with the same number (the standard close-on-EINTR pitfall).
 func (f *rawFile) Close() error {
 	return syscall.Close(f.fd)
 }
