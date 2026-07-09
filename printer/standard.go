@@ -7,6 +7,13 @@ import (
 	"github.com/yackey-labs/gripgrep/search"
 )
 
+// Preallocated separators passed to Dest.WriteBlock by
+// interFileSeparator, so choosing one never allocates.
+var (
+	sepHeading      = []byte("\n")
+	sepContextBreak = []byte("--\n")
+)
+
 // Standard formats matched and context lines as rg's default output:
 // "path:line:text" per match ("path:text" when line numbers are off),
 // "path-line-text" for context lines, with "--" between discontiguous
@@ -93,28 +100,42 @@ func (p *Standard) Context(c *search.Ctx) (bool, error) {
 }
 
 // Finish implements search.Sink: flushes the accumulated buffer to Dest
-// as one write. Files with zero matches (stats.Matched false, buffer
-// still empty) produce no output at all.
+// as one block (WriteBlock), preceded by a between-file separator when
+// one applies — "--\n" in --no-heading context mode, "\n" in heading
+// mode, matching rg's own inter-file separator placement exactly (see
+// interFileSeparator). Files with zero matches (stats.Matched false,
+// buffer still empty) produce no output at all.
 func (p *Standard) Finish(path string, stats *search.Stats) error {
-	return p.dest.Write(p.buf)
+	return p.dest.WriteBlock(p.buf, p.interFileSeparator())
+}
+
+// interFileSeparator returns the separator Dest.WriteBlock should
+// prepend before this file's block if it isn't the first block written
+// to that Dest (see Dest.WriteBlock and its hasPrinted tracking).
+// Heading mode always separates blocks with a blank line, regardless of
+// context; --no-heading mode only separates with "--" when
+// ContextEnabled (verified against real rg: two widely-separated
+// matches in plain --no-heading, non-context mode get no separator at
+// all, even across files).
+func (p *Standard) interFileSeparator() []byte {
+	switch {
+	case p.Heading:
+		return sepHeading
+	case p.ContextEnabled:
+		return sepContextBreak
+	default:
+		return nil
+	}
 }
 
 // writeSeparatorIfGap appends a "--\n" separator line when Context is
 // enabled and this line is not contiguous with the previously emitted
-// line. Contiguity is determined by line number when available (exact,
-// and covers every case this package's tests exercise); when line
-// numbers are disabled it falls back to byte offsets, since Offset is
-// always populated regardless of numbering.
-//
-// Deviation from rg: this state is reset per-file in Begin, so it never
-// detects a gap *between* files. Real rg (run single-threaded, or
-// coincidentally-ordered) also prints "--" between separate files in
-// --no-heading mode; reproducing that would require sharing "last
-// emitted position" state across the worker goroutines that own
-// separate per-file buffers, which is inherently racy against the
-// nondeterministic completion order this package's own atomic
-// per-file-flush design (and the parallel walk generally) already
-// embraces. Within a single file the separator is exact.
+// line, within the current file. Contiguity is determined by line
+// number when available (exact, and covers every case this package's
+// tests exercise); when line numbers are disabled it falls back to byte
+// offsets, since Offset is always populated regardless of numbering.
+// Between-file separators are Finish's job (see interFileSeparator);
+// this only ever fires on gaps within one Begin/Finish sequence.
 func (p *Standard) writeSeparatorIfGap(lineNumber int64, hasLineNumber bool, offset int64, lineLen int) {
 	if !p.ContextEnabled {
 		return
@@ -184,11 +205,69 @@ func (p *Standard) appendLineNumber(n int64) {
 	}
 }
 
+// findAtMatcher is implemented by Matchers that can resume a search
+// from an arbitrary byte offset within the ORIGINAL line — evaluating
+// anchors (^) and word boundaries (-w) relative to the whole line, not
+// a subslice of it. Standard prefers this via type assertion when
+// locating the 2nd+ match span on a line; see appendColoredLineSubslice
+// for why the naive Find(line[pos:]) loop gets those pattern classes
+// wrong. This is deliberately not part of the frozen match.Matcher
+// interface (some Matcher implementations may not need or support
+// resuming mid-line); Standard degrades gracefully when absent.
+type findAtMatcher interface {
+	FindAt(line []byte, start int) (s, e int, ok bool)
+}
+
 // appendColoredLine appends line with every match span wrapped in
-// ansiMatch. It repeatedly calls Matcher.Find on the remaining suffix
-// of line to color every occurrence (Find itself only reports the
-// leftmost match), guarding against a zero-width match looping forever.
+// ansiMatch, preferring Matcher.(findAtMatcher) when available (exact
+// for every pattern class) and falling back to the subslice-Find loop
+// otherwise (exact for literals; see appendColoredLineSubslice's
+// caveat).
 func (p *Standard) appendColoredLine(line []byte) {
+	if fa, ok := p.Matcher.(findAtMatcher); ok {
+		p.appendColoredLineFindAt(line, fa)
+		return
+	}
+	p.appendColoredLineSubslice(line)
+}
+
+// appendColoredLineFindAt colors every match span using FindAt, which
+// evaluates the pattern against the whole line at each resumed offset
+// — correct for anchored (^) and word-boundary (-w) patterns as well as
+// literals.
+func (p *Standard) appendColoredLineFindAt(line []byte, fa findAtMatcher) {
+	pos := 0
+	for pos <= len(line) {
+		s, e, ok := fa.FindAt(line, pos)
+		if !ok {
+			break
+		}
+		p.buf = append(p.buf, line[pos:s]...)
+		p.buf = appendColoredBytes(p.buf, ansiMatch, line[s:e])
+		if e == s {
+			// Zero-width match: emit the byte at e (if any) uncolored
+			// and advance by one to guarantee forward progress.
+			if e < len(line) {
+				p.buf = append(p.buf, line[e])
+			}
+			pos = e + 1
+			continue
+		}
+		pos = e
+	}
+	p.buf = append(p.buf, line[pos:]...)
+}
+
+// appendColoredLineSubslice is the fallback used when Matcher doesn't
+// implement findAtMatcher: it repeatedly calls Find on the remaining
+// suffix of line to color every occurrence (Find itself only reports
+// the leftmost match), guarding against a zero-width match looping
+// forever. This is exact for literal patterns, but Find's "leftmost
+// match within the given []byte" contract means a subslice shifts what
+// "start of line" or a word boundary means — so an anchored (^) or
+// word-boundary (-w) pattern's 2nd+ occurrence on a line can be colored
+// at the wrong span, or missed, under this fallback.
+func (p *Standard) appendColoredLineSubslice(line []byte) {
 	pos := 0
 	for pos <= len(line) {
 		s, e, ok := p.Matcher.Find(line[pos:])

@@ -269,11 +269,21 @@ func (m *panicOnFindMatcher) Find(line []byte) (int, int, bool) {
 }
 
 // TestStandard_MultiFileSequential drives two files through the same
-// Standard instance (as a reused per-worker printer would) and checks
-// each file's block is independently correct with per-file state reset
-// (path, gap tracking, heading) via Begin.
+// Standard instance (as a reused per-worker printer would). With
+// ContextEnabled, Finish now also inserts rg's between-file "--" (via
+// Dest.WriteBlock's interFileSeparator, see #14) — so the combined
+// output legitimately gets a second "--" between first.txt's last line
+// and second.txt's first. To make sure that isn't accidentally coming
+// from *leaked* within-file gap-tracking state instead (the bug this
+// test originally guarded against), it inspects Dest's actual per-Write
+// chunks directly: first.txt's own block must contain exactly the
+// within-file "--" (lines 1 and 9 are non-contiguous), and second.txt's
+// own block must contain no "--" at all — proving Begin reset the gap
+// tracker for the new file, and any separator between the two chunks
+// came from WriteBlock, not a leaked lastLine/haveLast value.
 func TestStandard_MultiFileSequential(t *testing.T) {
-	dest, out := newTestDest()
+	rw := &recordingWriter{}
+	dest := NewDest(rw)
 	p := NewStandard(dest)
 	p.ContextEnabled = true
 
@@ -283,13 +293,26 @@ func TestStandard_MultiFileSequential(t *testing.T) {
 	p.Finish("first.txt", &search.Stats{Matched: true})
 
 	p.Begin("second.txt")
-	// If gap state weren't reset per file, this would spuriously "--"
-	// against first.txt's line 9.
 	p.Matched(&search.Match{Line: []byte("gamma"), LineNumber: 1, HasLineNumber: true})
 	p.Finish("second.txt", &search.Stats{Matched: true})
 
-	want := "first.txt:1:alpha\n--\nfirst.txt:9:beta\n" + "second.txt:1:gamma\n"
-	if got := out.String(); got != want {
-		t.Errorf("got:\n%q\nwant:\n%q", got, want)
+	// Two blocks means two WriteBlock calls; the second one additionally
+	// triggers a separator write beforehand (recorded as its own chunk).
+	if len(rw.chunks) != 3 {
+		t.Fatalf("got %d Write calls, want 3 (first.txt block, separator, second.txt block); chunks: %q", len(rw.chunks), rw.chunks)
+	}
+
+	wantFirst := "first.txt:1:alpha\n--\nfirst.txt:9:beta\n"
+	wantSep := "--\n"
+	wantSecond := "second.txt:1:gamma\n"
+
+	if got := string(rw.chunks[0]); got != wantFirst {
+		t.Errorf("first.txt block: got %q, want %q", got, wantFirst)
+	}
+	if got := string(rw.chunks[1]); got != wantSep {
+		t.Errorf("inter-file separator: got %q, want %q", got, wantSep)
+	}
+	if got := string(rw.chunks[2]); got != wantSecond {
+		t.Errorf("second.txt block: got %q, want %q (a leading \"--\" here would mean gap-tracking state leaked across Begin)", got, wantSecond)
 	}
 }
