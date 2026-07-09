@@ -1,6 +1,7 @@
 package walk
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 )
@@ -17,6 +18,7 @@ func BenchmarkWalkRipgrepTree(b *testing.B) {
 
 	b.ReportAllocs()
 	b.ResetTimer()
+	total := 0
 	for i := 0; i < b.N; i++ {
 		n := 0
 		err := Walk([]string{dir}, Options{}, func(e *Entry) WalkState {
@@ -26,8 +28,10 @@ func BenchmarkWalkRipgrepTree(b *testing.B) {
 		if err != nil {
 			b.Fatal(err)
 		}
-		b.SetBytes(int64(n))
+		total += n
 	}
+	b.StopTimer()
+	b.ReportMetric(float64(total)/b.Elapsed().Seconds(), "entries/sec")
 }
 
 // BenchmarkWalkRipgrepTreeNoIgnore isolates walker mechanics from ignore-
@@ -56,5 +60,8 @@ func ripgrepCheckoutDir(b *testing.B) string {
 	// walk/ -> repo root -> sibling ripgrep checkout, mirroring
 	// oracle_test.go's layout assumption.
 	dir := filepath.Join(filepath.Dir(filepath.Dir(wd)), "ripgrep")
+	if _, err := os.Stat(dir); err != nil {
+		b.Skipf("%s not present, skipping: %v", dir, err)
+	}
 	return dir
 }

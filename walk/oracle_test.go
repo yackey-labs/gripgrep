@@ -1,6 +1,7 @@
 package walk
 
 import (
+	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
@@ -41,6 +42,9 @@ func TestOracleRgFiles(t *testing.T) {
 
 	for _, d := range dirs {
 		t.Run(d.name, func(t *testing.T) {
+			if _, err := os.Stat(d.path); err != nil {
+				t.Skipf("%s not present, skipping: %v", d.path, err)
+			}
 			rgFiles := runRgFiles(t, rgPath, d.path)
 			ggFiles := runGgFiles(t, d.path)
 

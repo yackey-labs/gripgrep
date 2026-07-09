@@ -349,8 +349,9 @@ func TestMaxFileSize(t *testing.T) {
 	var mu sync.Mutex
 	err := Walk([]string{root}, Options{NoIgnore: true, MaxFileSize: 6}, func(e *Entry) WalkState {
 		if e.Type == TypeFile {
+			base := clone(filepath.Base(e.Path))
 			mu.Lock()
-			got[filepath.Base(e.Path)] = true
+			got[base] = true
 			mu.Unlock()
 		}
 		return Continue

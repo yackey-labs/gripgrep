@@ -29,8 +29,15 @@ func devIno(fi os.FileInfo) (dev, ino uint64, ok bool) {
 // pushSymAncestor extends chain with dir's identity, for use as the
 // symAncestors of dir's children. Returns the input chain unchanged if
 // the identity can't be determined.
+//
+// Uses Stat, not Lstat: dir may itself be a symlink's resolved target
+// (followSymlink calls this with the followed path), and loops() below
+// compares against another Stat'd (followed) identity. Lstat here would
+// record the symlink's own inode for a directory only ever reached
+// through a symlink, which loops() could never match — silently
+// defeating cycle detection for exactly the case that matters.
 func pushSymAncestor(chain *symNode, dir string) *symNode {
-	fi, err := os.Lstat(dir)
+	fi, err := os.Stat(dir)
 	if err != nil {
 		return chain
 	}
