@@ -284,6 +284,36 @@ func TestBasenameAndExtension(t *testing.T) {
 	}
 }
 
+// TestMultiDotSuffix covers kindSuffix: patterns like "*.dtb.S" whose
+// literal tail contains more than one dot, which extOfTokens rejects
+// (only ever isolating the segment after the *last* dot) but which are
+// still a plain literal-suffix match -- the exact pattern shape found
+// in the linux kernel's own root .gitignore (*.dtb.S, *.mod.c,
+// *.so.dbg) that motivated adding this fast-path class in the first
+// place, as a regression guard against it silently falling back to (or
+// being missed by) the regex path.
+func TestMultiDotSuffix(t *testing.T) {
+	s := buildSet(t, "*.dtb.S", "*.mod.c")
+	if got := s.Match([]byte("foo.dtb.S"), false); got != Ignored {
+		t.Errorf("Match(foo.dtb.S) = %v, want Ignored", got)
+	}
+	if got := s.Match([]byte("arch/arm/boot/dts/foo.dtb.S"), false); got != Ignored {
+		t.Errorf("Match(arch/arm/boot/dts/foo.dtb.S) = %v, want Ignored (matches at any depth)", got)
+	}
+	if got := s.Match([]byte("driver.mod.c"), false); got != Ignored {
+		t.Errorf("Match(driver.mod.c) = %v, want Ignored", got)
+	}
+	// A single trailing dot-segment matching only the *last* component
+	// ("S") must not be enough on its own -- the whole ".dtb.S" tail is
+	// required.
+	if got := s.Match([]byte("foo.S"), false); got != NoMatch {
+		t.Errorf("Match(foo.S) = %v, want NoMatch (only the final segment matches, not the full tail)", got)
+	}
+	if got := s.Match([]byte("foo.c"), false); got != NoMatch {
+		t.Errorf("Match(foo.c) = %v, want NoMatch (bare .c, not .mod.c)", got)
+	}
+}
+
 // --- Benchmarks -------------------------------------------------------
 //
 // realisticGitignore mimics a non-trivial, real-world root .gitignore:

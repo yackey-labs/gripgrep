@@ -252,6 +252,48 @@ func TestExtOfTokens(t *testing.T) {
 	}
 }
 
+func TestSuffixOfTokens(t *testing.T) {
+	cases := []struct {
+		pattern string
+		want    string
+		ok      bool
+	}{
+		// Multi-dot tails: exactly the class extOfTokens rejects (it only
+		// isolates the segment after the *last* dot) but a plain literal
+		// suffix scan handles fine -- the motivating real-world case
+		// (linux kernel .gitignore) for adding this class at all.
+		{"**/*.dtb.S", ".dtb.S", true},
+		{"**/*.mod.c", ".mod.c", true},
+		{"**/*.so.dbg", ".so.dbg", true},
+		// Single dot-segment: also valid here (suffixOfTokens is a
+		// superset of extOfTokens' coverage), even though pattern.go
+		// prefers extOfTokens's map-based classification for these.
+		{"**/*.rs", ".rs", true},
+		// No recursive prefix: left to the regex fallback, same as
+		// extOfTokens.
+		{"*.c", "", false},
+		{"/*.c", "", false},
+		// A further wildcard/class after the leading '*' isn't a pure
+		// literal tail.
+		{"**/*.o.*", "", false},
+		{"**/*.tab.[ch]", "", false},
+		// Bare `**/*` (no literal tail at all) isn't a suffix pattern.
+		{"**/*", "", false},
+	}
+	for _, c := range cases {
+		t.Run(c.pattern, func(t *testing.T) {
+			toks, err := parseGlob(c.pattern)
+			if err != nil {
+				t.Fatalf("parseGlob(%q): %v", c.pattern, err)
+			}
+			got, ok := suffixOfTokens(toks)
+			if ok != c.ok || got != c.want {
+				t.Errorf("suffixOfTokens(%q) = (%q, %v), want (%q, %v)", c.pattern, got, ok, c.want, c.ok)
+			}
+		})
+	}
+}
+
 func TestBasenameLiteralOf(t *testing.T) {
 	cases := []struct {
 		pattern string

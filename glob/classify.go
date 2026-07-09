@@ -58,6 +58,40 @@ func extOfTokens(tokens []token) (string, bool) {
 	return sb.String(), true
 }
 
+// suffixOfTokens returns (suffix, true) if the pattern is `**/*` followed
+// by one or more plain literal tokens containing no `/` -- e.g. `**/*.rs`
+// (also covered by extOfTokens) but critically also multi-dot tails like
+// `**/*.dtb.S` or `**/*.mod.c`, which extOfTokens rejects (it only ever
+// isolates the single segment after the *last* dot, so a literal tail
+// containing an interior dot doesn't qualify there). Since the leading
+// `*` matches any run of non-'/' characters and everything after it is a
+// plain literal, a path's basename matches the whole pattern if and only
+// if it ends with suffix -- exactly what bytes.HasSuffix computes,
+// regardless of how many dots suffix itself contains.
+//
+// This exists as its own (linearly-scanned) class rather than folded into
+// extMap's O(1) map lookup because extMap's key is deliberately just the
+// last dot-segment; a general suffix has no such fixed-shape key to hash
+// on. Patterns extOfTokens already classifies are cheaper to leave there
+// (map lookup beats a HasSuffix scan), so pattern.go only calls this as a
+// fallback after extOfTokens fails.
+func suffixOfTokens(tokens []token) (string, bool) {
+	if len(tokens) < 3 || tokens[0].kind != tRecursivePrefix || tokens[1].kind != tZeroOrMore {
+		return "", false
+	}
+	var sb strings.Builder
+	for _, t := range tokens[2:] {
+		if t.kind != tLiteral || t.lit == '/' {
+			return "", false
+		}
+		sb.WriteRune(t.lit)
+	}
+	if sb.Len() == 0 {
+		return "", false
+	}
+	return sb.String(), true
+}
+
 // basenameTokens returns the sub-sequence of tokens that applies only to
 // a path's basename, if and only if any match of that sub-sequence
 // against a basename implies a match of the whole pattern against the

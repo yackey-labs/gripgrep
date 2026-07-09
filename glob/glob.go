@@ -1,21 +1,28 @@
 package glob
 
-import "regexp"
+import (
+	"bytes"
+
+	"github.com/grafana/regexp"
+)
 
 // Set is a compiled collection of gitignore-style glob patterns, queried
 // as one combined unit per path.
 //
-// Patterns are dispatched through three fast classes before falling back
-// to regexp: an exact full-path literal map, a basename literal map, and
-// an extension map (for patterns of the exact shape `**/*.ext`). Every
-// other pattern (containing wildcards, classes, alternates, or anchored
-// wildcard patterns like `/*.ext`) compiles to a regexp and is tried
-// linearly. See Match for how these combine to resolve gitignore's
+// Patterns are dispatched through four fast classes before falling back
+// to regexp: an exact full-path literal map, a basename literal map, an
+// extension map (for patterns of the exact shape `**/*.ext`), and a
+// suffix list (for patterns of the shape `**/*<literal tail>` whose tail
+// isn't a single dot-segment, e.g. `**/*.dtb.S` -- see suffixOfTokens).
+// Every other pattern (containing wildcards, classes, alternates, or
+// anchored wildcard patterns like `/*.ext`) compiles to a regexp and is
+// tried linearly. See Match for how these combine to resolve gitignore's
 // last-match-wins precedence.
 type Set struct {
 	literalMap  map[string][]patternRef
 	basenameMap map[string][]patternRef
 	extMap      map[string][]patternRef
+	suffixes    []suffixEntry
 	regexes     []regexEntry
 }
 
@@ -27,6 +34,14 @@ type patternRef struct {
 	index       int
 	isWhitelist bool
 	isOnlyDir   bool
+}
+
+// suffixEntry is a compiled kindSuffix pattern: suffix is the literal
+// tail a basename must end with, precomputed as []byte once at Build
+// time so Match's bytes.HasSuffix check never allocates or converts.
+type suffixEntry struct {
+	patternRef
+	suffix []byte
 }
 
 type regexEntry struct {
@@ -78,6 +93,8 @@ func (b *Builder) Build() (*Set, error) {
 			s.basenameMap[cp.literal] = append(s.basenameMap[cp.literal], ref)
 		case kindExt:
 			s.extMap[cp.literal] = append(s.extMap[cp.literal], ref)
+		case kindSuffix:
+			s.suffixes = append(s.suffixes, suffixEntry{patternRef: ref, suffix: []byte(cp.literal)})
 		case kindRegex:
 			s.regexes = append(s.regexes, regexEntry{patternRef: ref, re: cp.re})
 		}
@@ -114,7 +131,8 @@ const (
 // Semantics: gitignore resolves conflicting patterns by last-match-wins
 // (the highest Builder.Add-order index that matches decides the
 // outcome), so Match doesn't stop at the first hit — it tracks the
-// highest-index match seen across all three fast-class maps and the
+// highest-index match seen across every fast class (the three maps and
+// the suffix list) and the
 // regexp fallback list, skipping any pattern whose is-directory-only
 // requirement isn't met.
 func (s *Set) Match(path []byte, isDir bool) MatchResult {
@@ -154,6 +172,20 @@ func (s *Set) Match(path []byte, isDir bool) MatchResult {
 					bestIdx, bestWhitelist = r.index, r.isWhitelist
 				}
 			}
+		}
+	}
+
+	for i := range s.suffixes {
+		suf := &s.suffixes[i]
+		if suf.index <= bestIdx {
+			// Can't improve the outcome even if it matches.
+			continue
+		}
+		if suf.isOnlyDir && !isDir {
+			continue
+		}
+		if bytes.HasSuffix(base, suf.suffix) {
+			bestIdx, bestWhitelist = suf.index, suf.isWhitelist
 		}
 	}
 

@@ -2,7 +2,7 @@ package glob
 
 import (
 	"fmt"
-	"regexp"
+	"github.com/grafana/regexp"
 	"strings"
 	"unicode"
 )
@@ -15,6 +15,7 @@ const (
 	kindLiteral patternKind = iota
 	kindBasename
 	kindExt
+	kindSuffix
 	kindRegex
 )
 
@@ -26,7 +27,7 @@ type compiledPattern struct {
 	isWhitelist bool
 	isOnlyDir   bool
 	kind        patternKind
-	literal     string         // valid for kindLiteral / kindBasename / kindExt
+	literal     string         // valid for kindLiteral / kindBasename / kindExt / kindSuffix
 	re          *regexp.Regexp // valid for kindRegex
 }
 
@@ -117,6 +118,10 @@ func compileLine(index int, raw string) (cp compiledPattern, ok bool, err error)
 	}
 	if ext, ok := extOfTokens(toks); ok {
 		cp.kind, cp.literal = kindExt, ext
+		return cp, true, nil
+	}
+	if suf, ok := suffixOfTokens(toks); ok {
+		cp.kind, cp.literal = kindSuffix, suf
 		return cp, true, nil
 	}
 
