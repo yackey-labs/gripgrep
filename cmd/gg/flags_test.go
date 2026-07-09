@@ -620,6 +620,26 @@ func TestRunValidParseNotYetImplemented(t *testing.T) {
 	}
 }
 
+// TestRunValidParseNotYetImplementedRealisticFlags pins the exact
+// invocation flagged during review as a regression risk:
+// `./gg -nA3 -i PM_RESUME .`. A valid parse must still exit 2 (the M0
+// sentinel for "not yet wired to a real search"); exiting 0 here would
+// be read by rg's own convention as "ran successfully, no matches" and
+// would corrupt bench.sh's correctness gate and any e2e diff.
+func TestRunValidParseNotYetImplementedRealisticFlags(t *testing.T) {
+	var stderr bytes.Buffer
+	code := run([]string{"-nA3", "-i", "PM_RESUME", "."}, &stderr)
+	if code != 2 {
+		t.Errorf("exit code = %d, want 2 (a valid-but-unimplemented parse must never exit 0)", code)
+	}
+	if !strings.Contains(stderr.String(), "not yet implemented") {
+		t.Errorf("stderr = %q, want the M0 stub message", stderr.String())
+	}
+	if strings.Contains(stderr.String(), usageLine) {
+		t.Errorf("stderr = %q, should not print the usage line for a successfully parsed invocation", stderr.String())
+	}
+}
+
 // TestBinaryExitCodeOnBadFlag builds the real gg binary and runs it, to
 // verify the CLI-observable behavior the task names ("exit code 2 +
 // usage on bad flags") end to end through an actual separate process --
@@ -652,6 +672,30 @@ func TestBinaryExitCodeOnValidParseNotYetImplemented(t *testing.T) {
 	out, code := runGGBinary(t, bin, "pat", ".")
 	if code != 2 {
 		t.Errorf("exit code = %d, want 2", code)
+	}
+	if strings.Contains(out, usageLine) {
+		t.Errorf("stderr = %q, should not print the usage line for a successfully parsed invocation", out)
+	}
+}
+
+// TestBinaryExitCodeOnValidParseNotYetImplementedRealisticFlags is the
+// subprocess-level (real binary, real os.Exit) version of
+// TestRunValidParseNotYetImplementedRealisticFlags: the exact command
+// flagged during review, `./gg -nA3 -i PM_RESUME .`, must exit 2, never
+// 0. A separate compiled process is the only way to prove the actual
+// os.Exit call -- not just run()'s in-process return value -- behaves
+// correctly, since a stray or stale gg binary lying around from an
+// earlier build is indistinguishable from a real regression unless this
+// test builds fresh from source every time it runs.
+func TestBinaryExitCodeOnValidParseNotYetImplementedRealisticFlags(t *testing.T) {
+	bin := buildGGBinary(t)
+
+	out, code := runGGBinary(t, bin, "-nA3", "-i", "PM_RESUME", ".")
+	if code != 2 {
+		t.Errorf("exit code = %d, want 2 (a valid-but-unimplemented parse must never exit 0)", code)
+	}
+	if !strings.Contains(out, "not yet implemented") {
+		t.Errorf("stderr = %q, want the M0 stub message", out)
 	}
 	if strings.Contains(out, usageLine) {
 		t.Errorf("stderr = %q, should not print the usage line for a successfully parsed invocation", out)
