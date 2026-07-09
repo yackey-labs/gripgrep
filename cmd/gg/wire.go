@@ -27,20 +27,18 @@ import (
 // and do not change the exit code -- matching rg, which keeps walking
 // and only reflects match/no-match in its exit status (verified: a
 // permission-denied subdirectory alongside a real match still exits 0).
-// Deliberate deferral: cfg.Mmap (--mmap/--no-mmap) is parsed but not
-// consulted anywhere in this file -- every file is searched through the
-// streaming Searcher.Search path, never SearchBytes/syscall.Mmap. This
-// is a documented no-op for M2, not an oversight, per the task brief's
-// explicit "prefer implementing it... ONLY if [a no-op is] documented"
-// allowance: SearchBytes's own doc says BinaryConvert detection still
-// fires under mmap but leaves NULs unconverted, which is subtly
-// different from what real rg's mmap path does with a binary file
-// (rg's grep-searcher docs: Convert "has no effect and is ignored"
-// under mmap) -- and the golden binary_quit_by_default/binary_text_mode
-// cases were verified against real rg on a file far below any mmap
-// heuristic's size threshold, so there's no verified byte-for-byte
-// mmap comparison to build against yet. Wiring mmap up is flagged as
-// follow-up work (PLAN.md's M3 already lists it under the perf queue).
+//
+// cfg.Mmap (--mmap/--no-mmap) is consulted once, up front, via
+// mmapEligible (mirroring rg's own once-per-invocation MmapChoice
+// construction in hiargs.rs exactly -- not a per-size-threshold
+// heuristic, which an earlier version of this comment wrongly assumed).
+// When eligible, every file this run searches is opened via mmapOpen
+// (SearchBytes) instead of the streaming openRaw+Search path; any mmap
+// failure (open, fstat, zero-length, or mmap(2) itself) falls back to
+// streaming silently, matching rg's own MmapChoice::open behavior.
+// SearchBytes's BinaryConvert-under-mmap and BinaryQuit-first-chunk-only
+// semantics were verified against rg's SliceByLine (searcher/glue.rs)
+// directly -- see search.go's SearchBytes doc.
 func execute(cfg *Config, stdout, stderr io.Writer) int {
 	matcher, err := buildMatcher(cfg)
 	if err != nil {
@@ -58,6 +56,11 @@ func execute(cfg *Config, stdout, stderr io.Writer) int {
 	if len(paths) == 0 {
 		paths = []string{"."}
 	}
+
+	// mmapOK is a once-per-invocation decision (mirroring rg exactly --
+	// see mmapEligible's doc), not a per-file heuristic: it's computed
+	// once, from the full path list, before any walking starts.
+	mmapOK := mmapEligible(cfg.Mmap, paths)
 
 	isTTY := isTerminalWriter(stdout)
 	color := cfg.Color == ColorAlways || cfg.Color == ColorAnsi || (cfg.Color == ColorAuto && isTTY)
@@ -115,14 +118,6 @@ func execute(cfg *Config, stdout, stderr io.Writer) int {
 		defer pool.Put(unit)
 		unit.searcher.BinaryMode = resolveBinaryMode(cfg.Binary, explicit)
 
-		f, ferr := openRaw(e.Path)
-		if ferr != nil {
-			fmt.Fprintf(stderr, "gg: %s: %s\n", e.Path, ferr)
-			anyError.Store(true)
-			return walk.Continue
-		}
-		defer f.Close()
-
 		var sink search.Sink = unit.sink
 		if quiet != nil {
 			sink = quiet
@@ -142,6 +137,32 @@ func execute(cfg *Config, stdout, stderr io.Writer) int {
 			contextEnabled: contextEnabled,
 			dest:           dest,
 		}
+
+		if mmapOK {
+			if mf, ok := mmapOpen(e.Path); ok {
+				data := stripUTF8BOMSlice(mf.data)
+				serr := unit.searcher.SearchBytes(e.Path, data, tracked)
+				mf.Close()
+				if serr != nil {
+					fmt.Fprintf(stderr, "gg: %s: %s\n", e.Path, serr)
+					anyError.Store(true)
+				}
+				return walk.Continue
+			}
+			// mmapOpen failing (any reason -- open error, zero-length
+			// file, mmap(2) itself failing) falls through to the
+			// streaming path below, exactly like rg's MmapChoice::open
+			// returning None: no user-visible error, just an internal
+			// fallback.
+		}
+
+		f, ferr := openRaw(e.Path)
+		if ferr != nil {
+			fmt.Fprintf(stderr, "gg: %s: %s\n", e.Path, ferr)
+			anyError.Store(true)
+			return walk.Continue
+		}
+		defer f.Close()
 
 		reader, rerr := stripUTF8BOM(f)
 		if rerr != nil {

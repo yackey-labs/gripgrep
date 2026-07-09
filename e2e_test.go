@@ -141,6 +141,69 @@ func TestGoldenVsRipgrep_ContextOrdering(t *testing.T) {
 	}
 }
 
+// TestGoldenVsRipgrep_MmapExplicitFile targets M3's mmap wiring
+// (cmd/gg/mmap.go) directly: an explicitly-named single file (not a
+// directory) is exactly the case mmapEligible's default (Auto) policy
+// turns on for both gg and real rg (crates/core/flags/hiargs.rs: mmap
+// when <=10 paths are given and every one is a regular file) -- so this
+// drives gg's SearchBytes-over-syscall.Mmap path against rg's own
+// memory-mapped SliceByLine path, not just gg's default streaming Search
+// path (which is what every *directory*-rooted case in this file already
+// exercises instead).
+//
+// Deliberately well-defined (non-binary) input: a plain text file with
+// several matches spread across more than one DefaultBufferSize's worth
+// of content, so the comparison validates exactly what mmap wiring is
+// for (correct results via a memory-mapped read path instead of
+// buffered reads) without any binary-detection edge case entangled in
+// it. Explicit files with a NUL byte surfaced a separate, real
+// discrepancy between gg and rg (in both the streaming *and* mmap
+// paths, i.e. mmap-independent) during this same investigation -- that
+// is tracked and tested as its own issue rather than folded in here;
+// see the team communication log for M3's mmap task, not this file.
+//
+// Explicit --mmap and --no-mmap are both exercised (rather than relying
+// on mmapEligible's default for one of them) to remove any doubt that
+// the mmap-specific code path, not just the same-answer streaming path,
+// is what's being compared.
+func TestGoldenVsRipgrep_MmapExplicitFile(t *testing.T) {
+	dir := t.TempDir()
+	var content []byte
+	line := []byte("the quick brown fox jumps over the lazy dog\n")
+	for i := 0; len(content) < 200000; i++ {
+		content = append(content, line...)
+		if i%997 == 0 {
+			content = append(content, []byte("mmaptest_needle marks a match here\n")...)
+		}
+	}
+	path := filepath.Join(dir, "mmaptext.txt")
+	if err := os.WriteFile(path, content, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, thisFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("could not determine test file location")
+	}
+	ggBin := buildGG(t, filepath.Dir(thisFile))
+
+	for _, mode := range []string{"--mmap", "--no-mmap"} {
+		t.Run(mode, func(t *testing.T) {
+			args := []string{"-j1", "-n", mode, "mmaptest_needle", path}
+
+			rgOut, rgErr, rgCode := run(t, "rg", args)
+			ggOut, ggErr, ggCode := run(t, ggBin, args)
+
+			if rgCode != ggCode {
+				t.Errorf("exit code mismatch: rg=%d gg=%d\nrg stderr: %s\ngg stderr: %s", rgCode, ggCode, rgErr, ggErr)
+			}
+			if !bytes.Equal(rgOut, ggOut) {
+				t.Errorf("raw stdout mismatch (%s):\n--- rg stdout ---\n%s\n--- gg stdout ---\n%s", mode, rgOut, ggOut)
+			}
+		})
+	}
+}
+
 // TestGoldenVsRipgrep_BinaryMatchBeforeNUL is a regression test for
 // task #20: a walk-discovered (not explicitly-named) binary file whose
 // first NUL byte comes well after a real match must still show that

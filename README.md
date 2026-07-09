@@ -27,16 +27,18 @@ the gg:rg ratio is meaningful):
 | Benchmark | gg vs rg | Trend |
 |---|---|---|
 | Linux kernel tree (built, ~104k files), literal, gitignore-aware | **2.48× slower** | was 3.74×; three profile-driven fixes so far |
-| Single large file (~800MB), literal | **1.61× slower** | mmap + intra-file parallelism in flight |
-| Single large file, regex with literal | **2.10× slower** | same levers |
+| OpenSubtitles corpus (~830MB, 28M lines), literal (`Sherlock Holmes`) | **1.18× slower** | was 1.61×; mmap wiring landed — effectively at parity |
+| OpenSubtitles corpus, multi-literal regex (`Sherlock\|Watson`) | **3.25× slower** | mmap landed here too, but exposed a known weak spot: the multi-literal alternation prefilter (`rareByteMultiScanner`) is naive vs rg's Teddy SIMD matcher — tracked as its own M3 fix, not a regression |
 
 Micro-level, the core engine is already in ripgrep's class: the literal
 prefilter scans at **9.8 GB/s** (0 allocs/op), and the searcher's fast
-path streams at 4.6 GB/s. The remaining gap is architectural plumbing —
-file-open syscall overhead, gitignore glob dispatch, rolling-buffer
-copies — and it is shrinking commit by commit. Two levers rg doesn't
-have are still on the table: intra-file parallelism (rg searches each
-file on one core) and higher walker thread caps.
+path streams at 4.6 GB/s. mmap (explicitly-named files, matching rg's
+own `<=10 paths, all regular files` policy exactly) closed most of the
+single-file gap on literal queries. What's left: the linux-tree gap is
+mostly gitignore glob dispatch (shrinking commit by commit), the regex
+gap is the multi-literal prefilter above, and intra-file parallelism
+(rg searches each file on one core — a lever rg doesn't have) is still
+on the table.
 
 The optimization log lives in the commit history (`git log --grep "M3
 perf"`); dead ends are documented alongside wins.
