@@ -40,18 +40,25 @@ type compiledPattern struct {
 // position in Builder-Add order, which is exactly the precedence gitignore's
 // last-match-wins rule needs.
 //
-// ok is false (with a nil error) for a line that gitignore syntax defines
-// as producing no pattern at all: a comment (`#...`) or a blank line.
-func compileLine(index int, raw string) (cp compiledPattern, ok bool, err error) {
+// The returned slice normally holds exactly one compiledPattern; it is
+// empty (with a nil error) for a line that gitignore syntax defines as
+// producing no pattern at all (a comment or a blank line), and can hold
+// more than one when the pattern contains a small character class that
+// expandClasses turns into several literal variants, every one of which
+// classifies into a fast (non-regex) class -- see expandClasses' doc.
+// All returned patterns share this line's index/isWhitelist/isOnlyDir,
+// since they came from the same gitignore line and must resolve
+// last-match-wins precedence together.
+func compileLine(index int, raw string) (cps []compiledPattern, err error) {
 	line := raw
 	if strings.HasPrefix(line, "#") {
-		return compiledPattern{}, false, nil
+		return nil, nil
 	}
 	if !strings.HasSuffix(line, `\ `) {
 		line = strings.TrimRightFunc(line, unicode.IsSpace)
 	}
 	if line == "" {
-		return compiledPattern{}, false, nil
+		return nil, nil
 	}
 
 	isWhitelist := false
@@ -104,32 +111,46 @@ func compileLine(index int, raw string) (cp compiledPattern, ok bool, err error)
 
 	toks, perr := parseGlob(actual)
 	if perr != nil {
-		return compiledPattern{}, false, fmt.Errorf("invalid glob %q (from %q): %w", actual, raw, perr)
+		return nil, fmt.Errorf("invalid glob %q (from %q): %w", actual, raw, perr)
 	}
 
-	cp = compiledPattern{index: index, isWhitelist: isWhitelist, isOnlyDir: isOnlyDir}
-	if lit, ok := basenameLiteralOf(toks); ok {
-		cp.kind, cp.literal = kindBasename, lit
-		return cp, true, nil
+	base := compiledPattern{index: index, isWhitelist: isWhitelist, isOnlyDir: isOnlyDir}
+
+	if variants, ok := expandClasses(toks); ok {
+		expanded := make([]compiledPattern, 0, len(variants))
+		allFast := true
+		for _, vtoks := range variants {
+			lit, kind, kok := classifyFast(vtoks)
+			if !kok {
+				allFast = false
+				break
+			}
+			cp := base
+			cp.kind, cp.literal = kind, lit
+			expanded = append(expanded, cp)
+		}
+		if allFast {
+			return expanded, nil
+		}
+		// At least one expanded variant still needs regex (the class
+		// wasn't the pattern's only wildcard) -- expanding would trade
+		// one regex for several without removing the regex fallback
+		// requirement at all, a pure regression, so fall through and
+		// compile the original, unexpanded pattern below instead.
 	}
-	if lit, ok := literalOf(toks); ok {
-		cp.kind, cp.literal = kindLiteral, lit
-		return cp, true, nil
-	}
-	if ext, ok := extOfTokens(toks); ok {
-		cp.kind, cp.literal = kindExt, ext
-		return cp, true, nil
-	}
-	if suf, ok := suffixOfTokens(toks); ok {
-		cp.kind, cp.literal = kindSuffix, suf
-		return cp, true, nil
+
+	if lit, kind, ok := classifyFast(toks); ok {
+		cp := base
+		cp.kind, cp.literal = kind, lit
+		return []compiledPattern{cp}, nil
 	}
 
 	reSrc := tokensToRegex(toks)
 	re, rerr := regexp.Compile(reSrc)
 	if rerr != nil {
-		return compiledPattern{}, false, fmt.Errorf("compile regex %q (from glob %q): %w", reSrc, raw, rerr)
+		return nil, fmt.Errorf("compile regex %q (from glob %q): %w", reSrc, raw, rerr)
 	}
+	cp := base
 	cp.kind, cp.re = kindRegex, re
-	return cp, true, nil
+	return []compiledPattern{cp}, nil
 }

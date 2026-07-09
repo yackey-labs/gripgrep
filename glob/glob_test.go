@@ -314,6 +314,57 @@ func TestMultiDotSuffix(t *testing.T) {
 	}
 }
 
+// TestClassExpansion is the end-to-end regression guard for
+// expandClasses/classifyFast (M3, direction from team-lead): the exact
+// linux kernel .gitignore pattern shape that motivated adding class
+// expansion, *.asn1.[ch] and *.tab.[ch], each of which now compiles to
+// two kindSuffix entries instead of one kindRegex entry, and must match
+// (and fail to match) identically to what the regex fallback did
+// before.
+func TestClassExpansion(t *testing.T) {
+	s := buildSet(t, "*.asn1.[ch]", "*.tab.[ch]")
+	for _, path := range []string{
+		"foo.asn1.c",
+		"foo.asn1.h",
+		"deep/nested/dir/foo.asn1.c",
+		"y.tab.c",
+		"y.tab.h",
+	} {
+		if got := s.Match([]byte(path), false); got != Ignored {
+			t.Errorf("Match(%q) = %v, want Ignored", path, got)
+		}
+	}
+	for _, path := range []string{
+		"foo.asn1.x",  // not in the class
+		"foo.asn1",    // missing the class segment entirely
+		"foo.tab.c.d", // extra suffix after the class
+	} {
+		if got := s.Match([]byte(path), false); got != NoMatch {
+			t.Errorf("Match(%q) = %v, want NoMatch", path, got)
+		}
+	}
+}
+
+// TestClassExpansionDeclinedWhenNotSoleWildcard covers the "not every
+// expanded variant is fast" branch of compileLine: a pattern like
+// *.c.[012]*.* (the linux kernel's own root .gitignore has this exact
+// line) has a class that isn't its only wildcard, so every expanded
+// variant would still need the regex fallback -- expanding would trade
+// one regex for several, a pure regression, so compileLine must fall
+// back to compiling the single original, unexpanded pattern. This is a
+// correctness guard (Match must still behave right), since the
+// performance motivation for declining isn't observable from outside
+// the package.
+func TestClassExpansionDeclinedWhenNotSoleWildcard(t *testing.T) {
+	s := buildSet(t, "*.c.[012]*.*")
+	if got := s.Match([]byte("foo.c.0abc.bar"), false); got != Ignored {
+		t.Errorf("Match(foo.c.0abc.bar) = %v, want Ignored", got)
+	}
+	if got := s.Match([]byte("foo.c.3abc.bar"), false); got != NoMatch {
+		t.Errorf("Match(foo.c.3abc.bar) = %v, want NoMatch (3 isn't in the class)", got)
+	}
+}
+
 // --- Benchmarks -------------------------------------------------------
 //
 // realisticGitignore mimics a non-trivial, real-world root .gitignore:

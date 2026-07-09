@@ -92,6 +92,120 @@ func suffixOfTokens(tokens []token) (string, bool) {
 	return sb.String(), true
 }
 
+// maxClassSize is the largest a single character class may be to
+// qualify for expansion into literal alternates (expandClasses),
+// mirroring the bound rg's own literal extractor uses for the
+// equivalent decision on regex character classes (limit_class=10; see
+// docs/research/ripgrep-internals.md §2a). A class larger than this
+// stays a class-based regex Match, as today.
+const maxClassSize = 10
+
+// maxExpandedPatterns bounds the total number of concrete patterns one
+// compileLine call may expand into. A pattern can contain more than one
+// class, and expansion is a cross product across all of them, so this
+// guards against combinatorial blowup -- mirrors rg's limit_total=64.
+const maxExpandedPatterns = 64
+
+// expandClasses returns every concrete token sequence produced by
+// substituting a single literal character for each non-negated,
+// small-enough tClass token in tokens (the cross product, when more
+// than one such class is present), or (nil, false) if tokens contains
+// no eligible class at all.
+//
+// Motivation: a class like `[ch]` only ever contributes two bytes of
+// entropy, but classify.go's fast-path classifiers (literalOf,
+// basenameLiteralOf, extOfTokens, suffixOfTokens) all require an
+// all-literal token sequence, so any pattern containing one -- even an
+// otherwise-trivial suffix like `*.asn1.[ch]` -- was falling all the
+// way through to the regex fallback. Turning `[ch]` into two literal
+// variants ("...c" / "...h") lets each variant re-enter the same
+// fast-path classification a plain literal pattern gets; the caller
+// (compileLine) is responsible for verifying every returned variant
+// actually lands in a fast class before using this expansion, and for
+// discarding it (keeping the single original regex) otherwise --
+// expandClasses itself only enumerates candidates, it doesn't classify
+// them.
+//
+// A negated class (`[!...]`) is never expanded (its whole point is
+// "not these characters", which isn't a small enumerable positive set);
+// nor is one whose member count exceeds maxClassSize, or whose
+// contribution to the running cross-product total exceeds
+// maxExpandedPatterns -- both cases return (nil, false) and leave
+// tokens to be regex-compiled unexpanded, exactly as before this
+// existed.
+func expandClasses(tokens []token) ([][]token, bool) {
+	type classSpot struct {
+		idx   int
+		chars []rune
+	}
+	var spots []classSpot
+	total := 1
+	for i, t := range tokens {
+		if t.kind != tClass {
+			continue
+		}
+		if t.negated {
+			return nil, false
+		}
+		var chars []rune
+		for _, r := range t.ranges {
+			for c := r[0]; c <= r[1]; c++ {
+				chars = append(chars, c)
+				if len(chars) > maxClassSize {
+					return nil, false
+				}
+			}
+		}
+		if len(chars) == 0 {
+			return nil, false
+		}
+		total *= len(chars)
+		if total > maxExpandedPatterns {
+			return nil, false
+		}
+		spots = append(spots, classSpot{idx: i, chars: chars})
+	}
+	if len(spots) == 0 {
+		return nil, false
+	}
+
+	variants := [][]token{tokens}
+	for _, spot := range spots {
+		next := make([][]token, 0, len(variants)*len(spot.chars))
+		for _, base := range variants {
+			for _, c := range spot.chars {
+				v := make([]token, len(base))
+				copy(v, base)
+				v[spot.idx] = token{kind: tLiteral, lit: c}
+				next = append(next, v)
+			}
+		}
+		variants = next
+	}
+	return variants, true
+}
+
+// classifyFast attempts to classify tokens into one of Set's fast
+// (non-regex) match classes, trying them in the same precedence order
+// compileLine uses for an ordinary pattern: whole-basename literal,
+// whole-path literal, extension, then literal suffix. It never touches
+// the regex fallback -- ok is false if tokens fit none of these.
+func classifyFast(tokens []token) (literal string, kind patternKind, ok bool) {
+	if lit, bok := basenameLiteralOf(tokens); bok {
+		return lit, kindBasename, true
+	}
+	if lit, lok := literalOf(tokens); lok {
+		return lit, kindLiteral, true
+	}
+	if ext, eok := extOfTokens(tokens); eok {
+		return ext, kindExt, true
+	}
+	if suf, sok := suffixOfTokens(tokens); sok {
+		return suf, kindSuffix, true
+	}
+	return "", 0, false
+}
+
 // basenameTokens returns the sub-sequence of tokens that applies only to
 // a path's basename, if and only if any match of that sub-sequence
 // against a basename implies a match of the whole pattern against the

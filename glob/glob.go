@@ -78,25 +78,24 @@ func (b *Builder) Build() (*Set, error) {
 		extMap:      make(map[string][]patternRef),
 	}
 	for i, raw := range b.patterns {
-		cp, ok, err := compileLine(i, raw)
+		cps, err := compileLine(i, raw)
 		if err != nil {
 			return nil, err
 		}
-		if !ok {
-			continue
-		}
-		ref := patternRef{index: cp.index, isWhitelist: cp.isWhitelist, isOnlyDir: cp.isOnlyDir}
-		switch cp.kind {
-		case kindLiteral:
-			s.literalMap[cp.literal] = append(s.literalMap[cp.literal], ref)
-		case kindBasename:
-			s.basenameMap[cp.literal] = append(s.basenameMap[cp.literal], ref)
-		case kindExt:
-			s.extMap[cp.literal] = append(s.extMap[cp.literal], ref)
-		case kindSuffix:
-			s.suffixes = append(s.suffixes, suffixEntry{patternRef: ref, suffix: []byte(cp.literal)})
-		case kindRegex:
-			s.regexes = append(s.regexes, regexEntry{patternRef: ref, re: cp.re})
+		for _, cp := range cps {
+			ref := patternRef{index: cp.index, isWhitelist: cp.isWhitelist, isOnlyDir: cp.isOnlyDir}
+			switch cp.kind {
+			case kindLiteral:
+				s.literalMap[cp.literal] = append(s.literalMap[cp.literal], ref)
+			case kindBasename:
+				s.basenameMap[cp.literal] = append(s.basenameMap[cp.literal], ref)
+			case kindExt:
+				s.extMap[cp.literal] = append(s.extMap[cp.literal], ref)
+			case kindSuffix:
+				s.suffixes = append(s.suffixes, suffixEntry{patternRef: ref, suffix: []byte(cp.literal)})
+			case kindRegex:
+				s.regexes = append(s.regexes, regexEntry{patternRef: ref, re: cp.re})
+			}
 		}
 	}
 	return s, nil

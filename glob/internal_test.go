@@ -294,6 +294,115 @@ func TestSuffixOfTokens(t *testing.T) {
 	}
 }
 
+// TestExpandClasses covers expandClasses directly: which patterns it
+// declines to expand (negated, oversized, or no class at all), and that
+// eligible ones produce the exact expected cross product of literal
+// variants (as rendered back through classifyFast/literalOf, since
+// asserting on raw tokens would be unreadable).
+func TestExpandClasses(t *testing.T) {
+	render := func(t *testing.T, toks []token) string {
+		t.Helper()
+		lit, _, ok := classifyFast(toks)
+		if !ok {
+			t.Fatalf("expanded variant %v didn't classify as fast", toks)
+		}
+		return lit
+	}
+
+	t.Run("single class expands to N literal variants", func(t *testing.T) {
+		toks, err := parseGlob("**/*.asn1.[ch]")
+		if err != nil {
+			t.Fatal(err)
+		}
+		variants, ok := expandClasses(toks)
+		if !ok {
+			t.Fatal("expandClasses(*.asn1.[ch]) = (_, false), want true")
+		}
+		var got []string
+		for _, v := range variants {
+			got = append(got, render(t, v))
+		}
+		want := []string{".asn1.c", ".asn1.h"}
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("expandClasses(*.asn1.[ch]) variants = %v, want %v", got, want)
+		}
+	})
+
+	t.Run("two classes expand to the cross product", func(t *testing.T) {
+		toks, err := parseGlob("**/*.[ab][xy]")
+		if err != nil {
+			t.Fatal(err)
+		}
+		variants, ok := expandClasses(toks)
+		if !ok {
+			t.Fatal("expandClasses = (_, false), want true")
+		}
+		var got []string
+		for _, v := range variants {
+			got = append(got, render(t, v))
+		}
+		want := []string{".ax", ".ay", ".bx", ".by"}
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("expandClasses(*.[ab][xy]) variants = %v, want %v", got, want)
+		}
+	})
+
+	t.Run("negated class is never expanded", func(t *testing.T) {
+		toks, err := parseGlob("**/*.[!ch]")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, ok := expandClasses(toks); ok {
+			t.Error("expandClasses([!ch]) = (_, true), want false (negated classes must stay regex)")
+		}
+	})
+
+	t.Run("class over maxClassSize is not expanded", func(t *testing.T) {
+		toks, err := parseGlob("**/*.[a-z]") // 26 > maxClassSize(10)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, ok := expandClasses(toks); ok {
+			t.Error("expandClasses([a-z]) = (_, true), want false (26 chars exceeds maxClassSize)")
+		}
+	})
+
+	t.Run("class exactly at maxClassSize is expanded", func(t *testing.T) {
+		toks, err := parseGlob("**/*.[a-j]") // exactly 10 chars
+		if err != nil {
+			t.Fatal(err)
+		}
+		variants, ok := expandClasses(toks)
+		if !ok {
+			t.Fatal("expandClasses([a-j]) = (_, false), want true (10 chars is within maxClassSize)")
+		}
+		if len(variants) != 10 {
+			t.Errorf("expandClasses([a-j]) produced %d variants, want 10", len(variants))
+		}
+	})
+
+	t.Run("cross product over maxExpandedPatterns is not expanded", func(t *testing.T) {
+		// 3 classes of 9 chars each = 729 > maxExpandedPatterns(64).
+		toks, err := parseGlob("**/*.[abcdefghi][abcdefghi][abcdefghi]")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, ok := expandClasses(toks); ok {
+			t.Error("expandClasses(729-way cross product) = (_, true), want false")
+		}
+	})
+
+	t.Run("no class at all is not expanded", func(t *testing.T) {
+		toks, err := parseGlob("**/*.rs")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, ok := expandClasses(toks); ok {
+			t.Error("expandClasses(no class) = (_, true), want false")
+		}
+	})
+}
+
 func TestBasenameLiteralOf(t *testing.T) {
 	cases := []struct {
 		pattern string
