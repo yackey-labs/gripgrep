@@ -117,3 +117,41 @@ func TestStandard_ColorSubsliceFallback_KnownLimitation(t *testing.T) {
 		t.Errorf("fallback behavior changed: got:\n%q\nwant (documented-wrong):\n%q", got, wrongButExpected)
 	}
 }
+
+// TestStandard_ColorWordBoundary_RealMatcher is the end-to-end
+// integration test for #15, using match.New's real *matcherImpl (not a
+// synthetic fake): a -w ("cat") pattern against a line with two
+// legitimate whole-word occurrences and one embedded, non-word-boundary
+// occurrence inside "scatter" that must NOT be colored. matcherImpl
+// implements the optional findAtMatcher interface (see
+// match/strategy.go's FindAt), so Standard's type assertion should pick
+// it up automatically with no printer-side special-casing.
+func TestStandard_ColorWordBoundary_RealMatcher(t *testing.T) {
+	m, err := match.New(match.Config{Patterns: []string{"cat"}, Word: true})
+	if err != nil {
+		t.Fatalf("match.New: %v", err)
+	}
+
+	// Sanity: confirm this Matcher actually exposes FindAt, so the test
+	// is exercising the real fix rather than silently falling back.
+	if _, ok := m.(findAtMatcher); !ok {
+		t.Fatalf("match.New's Matcher does not implement findAtMatcher; #15's real fix is not being exercised by this test")
+	}
+
+	dest, out := newTestDest()
+	p := NewStandard(dest)
+	p.Color = true
+	p.Matcher = m
+
+	line := []byte("cat scatter cat")
+	p.Begin("t.txt")
+	p.Matched(&search.Match{Line: line, LineNumber: 1, HasLineNumber: true})
+	p.Finish("t.txt", &search.Stats{Matched: true})
+
+	colored := "\x1b[0m\x1b[1m\x1b[31mcat\x1b[0m"
+	want := "\x1b[0m\x1b[35mt.txt\x1b[0m:\x1b[0m\x1b[32m1\x1b[0m:" +
+		colored + " scatter " + colored + "\n"
+	if got := out.String(); got != want {
+		t.Errorf("got:\n%q\nwant:\n%q (only the two whole-word \"cat\"s should be colored, not the one embedded in \"scatter\")", got, want)
+	}
+}
