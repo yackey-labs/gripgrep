@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"runtime/debug"
+	"runtime/pprof"
 )
 
 // usageLine is printed alongside any flag-parsing error, matching rg's
@@ -94,6 +95,37 @@ func run(args []string, stdout, stderr io.Writer) int {
 	return execute(cfg, stdout, stderr)
 }
 
+// maybeStartCPUProfile is a hidden, env-var-gated profiling hook for the
+// M3 bench/optimize loop and future PGO profile collection (see
+// Makefile's pgo-collect target). It is deliberately NOT a CLI flag: the
+// "1:1 rg CLI compatibility" contract (PLAN.md) means gg's flag surface
+// must only ever contain flags rg itself has, and this has no rg
+// equivalent. GG_CPUPROFILE is unset in every normal invocation, so it
+// adds no overhead and never appears in --help.
+func maybeStartCPUProfile() (stop func()) {
+	path := os.Getenv("GG_CPUPROFILE")
+	if path == "" {
+		return func() {}
+	}
+	f, err := os.Create(path)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "gg: GG_CPUPROFILE: %s\n", err)
+		return func() {}
+	}
+	if err := pprof.StartCPUProfile(f); err != nil {
+		fmt.Fprintf(os.Stderr, "gg: GG_CPUPROFILE: %s\n", err)
+		f.Close()
+		return func() {}
+	}
+	return func() {
+		pprof.StopCPUProfile()
+		f.Close()
+	}
+}
+
 func main() {
-	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
+	stop := maybeStartCPUProfile()
+	code := run(os.Args[1:], os.Stdout, os.Stderr)
+	stop()
+	os.Exit(code)
 }
