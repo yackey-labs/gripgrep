@@ -185,6 +185,12 @@ func TestAllocsPerRun(t *testing.T) {
 	}{
 		{"single_literal", cs("PM_RESUME"), true},
 		{"single_literal_ci", ci("pm_resume"), true},
+		// rareByteMultiScanner's zero-alloc guarantee holds regardless of
+		// anchor quality (M3 #22 considered and rejected routing
+		// poor-anchor small sets to Aho-Corasick instead -- see
+		// newLiteralScanner's doc -- so "fox"/"dog", whose best anchors
+		// are ordinary common letters, stay on this same zero-alloc path
+		// as "quick", not on AC).
 		{"multi_literal_small", cs("fox", "dog", "quick"), true},
 		{"multi_literal_large_aho_corasick", cs("a", "b", "c", "d", "e", "f", "g", "h", "i", "j"), false},
 	}

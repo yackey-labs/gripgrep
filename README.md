@@ -28,7 +28,7 @@ the gg:rg ratio is meaningful):
 |---|---|---|
 | Linux kernel tree (built, ~104k files), literal, gitignore-aware | **2.48× slower** | was 3.74×; three profile-driven fixes so far |
 | OpenSubtitles corpus (~830MB, 28M lines), literal (`Sherlock Holmes`) | **1.18× slower** | was 1.61×; mmap wiring landed — effectively at parity |
-| OpenSubtitles corpus, multi-literal regex (`Sherlock\|Watson`) | **3.25× slower** | mmap landed here too, but exposed a known weak spot: the multi-literal alternation prefilter (`rareByteMultiScanner`) is naive vs rg's Teddy SIMD matcher — tracked as its own M3 fix, not a regression |
+| OpenSubtitles corpus, multi-literal regex (`Sherlock\|Watson`) | **2.34× slower** | was 3.25×; the multi-literal scanner (`rareByteMultiScanner`) was re-scanning every literal's anchor from scratch on every merge step instead of advancing each one independently — fixed (2.11× single-threaded). (Routing to Aho-Corasick was tried first and measured to be worse at every literal count tested, not better — a real Teddy SIMD port remains the path to full parity here.) |
 
 Micro-level, the core engine is already in ripgrep's class: the literal
 prefilter scans at **9.8 GB/s** (0 allocs/op), and the searcher's fast

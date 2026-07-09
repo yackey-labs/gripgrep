@@ -173,34 +173,57 @@ func newRareByteMultiScanner(lits [][]byte) *rareByteMultiScanner {
 	return s
 }
 
+// find merges each literal's independent anchor-byte scan, taking
+// whichever occurs first and verifying the full literal there.
+//
+// Each literal's next anchor occurrence is tracked in next[i] and only
+// re-scanned once that specific occurrence is consumed -- not on every
+// merge step. An earlier version re-ran bytes.IndexByte for every literal
+// on every iteration of the outer loop, which meant a common anchor (say,
+// one firing every ~100 bytes) forced the *other* literals' rarer anchors
+// to be re-found from scratch that often too, even though their own next
+// occurrence hadn't changed. On the corpus that motivated M3 task #22
+// (`Sherlock|Watson`, "Sherlock"'s anchor 'k' firing on ~1% of bytes),
+// that redundant re-scanning -- not anchor quality, and not this
+// scanner's approach in general -- was the dominant cost (profiled at
+// ~91% of the query's time in bytes.IndexByte/find). Routing to
+// Aho-Corasick was tried first as this task's assigned fix and measured
+// to be a dead end (the pure-Go AC library's candidate search was, if
+// anything, marginally slower here, not faster -- see the commit message
+// for the numbers); this monotonic-sweep rewrite is the fix that actually
+// moved the needle, and needed no new dependency.
 func (s *rareByteMultiScanner) find(buf []byte, start int) (int, int, bool) {
-	pos := start
-	for pos <= len(buf) {
+	var arr [8]int
+	var next []int
+	if len(s.lits) <= len(arr) {
+		next = arr[:len(s.lits)]
+	} else {
+		// Defensive fallback: newLiteralScanner never constructs this
+		// scanner for more than 8 literals, but a caller of
+		// newRareByteMultiScanner directly (e.g. a future test) isn't
+		// bound by that, so don't index out of bounds -- just accept the
+		// one-time allocation this path was never meant to hit.
+		next = make([]int, len(s.lits))
+	}
+	for i, l := range s.lits {
+		next[i] = nextAnchor(buf, start, l, s.rareIdx[i])
+	}
+
+	for {
 		bestHit := -1
-		bestLit := -1
-		for i, l := range s.lits {
-			if len(l) == 0 {
-				continue
-			}
-			anchor := l[s.rareIdx[i]]
-			idx := bytes.IndexByte(buf[pos:], anchor)
-			if idx < 0 {
-				continue
-			}
-			hit := pos + idx
-			if bestHit == -1 || hit < bestHit {
-				bestHit = hit
-				bestLit = i
+		for i := range s.lits {
+			if next[i] >= 0 && (bestHit == -1 || next[i] < bestHit) {
+				bestHit = next[i]
 			}
 		}
 		if bestHit == -1 {
 			return 0, 0, false
 		}
-		// Among all literals, check every one whose anchor byte matches
-		// at bestHit (not just bestLit) since several literals can share
-		// the same rarest byte value.
+		// Several literals can share the same rarest byte value, so more
+		// than one can legitimately tie at bestHit; check all of them
+		// before advancing any.
 		for i, l := range s.lits {
-			if len(l) == 0 || l[s.rareIdx[i]] != buf[bestHit] {
+			if len(l) == 0 || next[i] != bestHit {
 				continue
 			}
 			litStart := bestHit - s.rareIdx[i]
@@ -210,10 +233,29 @@ func (s *rareByteMultiScanner) find(buf []byte, start int) (int, int, bool) {
 				return litStart, len(l), true
 			}
 		}
-		_ = bestLit
-		pos = bestHit + 1
+		// No literal matched at bestHit -- advance only the anchor(s)
+		// that were actually consumed there; everything else's next
+		// occurrence is untouched and must not be re-scanned.
+		for i, l := range s.lits {
+			if len(l) == 0 || next[i] != bestHit {
+				continue
+			}
+			next[i] = nextAnchor(buf, bestHit+1, l, s.rareIdx[i])
+		}
 	}
-	return 0, 0, false
+}
+
+// nextAnchor returns the absolute offset of l's anchor byte (l[rareIdx])
+// at or after from, or -1 if none remains in buf.
+func nextAnchor(buf []byte, from int, l []byte, rareIdx int) int {
+	if len(l) == 0 || from > len(buf) {
+		return -1
+	}
+	idx := bytes.IndexByte(buf[from:], l[rareIdx])
+	if idx < 0 {
+		return -1
+	}
+	return from + idx
 }
 
 // --- large multi-literal (or ASCII case-insensitive multi-literal):
@@ -260,6 +302,21 @@ func (s *ahoCorasickScanner) find(buf []byte, start int) (int, int, bool) {
 // PLAN.md's thresholds: a single literal gets the dedicated
 // single-literal path; small sets get the rare-byte scan; large sets (or
 // any set needing ASCII case folding) get Aho-Corasick.
+//
+// M3 task #22 considered routing small sets with a poor anchor byte
+// (e.g. "Sherlock"'s rarest byte is an ordinary lowercase letter, not a
+// genuinely rare one) to Aho-Corasick instead, on the theory that AC's
+// automaton-driven throughput wouldn't degrade with anchor commonality
+// the way rareByteMultiScanner's bytes.IndexByte-and-verify approach
+// does. Measured and rejected: on the subtitles benchmark corpus, AC was
+// never faster, and was dramatically worse as the literal count grew
+// (`Sherlock|Watson`, N=2: rare-byte 2.13x slower than rg vs AC's 3.46x;
+// an 8-literal all-poor-anchor set: rare-byte 5.7x vs AC's 19x) -- this
+// pure-Go AC library's per-candidate cost apparently scales worse with
+// pattern count than the naive rare-byte scan does with anchor
+// commonality. The actual fix for the regression this was chasing turned
+// out to be rareByteMultiScanner.find's monotonic-sweep rewrite (see its
+// doc): no threshold or routing change needed here at all.
 func newLiteralScanner(lits [][]byte, asciiCaseInsensitive bool) literalScanner {
 	if len(lits) == 1 {
 		if asciiCaseInsensitive {
