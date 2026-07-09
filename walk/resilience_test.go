@@ -284,6 +284,27 @@ func TestGitignoreCannotReincludeInsideExcludedDir(t *testing.T) {
 	}
 }
 
+// TestGitignoreCannotReincludeInsideExcludedAncestor is the multi-level
+// variant of the same rule: the excluded directory is a grandparent, not
+// the immediate parent, of the whitelisted path. This is the same case
+// glob's ignoredLikeWalk oracle helper checks by walking every ancestor
+// prefix component, not just the last one — confirming our per-directory
+// prune-before-enqueue (checked once per level as the walk actually
+// descends) produces the same answer as that simulation.
+func TestGitignoreCannotReincludeInsideExcludedAncestor(t *testing.T) {
+	root := t.TempDir()
+	markGitRepo(t, root)
+	writeFile(t, filepath.Join(root, ".gitignore"), "excluded/\n!excluded/mid/deep/keep.txt\n")
+	writeFile(t, filepath.Join(root, "excluded", "mid", "deep", "keep.txt"), "x")
+	writeFile(t, filepath.Join(root, "a.txt"), "a")
+
+	got := visitFiles(t, root, Options{})
+	want := []string{"a.txt"}
+	if len(got) != len(want) || got[0] != want[0] {
+		t.Errorf("got %v, want %v (a negation two levels inside an excluded ancestor must not resurrect it)", got, want)
+	}
+}
+
 // TestQuiescenceRandomQuitInjection stresses termination under -race: a
 // tree of many tiny directories, walked repeatedly, with the Visitor
 // returning Quit at a random point (or never) on each run. No iteration
