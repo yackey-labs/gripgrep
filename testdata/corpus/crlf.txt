@@ -1,0 +1,3 @@
+hello there
+second line
+needle on a crlf line

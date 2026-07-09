@@ -1,0 +1,5 @@
+hello world
+this is a plain test file used by the golden test harness
+the cat sat on the mat
+CATERPILLAR should not match a whole-word search for "cat"
+another line without the needle

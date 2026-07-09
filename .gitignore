@@ -1,0 +1,23 @@
+# Built binaries
+/gg
+*.exe
+*.test
+*.out
+
+# Coverage
+*.cover
+coverage.out
+
+# CPU/mem profiles collected during dev (default.pgo is committed once curated)
+*.pprof
+cpu.prof
+mem.prof
+
+# IDE / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Bench corpus lives in /dev/shm, never in-repo; only stray local logs excluded
+/internal/bench/*.log

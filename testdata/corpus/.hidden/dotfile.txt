@@ -1,0 +1,1 @@
+secret hidden content, only found with --hidden

@@ -1,0 +1,1 @@
+secret data that should never be found: this whole directory is gitignored
