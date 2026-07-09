@@ -2,6 +2,9 @@ package match
 
 import "errors"
 
+// errNoPatterns is returned by New when Config.Patterns is empty.
+var errNoPatterns = errors.New("match: Config.Patterns must be non-empty")
+
 // CandidateKind distinguishes a genuine match from a literal-prefilter
 // hit that still needs full-regex confirmation on its enclosing line.
 type CandidateKind uint8
@@ -44,10 +47,6 @@ type Config struct {
 	Fixed bool
 }
 
-// ErrNotImplemented is returned by the M0 stub constructor. It will be
-// removed once M1-match lands a real implementation.
-var ErrNotImplemented = errors.New("match: not implemented (TODO M1-match)")
-
 // Matcher is a compiled pattern ready to search []byte haystacks. Every
 // method operates on []byte only — implementations and callers must
 // never convert to string on a hot path. A Matcher's compiled state is
@@ -86,12 +85,6 @@ type Matcher interface {
 	NonMatchingLineTerm() bool
 }
 
-// New compiles cfg into a Matcher.
-//
-// TODO(M1-match): literal extraction from regexp/syntax, rarity-ranked
-// prefilters, smart case, word wrapping, -F/multi-pattern alternation,
-// grafana/regexp fallback engine. The M0 stub always returns
-// ErrNotImplemented.
-func New(cfg Config) (Matcher, error) {
-	return nil, ErrNotImplemented
-}
+// New is implemented in strategy.go: it compiles cfg through smart-case
+// resolution, pure-literal / inner-literal-extraction / engine-only
+// strategy selection, and returns a ready-to-use Matcher.
