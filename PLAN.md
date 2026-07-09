@@ -82,6 +82,8 @@ type Visitor func(e *Entry) WalkState  // WalkState: Continue | SkipDir | Quit
 
 ## v1 CLI scope (correctness gate: output byte-identical to `rg` for these)
 
+**1:1 rg compatibility is the contract (Steve, 2026-07-09):** every flag gg ships must be a drop-in match for ripgrep — same short/long names and aliases, same defaults, same `--no-*` negation forms, same argument syntax (`-A3`, `-A 3`, `--after-context=3`, flags allowed after positionals), same output bytes, same exit codes (0 match / 1 no match / 2 error). The authoritative source is `../ripgrep/crates/core/flags/defs.rs` (every flag's definition, default, and negation) — port semantics from there, verify against the real `rg` binary. Flags rg has that gg doesn't yet implement must fail with a clear "not yet implemented" error to exit 2 — never silently ignore or reinterpret.
+
 `gg [flags] PATTERN [PATH...]`
 - Pattern: regex by default, `-F` fixed string, `-i` ignore case, `-S` smart case, `-w` word, `-e` (repeatable)
 - Filtering: `.gitignore`/`.ignore` respected by default, `--hidden`, `--no-ignore`, `-g` glob, `-u/-uu/-uuu`, `--max-filesize`
