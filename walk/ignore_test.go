@@ -238,3 +238,36 @@ func TestGlobsRequireMatch(t *testing.T) {
 		t.Errorf("got %v, want %v (b.txt matches no override glob and should be excluded)", got, want)
 	}
 }
+
+// TestGlobsRequireMatchDoesNotPruneDirs is a regression test for an M2
+// integration finding: `gg -g '*.rs' pat .` over the real ripgrep
+// checkout (a deeply nested tree) only found matches in root-level .rs
+// files, missing every .rs file under a subdirectory -- because
+// GlobsRequireMatch's "no override glob matched at all -> exclude" rule
+// was being applied to directories too. A directory like "crates" or
+// "sub" doesn't itself match "*.go" (almost no directory name ends in
+// ".go"), so the whole subtree was pruned before any file inside it got
+// a chance to match. GlobsRequireMatch must only ever exclude files;
+// directories always need to be descended into so their contents can be
+// individually filtered. See classify's doc for the verified rg
+// comparison.
+func TestGlobsRequireMatchDoesNotPruneDirs(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "a.go"), "a")
+	writeFile(t, filepath.Join(root, "sub", "nested.go"), "b")
+	writeFile(t, filepath.Join(root, "sub", "deeper", "more.go"), "c")
+	writeFile(t, filepath.Join(root, "sub", "skip.txt"), "d")
+
+	var b glob.Builder
+	b.Add("!*.go") // flipped-polarity whitelist, per task #12's CLI encoding
+	set, err := b.Build()
+	if err != nil {
+		t.Fatalf("glob build: %v", err)
+	}
+
+	got := visitFiles(t, root, Options{NoIgnore: true, Globs: set, GlobsRequireMatch: true})
+	want := []string{"a.go", "more.go", "nested.go"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Errorf("got %v, want %v (every .go file at every depth should match; skip.txt should not; subdirectories must never be pruned just for failing to match *.go themselves)", got, want)
+	}
+}

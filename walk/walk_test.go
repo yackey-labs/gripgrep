@@ -384,6 +384,56 @@ func TestSingleFileRoot(t *testing.T) {
 	}
 }
 
+// TestDotRootPreservesPrefix is a regression test for an M2 integration
+// finding: `gg -n pat .` used to print paths like "crates/foo.rs" while
+// the real rg binary prints "./crates/foo.rs" for the exact same
+// invocation (root="." is gg's default and rg's most common invocation
+// shape, so this divergence would have shown up in essentially every
+// bare `gg pattern` run against the current directory). joinPath used to
+// special-case away a "." dir component the same way filepath.Join does;
+// real rg does not. See joinPath's doc for the verified rg comparison.
+func TestDotRootPreservesPrefix(t *testing.T) {
+	root := buildTree(t, map[string]string{"sub/file.txt": "x"})
+
+	origWd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(root); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chdir(origWd)
+
+	var got []string
+	err = Walk([]string{"."}, Options{NoIgnore: true}, func(e *Entry) WalkState {
+		if e.Type == TypeFile {
+			got = append(got, clone(e.Path))
+		}
+		return Continue
+	})
+	if err != nil {
+		t.Fatalf("Walk: %v", err)
+	}
+	want := []string{"./sub/file.txt"}
+	if !slicesEqualStrings(got, want) {
+		t.Errorf("got %v, want %v (rg preserves the \"./\" prefix from a \".\" root)", got, want)
+	}
+}
+
+func slicesEqualStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	sort.Strings(a)
+	sort.Strings(b)
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
 func TestInvalidRootReportsErr(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "does-not-exist")
 

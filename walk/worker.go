@@ -278,7 +278,18 @@ func (w *worker) classify(node *ignoreNode, globPath, ignorePath []byte, isDir b
 		case glob.Whitelisted:
 			return false, true
 		case glob.NoMatch:
-			if w.opts.GlobsRequireMatch {
+			// GlobsRequireMatch's exclusion only applies to files, not
+			// directories: a `-g '*.rs'` override is a filter over file
+			// content, and a directory whose own name doesn't happen to
+			// end in ".rs" (nearly all of them) must still be descended
+			// into so the files inside it get their own chance to
+			// match -- pruning here would silently exclude every file
+			// below the first directory that fails the glob, which is
+			// most of the tree in practice. Verified against the real
+			// rg binary: `rg -g '*.rs' pat .` finds matches at every
+			// depth, not just files directly under the walk root (see
+			// M2's handoff notes / TestGlobsRequireMatchDoesNotPruneDirs).
+			if w.opts.GlobsRequireMatch && !isDir {
 				return true, false
 			}
 		}
@@ -315,10 +326,18 @@ func fileTypeOf(d os.DirEntry) FileType {
 // joinPath appends dir+"/"+name into the reused scratch slice pointed to
 // by buf and returns the result. It approximates filepath.Join for the
 // already-clean inputs this walker produces itself, without Join's
-// repeated Clean/allocate overhead.
+// repeated Clean/allocate overhead -- except that, unlike filepath.Join,
+// it never cleans away a literal "." component. filepath.Join(".", "x")
+// collapses to "x", but a bare "." walk root is a real, common CLI
+// invocation (`rg`/`gg` with no PATH argument defaults to searching
+// "."), and the real rg binary echoes the "./" prefix verbatim in that
+// case (verified: `rg -n pat .` prints "./crates/...", not "crates/...").
+// Collapsing it here would make every discovered path diverge from rg's
+// output the moment a search starts from the current directory -- easily
+// gg's single most common invocation shape. See TestDotRootPreservesPrefix.
 func joinPath(buf *[]byte, dir, name string) []byte {
 	b := (*buf)[:0]
-	if dir != "" && dir != "." {
+	if dir != "" {
 		b = append(b, dir...)
 		b = append(b, '/')
 	}
