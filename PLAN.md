@@ -89,6 +89,38 @@ type Visitor func(e *Entry) WalkState  // WalkState: Continue | SkipDir | Quit
 - Perf: `-j` threads, `-a` text, `--mmap/--no-mmap`
 - Not in v1: replace, multiline, PCRE2, encodings other than UTF-8/ASCII, compressed files, `--sort`, JSON output, `-o`
 
+## Test coverage requirements (lead-mandated, binding)
+
+Differential testing is our strongest weapon — every layer gets an **oracle**:
+
+| Layer | Oracle | How |
+|---|---|---|
+| glob | **`git check-ignore -v`** (git itself) + rg's globset test suite | same pattern file + path set → same verdicts; table + fuzz (valid-pattern generator) |
+| walk | `rg --files` | sorted diff on testdata/corpus, the ripgrep checkout, and a crafted nasty tree |
+| match | stdlib `regexp` | table matrices + native fuzz: FindCandidate+Verify ≡ oracle on random patterns×haystacks |
+| search | naive split-lines-and-scan | native fuzz with random content and the fake matcher |
+| e2e | `rg` itself | golden matrix (sort-normalized stdout, exact exit codes 0/1/2) |
+
+**Buffer-size invariance (search — non-negotiable):** the same input searched with buffer sizes 7, 64, 4096, 65536 must produce byte-identical sink event streams. Run the whole search test matrix at all four sizes. This single property catches nearly every rolling-buffer bug class.
+
+**Named edge cases that MUST have explicit tests** (each has bitten a real grep implementation):
+- **Empty-match patterns**: `^`, `$`, `^$`, `a*`, `()` — the FindCandidate/scan loop must terminate and agree with rg's line semantics; an empty match at every position is the classic infinite-loop bug.
+- Match spanning a fill boundary; line exactly == buffer size; line > buffer (forced doubling); final line with no trailing `\n`; empty file; file of only newlines; file of only NULs.
+- Invalid UTF-8 mid-line (we are byte-oriented — must still match and print the raw bytes).
+- CRLF: `\r` stays in the line bytes; `-w` boundaries adjacent to `\r`.
+- Inverted match (`-v`) combined with context flags.
+- Context blocks: overlapping/adjacent block merging, `-A` crossing a buffer roll, context at file start/EOF.
+- Gitignore: `!` re-include (incl. the git rule that you can't re-include inside an excluded directory), trailing-space handling, `\#`/`\!` escapes, `a/**`, `**/a`, `a/**/b`, bare `/`.
+- Walk resilience: permission-denied directory (walk continues, Entry.Err delivered); **FIFO/socket/device files are never opened** (opening a FIFO blocks forever — classify by DirEntry type and skip); file deleted between readdir and open (no crash, no false error exit); symlink loop; non-UTF-8 filename bytes; deep nesting (no recursion overflow).
+- Printer: paths containing `:`, non-UTF-8 path bytes, multi-MB single output line.
+- Line numbers: property test — reported lineno equals naive count at every match, across rolls.
+
+**Allocation assertions are tests, not benchmarks:** hot paths get `testing.AllocsPerRun` assertions (0 allocs) in regular `go test`, so an alloc regression fails CI, not just a benchmark eyeball. Applies to: glob.Set.Match, match FindCandidate/Verify, search steady-state loop, printer Matched (piped path).
+
+**Race coverage:** `make test` runs `-race` for walk and printer concurrency tests; walker quiescence/Quit gets a stress test (many tiny dirs, random Quit injection).
+
+Floor: ≥80% line coverage per package (`make cover`), but the named cases above outrank the number — a package at 85% missing an empty-match test fails review.
+
 ## Milestones & agent team breakdown (Sonnet 5 agents)
 
 **M0 — Scaffold** (1 agent, blocks everything): `git init`; go.mod; package skeletons with the frozen interfaces + doc.go; Makefile (`build`, `test`, `bench`, `pgo`); `internal/bench/setup.sh` + `bench.sh` (hyperfine, 3-query dev loop from benchmarking.md §4); CI-free golden-test harness that diffs `gg` vs `rg` output over `testdata/` — **sort-normalized** (parallel output order is nondeterministic in both tools) with exact exit-code comparison.
