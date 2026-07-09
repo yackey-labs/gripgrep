@@ -1,7 +1,10 @@
 package walk
 
 import (
-	"errors"
+	"os"
+	"path/filepath"
+	"runtime"
+	"sync"
 
 	"github.com/yackey-labs/gripgrep/glob"
 )
@@ -64,25 +67,130 @@ type Options struct {
 	// MaxFileSize skips files larger than this many bytes; 0 = unlimited.
 	MaxFileSize int64
 	// Threads is the worker count; 0 selects the runtime default
-	// (min(runtime.NumCPU(), 12), matching ripgrep's default).
+	// (min(runtime.GOMAXPROCS(0), 12), matching ripgrep's default cap).
 	Threads int
 	// Globs, if non-nil, is an additional include/exclude matcher
 	// applied on top of ignore-file processing (e.g. -g/--glob).
 	Globs *glob.Set
+	// GlobsRequireMatch changes how a Globs NoMatch is treated: when
+	// true, an entry that Globs doesn't match at all is excluded, not
+	// just left to the ignore-file stack. This is what rg's -g override
+	// semantics need — a plain -g pattern is really an *include* filter
+	// ("only search files matching some -g"), so once at least one such
+	// pattern exists, anything matching none of them should drop out
+	// regardless of gitignore state. '!'-prefixed -g patterns still work
+	// as ordinary excludes (glob.Ignored/Whitelisted are unaffected by
+	// this flag; it only changes the glob.NoMatch case). The CLI is
+	// responsible for setting this when it has built Globs from -g/-g'!'
+	// flags; it should stay false for a Globs set built from some other
+	// source that isn't override-shaped.
+	GlobsRequireMatch bool
 }
-
-// ErrNotImplemented is returned by the M0 stub Walk. It will be removed
-// once M1-walk lands a real implementation.
-var ErrNotImplemented = errors.New("walk: not implemented (TODO M1-walk)")
 
 // Walk traverses roots in parallel per opts, calling visit for every
 // matched file-system entry.
 //
-// TODO(M1-walk): work-stealing deque (crossbeam_deque analogue), the
-// immutable per-directory ignore-matcher stack (five matcher slots,
-// compiled once per directory, shared by Arc-style reference with
-// children), quiescence detection, hidden/max-filesize/symlink handling.
-// The M0 stub always returns ErrNotImplemented without calling visit.
+// Walk distributes roots round-robin across a fixed pool of worker
+// goroutines, each running a work-stealing loop over per-worker LIFO
+// deques (see dirQueue): a worker processes directories depth-first from
+// its own deque, and steals a batch from another worker's deque when its
+// own runs dry. Every visit call may come from a different goroutine —
+// see Visitor's doc.
+//
+// Walk returns once every worker has quiesced (no more work anywhere) or
+// a Visitor returns Quit. Per-entry errors (a directory that couldn't be
+// opened, a symlink that couldn't be stat'd, ...) are reported to visit
+// via Entry.Err, not through Walk's return value; Walk itself only ever
+// returns nil in the current implementation, but returns error to leave
+// room for future fatal/setup-level failures.
 func Walk(roots []string, opts Options, visit Visitor) error {
-	return ErrNotImplemented
+	if len(roots) == 0 {
+		return nil
+	}
+	n := opts.Threads
+	if n <= 0 {
+		n = defaultThreads()
+	}
+
+	queues := make([]*dirQueue, n)
+	for i := range queues {
+		queues[i] = &dirQueue{}
+	}
+
+	initial := make([]*dirTask, 0, len(roots))
+	for _, r := range roots {
+		initial = append(initial, buildRootTask(r, &opts))
+	}
+	for i, t := range initial {
+		queues[i%n].push(t)
+	}
+
+	coord := &coordinator{}
+	coord.active.Store(int64(n))
+
+	var wg sync.WaitGroup
+	wg.Add(n)
+	for i := 0; i < n; i++ {
+		w := &worker{idx: i, queues: queues, coord: coord, opts: &opts, visit: visit}
+		go func() {
+			defer wg.Done()
+			w.run()
+		}()
+	}
+	wg.Wait()
+	return nil
+}
+
+// buildRootTask classifies one walk root. Explicit roots that are
+// symlinks are always resolved regardless of Options.FollowSymlinks —
+// matching the common CLI convention that an argument you named directly
+// is always followed, even when discovered-during-traversal symlinks are
+// left alone.
+func buildRootTask(root string, opts *Options) *dirTask {
+	t := &dirTask{path: root, depth: 0}
+
+	info, err := os.Lstat(root)
+	if err != nil {
+		t.rootKind = rootInvalid
+		t.rootErr = err
+		return t
+	}
+	if abs, err := filepath.Abs(root); err == nil {
+		t.abs = abs
+	} else {
+		t.abs = root
+	}
+
+	if info.Mode()&os.ModeSymlink != 0 {
+		target, err := os.Stat(root)
+		if err != nil {
+			t.rootKind = rootInvalid
+			t.rootErr = err
+			return t
+		}
+		info = target
+	}
+
+	if info.IsDir() {
+		t.rootKind = rootDir
+		if !opts.NoIgnore {
+			t.ignore = buildParentChain(t.abs)
+		}
+		return t
+	}
+	t.rootKind = rootFile
+	return t
+}
+
+// defaultThreads is min(GOMAXPROCS, 12) — ripgrep's 2016-era default cap;
+// PLAN.md flags this as a sweep target for M3, not a settled constant.
+func defaultThreads() int {
+	n := runtime.GOMAXPROCS(0)
+	if n > 12 {
+		n = 12
+	}
+	if n < 1 {
+		n = 1
+	}
+	return n
 }
