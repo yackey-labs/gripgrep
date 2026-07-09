@@ -1,7 +1,7 @@
 package search
 
 import (
-	"errors"
+	"bytes"
 	"io"
 
 	"github.com/yackey-labs/gripgrep/match"
@@ -67,6 +67,11 @@ type Stats struct {
 	Matched       bool
 	MatchCount    int64
 	BytesSearched int64
+	// Binary is true when NUL-byte detection fired (BinaryQuit or
+	// BinaryConvert). BinaryOffset is the absolute byte offset of the
+	// first NUL seen, valid only when Binary is true.
+	Binary       bool
+	BinaryOffset int64
 }
 
 // Sink receives search results. A Searcher drives exactly one
@@ -94,14 +99,15 @@ type Sink interface {
 	Finish(path string, stats *Stats) error
 }
 
-// ErrNotImplemented is returned by the M0 stub Search. It will be
-// removed once M1-search lands a real implementation.
-var ErrNotImplemented = errors.New("search: not implemented (TODO M1-search)")
-
 // Searcher holds configuration shared across searches. Once constructed,
 // a Searcher's config fields are read-only; callers should allocate one
 // Searcher per worker goroutine and reuse it across files rather than
-// reconstruct it per file, so its pooled buffers (TODO M1-search) amortize.
+// reconstruct it per file, so its pooled buffers amortize.
+//
+// A Searcher is single-goroutine: its pooled rolling buffer and scratch
+// Match/Ctx values are mutated in place across calls. Workers searching in
+// parallel must each own their own Searcher (constructed via New); do not
+// share one across goroutines.
 type Searcher struct {
 	Matcher     match.Matcher
 	BinaryMode  BinaryMode
@@ -111,25 +117,161 @@ type Searcher struct {
 	// both to the same value.
 	BeforeContext int
 	AfterContext  int
+
+	// Pooled resources, amortized across Search/SearchBytes calls on this
+	// Searcher. Not part of the public config; New allocates them. Per the
+	// Match/Ctx docs, statsScratch is likewise reused: the *Stats handed to
+	// Sink.Finish is only valid for the duration of that call.
+	lb           *lineBuffer
+	matchScratch Match
+	ctxScratch   Ctx
+	statsScratch Stats
+
+	// Per-call scan state, reset by resetRun at the start of every
+	// Search/SearchBytes call.
+	pos              int
+	absOffsetBase    int64
+	lineNumber       int64
+	lastLineCounted  int
+	lastLineVisited  int
+	afterContextLeft int
+	hasMatched       bool
+	matchCount       int64
 }
 
-// New constructs a Searcher from cfg.
-//
-// TODO(M1-search): validate cfg, allocate the pooled 64KB rolling read
-// buffer and any context ring buffer.
+// New constructs a Searcher from cfg, allocating its pooled rolling read
+// buffer (DefaultBufferSize) up front.
 func New(cfg Searcher) *Searcher {
 	s := cfg
+	s.lb = newLineBuffer(DefaultBufferSize)
 	return &s
 }
 
 // Search reads path's content from r and drives sink's
 // Begin/Matched/Context/Finish sequence.
 //
-// TODO(M1-search): rolling line buffer (fill/roll/ensure-capacity per
-// docs/research/ripgrep-internals.md §1), fast whole-buffer candidate
-// path gated on s.Matcher.NonMatchingLineTerm(), slow per-line fallback,
-// NUL-based binary detection per s.BinaryMode, lazy line counting, invert,
-// context tracking. The M0 stub always returns ErrNotImplemented.
+// Search owns a pooled rolling line buffer (see linebuffer.go): it reads
+// r in DefaultBufferSize chunks, always presenting complete lines to the
+// scanner, doubling its buffer only for a single line that exceeds the
+// current capacity. It shares its core line-scanning logic (core.go) with
+// SearchBytes, so a future mmap/[]byte entrypoint or M3's intra-file
+// parallel chunking can reuse it without any interface change.
 func (s *Searcher) Search(path string, r io.Reader, sink Sink) error {
-	return ErrNotImplemented
+	ok, err := sink.Begin(path)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		s.statsScratch = Stats{}
+		return sink.Finish(path, &s.statsScratch)
+	}
+
+	s.resetRun()
+	if s.lb == nil {
+		s.lb = newLineBuffer(DefaultBufferSize)
+	}
+	s.lb.reset(s.BinaryMode)
+
+	for {
+		oldBuf := s.lb.buffer()
+		oldLen := len(oldBuf)
+		consumed := s.rollConsume(oldBuf)
+		s.lb.consume(consumed)
+
+		more, ferr := s.lb.fill(r)
+		if ferr != nil {
+			return ferr
+		}
+		if !more {
+			break
+		}
+		if consumed == 0 && oldLen == len(s.lb.buffer()) {
+			// No progress possible: everything left in the buffer is
+			// context that will never be needed again. Force EOF.
+			s.lb.consume(oldLen)
+			break
+		}
+
+		buf := s.lb.buffer()
+		outcome, serr := s.matchByLine(buf, sink)
+		if serr != nil {
+			return serr
+		}
+		if outcome == scanStop {
+			s.lb.consume(s.pos)
+			break
+		}
+	}
+
+	s.statsScratch = Stats{
+		Matched:       s.hasMatched,
+		MatchCount:    s.matchCount,
+		BytesSearched: s.lb.absoluteOffset,
+		Binary:        s.lb.hasBinaryOffset,
+		BinaryOffset:  s.lb.binaryOffset,
+	}
+	return sink.Finish(path, &s.statsScratch)
+}
+
+// SearchBytes searches data directly, with no rolling buffer or read
+// syscalls: the same core line-scanning logic as Search (see core.go)
+// runs over the whole slice in one pass. Intended for the small number of
+// explicitly-named files that may be mmap'd, and for M3's intra-file
+// parallel chunking (each chunk becomes one SearchBytes-style call over a
+// sub-slice).
+//
+// data must remain valid and unmodified for the duration of the call, and
+// is never written to: unlike Search's owned rolling buffer, a
+// caller-owned slice can't safely be mutated in place. Consequently, under
+// BinaryConvert, detection still fires (Stats.Binary/BinaryOffset) but NUL
+// bytes are left as ordinary bytes in the searched content rather than
+// being turned into line breaks — this matches rg's own read-only mmap
+// path (grep-searcher's SliceByLine), which detects but never rewrites.
+// Under BinaryQuit, a NUL in the first DefaultBufferSize bytes skips the
+// file entirely (also matching SliceByLine, which is stricter here than
+// the incremental Search path: a slice is the whole file up front, so
+// there's no partial "searched up to the NUL" result to offer).
+func (s *Searcher) SearchBytes(path string, data []byte, sink Sink) error {
+	ok, err := sink.Begin(path)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		s.statsScratch = Stats{}
+		return sink.Finish(path, &s.statsScratch)
+	}
+
+	s.resetRun()
+
+	searchData := data
+	hasBinary := false
+	var binaryOffset int64
+	if s.BinaryMode != BinaryNone {
+		upto := len(data)
+		if upto > DefaultBufferSize {
+			upto = DefaultBufferSize
+		}
+		if i := bytes.IndexByte(data[:upto], 0); i >= 0 {
+			hasBinary = true
+			binaryOffset = int64(i)
+			if s.BinaryMode == BinaryQuit {
+				searchData = nil
+			}
+		}
+	}
+
+	if len(searchData) > 0 {
+		if _, err := s.matchByLine(searchData, sink); err != nil {
+			return err
+		}
+	}
+
+	s.statsScratch = Stats{
+		Matched:       s.hasMatched,
+		MatchCount:    s.matchCount,
+		BytesSearched: int64(len(searchData)),
+		Binary:        hasBinary,
+		BinaryOffset:  binaryOffset,
+	}
+	return sink.Finish(path, &s.statsScratch)
 }
