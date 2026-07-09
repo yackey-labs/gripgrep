@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"reflect"
@@ -542,10 +543,6 @@ func TestNotYetImplementedFlags(t *testing.T) {
 		{"-L", "pat"},
 		{"-f", "patfile", "pat"},
 		{"--binary", "pat"},
-		{"-h", "pat"},
-		{"--help", "pat"},
-		{"-V", "pat"},
-		{"--version", "pat"},
 	} {
 		t.Run(args[0], func(t *testing.T) {
 			err := wantErr(t, args...)
@@ -553,6 +550,25 @@ func TestNotYetImplementedFlags(t *testing.T) {
 				return // wantErr already failed the test
 			}
 		})
+	}
+}
+
+// TestHelpAndVersionSkipPatternRequirement mirrors `rg --help`/`rg -V`:
+// both work with no PATTERN argument at all, unlike every other
+// invocation (which requires at least one pattern or -e). See
+// ParseArgs's early return on cfg.Help/cfg.Version.
+func TestHelpAndVersionSkipPatternRequirement(t *testing.T) {
+	if cfg := mustParse(t, "--help"); !cfg.Help {
+		t.Error("expected Config.Help = true")
+	}
+	if cfg := mustParse(t, "-h"); !cfg.Help {
+		t.Error("expected Config.Help = true")
+	}
+	if cfg := mustParse(t, "--version"); !cfg.Version {
+		t.Error("expected Config.Version = true")
+	}
+	if cfg := mustParse(t, "-V"); !cfg.Version {
+		t.Error("expected Config.Version = true")
 	}
 }
 
@@ -596,8 +612,8 @@ func TestAbbreviatedLongFlagRejected(t *testing.T) {
 // in-process: faster than the subprocess tests below and gives real
 // coverage numbers for main.go's wiring, not just ParseArgs.
 func TestRunBadFlag(t *testing.T) {
-	var stderr bytes.Buffer
-	code := run([]string{"--bogus-flag", "pat"}, &stderr)
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"--bogus-flag", "pat"}, &stdout, &stderr)
 	if code != 2 {
 		t.Errorf("exit code = %d, want 2", code)
 	}
@@ -609,34 +625,206 @@ func TestRunBadFlag(t *testing.T) {
 	}
 }
 
-func TestRunValidParseNotYetImplemented(t *testing.T) {
-	var stderr bytes.Buffer
-	code := run([]string{"pat", "."}, &stderr)
-	if code != 2 {
-		t.Errorf("exit code = %d, want 2", code)
+// TestRunSearchMatch and TestRunSearchNoMatch exercise the M2 wiring
+// (run -> execute -> walk/match/search/printer) end to end in-process,
+// replacing the M0/M1-era "NotYetImplemented" placeholders that used to
+// assert exit 2 here -- a syntactically valid invocation now really
+// searches, so those assertions became stale the moment M2 wired
+// execute() in. e2e_test.go covers the full flag matrix against the real
+// rg binary; these two just prove run() reaches a real match/no-match
+// exit code (0/1), not the M0 sentinel (2).
+func TestRunSearchMatch(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "f.txt"), []byte("hello world\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"-n", "hello", dir}, &stdout, &stderr)
+	if code != 0 {
+		t.Errorf("exit code = %d, want 0 (match found); stderr=%q", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "hello world") {
+		t.Errorf("stdout = %q, want it to contain the matched line", stdout.String())
+	}
+}
+
+// TestRunSearchStripsUTF8BOM is a regression test for an M2 manual-diff
+// finding: a file starting with a UTF-8 byte-order-mark (EF BB BF) used
+// to have those 3 bytes show up verbatim in gg's matched-line output,
+// while the real rg binary strips a leading BOM unconditionally (even
+// under -a/--text) before searching or printing. See stripUTF8BOM.
+func TestRunSearchStripsUTF8BOM(t *testing.T) {
+	dir := t.TempDir()
+	content := append([]byte{0xEF, 0xBB, 0xBF}, []byte("hello world\n")...)
+	if err := os.WriteFile(filepath.Join(dir, "f.txt"), content, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"-n", "hello", dir}, &stdout, &stderr)
+	if code != 0 {
+		t.Errorf("exit code = %d, want 0; stderr=%q", code, stderr.String())
+	}
+	want := filepath.Join(dir, "f.txt") + ":1:hello world\n"
+	if got := stdout.String(); got != want {
+		t.Errorf("got %q, want %q (BOM bytes must not appear in output)", got, want)
+	}
+}
+
+func TestRunSearchNoMatch(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "f.txt"), []byte("hello world\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"-n", "zzz_no_such_pattern", dir}, &stdout, &stderr)
+	if code != 1 {
+		t.Errorf("exit code = %d, want 1 (no match); stderr=%q", code, stderr.String())
+	}
+	if stdout.Len() != 0 {
+		t.Errorf("stdout = %q, want empty output for no match", stdout.String())
+	}
+}
+
+// TestRunRealisticFlagsDoesNotErrorOnParse pins the exact invocation
+// flagged during review as a regression risk: `./gg -nA3 -i PM_RESUME .`.
+// It must parse successfully (no usage line) and reach a real match/
+// no-match exit code (0/1), never the bad-flag exit 2 + usage line pair.
+func TestRunRealisticFlagsDoesNotErrorOnParse(t *testing.T) {
+	dir := t.TempDir()
+
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"-nA3", "-i", "PM_RESUME", dir}, &stdout, &stderr)
+	if code != 0 && code != 1 {
+		t.Errorf("exit code = %d, want 0 or 1 (a valid parse must reach a real search, not exit 2); stderr=%q", code, stderr.String())
 	}
 	if strings.Contains(stderr.String(), usageLine) {
 		t.Errorf("stderr = %q, should not print the usage line for a successfully parsed invocation", stderr.String())
 	}
 }
 
-// TestRunValidParseNotYetImplementedRealisticFlags pins the exact
-// invocation flagged during review as a regression risk:
-// `./gg -nA3 -i PM_RESUME .`. A valid parse must still exit 2 (the M0
-// sentinel for "not yet wired to a real search"); exiting 0 here would
-// be read by rg's own convention as "ran successfully, no matches" and
-// would corrupt bench.sh's correctness gate and any e2e diff.
-func TestRunValidParseNotYetImplementedRealisticFlags(t *testing.T) {
-	var stderr bytes.Buffer
-	code := run([]string{"-nA3", "-i", "PM_RESUME", "."}, &stderr)
+// TestRunExitCodePrecedence_ErrorOverridesMatch is a regression test for
+// an M2 manual-diff finding: `rg pat dirWithMatchAndPermissionError`
+// exits 2 (error wins), not 0, even though a real match was found
+// elsewhere in the same walk -- verified against the real rg binary.
+// Non-quiet modes report exit 2 whenever any per-file/path error
+// occurred, regardless of whether a match was also found, since the
+// results are known-incomplete.
+func TestRunExitCodePrecedence_ErrorOverridesMatch(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("running as root: permission bits don't block access")
+	}
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "found.txt"), []byte("hello world\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	noaccess := filepath.Join(dir, "noaccess")
+	if err := os.MkdirAll(noaccess, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(noaccess, "secret.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(noaccess, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chmod(noaccess, 0o755)
+
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"-n", "hello", dir}, &stdout, &stderr)
 	if code != 2 {
-		t.Errorf("exit code = %d, want 2 (a valid-but-unimplemented parse must never exit 0)", code)
+		t.Errorf("exit code = %d, want 2 (a per-path error overrides a real match); stdout=%q stderr=%q", code, stdout.String(), stderr.String())
 	}
-	if !strings.Contains(stderr.String(), "not yet implemented") {
-		t.Errorf("stderr = %q, want the M0 stub message", stderr.String())
+	if !strings.Contains(stdout.String(), "hello world") {
+		t.Errorf("stdout = %q, want it to still contain the match (error doesn't suppress output)", stdout.String())
 	}
-	if strings.Contains(stderr.String(), usageLine) {
-		t.Errorf("stderr = %q, should not print the usage line for a successfully parsed invocation", stderr.String())
+}
+
+// TestRunExitCodePrecedence_QuietMatchOverridesError is a regression
+// test for an M2 manual-diff finding: `rg -q pat
+// dirWithMatchAndPermissionError` exits 0, not 2 -- -q's contract is
+// "yes/no as fast as possible", so once a match is confirmed anywhere,
+// the exit code locks to 0 regardless of any error encountered
+// elsewhere in the same run (verified against the real rg binary; this
+// is the one mode where error does NOT override a found match).
+func TestRunExitCodePrecedence_QuietMatchOverridesError(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("running as root: permission bits don't block access")
+	}
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "found.txt"), []byte("hello world\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	noaccess := filepath.Join(dir, "noaccess")
+	if err := os.MkdirAll(noaccess, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(noaccess, "secret.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(noaccess, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chmod(noaccess, 0o755)
+
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"-q", "hello", dir}, &stdout, &stderr)
+	if code != 0 {
+		t.Errorf("exit code = %d, want 0 (-q locks in a found match regardless of errors elsewhere); stderr=%q", code, stderr.String())
+	}
+}
+
+// TestRunExitCodePrecedence_QuietErrorNoMatch verifies -q still reports
+// 2 (not 1) when an error occurred and no match was ever found --
+// verified against the real rg binary.
+func TestRunExitCodePrecedence_QuietErrorNoMatch(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("running as root: permission bits don't block access")
+	}
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "other.txt"), []byte("nomatchhere\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	noaccess := filepath.Join(dir, "noaccess")
+	if err := os.MkdirAll(noaccess, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(noaccess, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chmod(noaccess, 0o755)
+
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"-q", "zzz_wontmatch", dir}, &stdout, &stderr)
+	if code != 2 {
+		t.Errorf("exit code = %d, want 2; stderr=%q", code, stderr.String())
+	}
+}
+
+func TestRunHelp(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"--help"}, &stdout, &stderr)
+	if code != 0 {
+		t.Errorf("exit code = %d, want 0", code)
+	}
+	if !strings.Contains(stdout.String(), usageLine) {
+		t.Errorf("stdout = %q, want it to contain the usage line", stdout.String())
+	}
+	if stderr.Len() != 0 {
+		t.Errorf("stderr = %q, want empty", stderr.String())
+	}
+}
+
+func TestRunVersion(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"-V"}, &stdout, &stderr)
+	if code != 0 {
+		t.Errorf("exit code = %d, want 0", code)
+	}
+	if !strings.Contains(stdout.String(), "gg") {
+		t.Errorf("stdout = %q, want it to mention gg's name", stdout.String())
 	}
 }
 
@@ -650,55 +838,59 @@ func TestRunValidParseNotYetImplementedRealisticFlags(t *testing.T) {
 func TestBinaryExitCodeOnBadFlag(t *testing.T) {
 	bin := buildGGBinary(t)
 
-	out, code := runGGBinary(t, bin, "--bogus-flag", "pat")
+	_, stderr, code := runGGBinary(t, bin, "--bogus-flag", "pat")
 	if code != 2 {
 		t.Errorf("exit code = %d, want 2", code)
 	}
-	if !strings.Contains(out, "unrecognized flag") {
-		t.Errorf("stderr = %q, want it to mention the parse error", out)
+	if !strings.Contains(stderr, "unrecognized flag") {
+		t.Errorf("stderr = %q, want it to mention the parse error", stderr)
 	}
-	if !strings.Contains(out, usageLine) {
-		t.Errorf("stderr = %q, want it to include the usage line %q", out, usageLine)
-	}
-}
-
-func TestBinaryExitCodeOnValidParseNotYetImplemented(t *testing.T) {
-	// A syntactically valid invocation still exits 2 today (real search
-	// execution is M2's job), but for a different reason than a bad
-	// flag -- and critically, it must NOT print the parse-error/usage
-	// pair, since parsing actually succeeded.
-	bin := buildGGBinary(t)
-
-	out, code := runGGBinary(t, bin, "pat", ".")
-	if code != 2 {
-		t.Errorf("exit code = %d, want 2", code)
-	}
-	if strings.Contains(out, usageLine) {
-		t.Errorf("stderr = %q, should not print the usage line for a successfully parsed invocation", out)
+	if !strings.Contains(stderr, usageLine) {
+		t.Errorf("stderr = %q, want it to include the usage line %q", stderr, usageLine)
 	}
 }
 
-// TestBinaryExitCodeOnValidParseNotYetImplementedRealisticFlags is the
-// subprocess-level (real binary, real os.Exit) version of
-// TestRunValidParseNotYetImplementedRealisticFlags: the exact command
-// flagged during review, `./gg -nA3 -i PM_RESUME .`, must exit 2, never
-// 0. A separate compiled process is the only way to prove the actual
-// os.Exit call -- not just run()'s in-process return value -- behaves
-// correctly, since a stray or stale gg binary lying around from an
-// earlier build is indistinguishable from a real regression unless this
-// test builds fresh from source every time it runs.
-func TestBinaryExitCodeOnValidParseNotYetImplementedRealisticFlags(t *testing.T) {
+// TestBinaryExitCodeOnValidParse is the subprocess-level (real binary,
+// real os.Exit) version of TestRunSearchMatch: a syntactically valid
+// invocation must reach a real search and exit 0/1, never the bad-flag
+// exit 2 + usage line pair -- replacing the M0/M1-era placeholder that
+// asserted exit 2 here (see TestRunSearchMatch's doc for why that became
+// stale once M2 wired execute() in).
+func TestBinaryExitCodeOnValidParse(t *testing.T) {
 	bin := buildGGBinary(t)
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "f.txt"), []byte("hello world\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 
-	out, code := runGGBinary(t, bin, "-nA3", "-i", "PM_RESUME", ".")
-	if code != 2 {
-		t.Errorf("exit code = %d, want 2 (a valid-but-unimplemented parse must never exit 0)", code)
+	stdout, stderr, code := runGGBinary(t, bin, "-n", "hello", dir)
+	if code != 0 {
+		t.Errorf("exit code = %d, want 0; stderr=%q", code, stderr)
 	}
-	if !strings.Contains(out, "not yet implemented") {
-		t.Errorf("stderr = %q, want the M0 stub message", out)
+	if !strings.Contains(stdout, "hello world") {
+		t.Errorf("stdout = %q, want it to contain the matched line", stdout)
 	}
-	if strings.Contains(out, usageLine) {
-		t.Errorf("stderr = %q, should not print the usage line for a successfully parsed invocation", out)
+}
+
+// TestBinaryExitCodeOnRealisticFlagsDoesNotErrorOnParse is the
+// subprocess-level version of TestRunRealisticFlagsDoesNotErrorOnParse:
+// the exact command flagged during review, `./gg -nA3 -i PM_RESUME .`,
+// must parse successfully and exit 0/1, never the bad-flag exit 2 +
+// usage line pair. A separate compiled process is the only way to prove
+// the actual os.Exit call -- not just run()'s in-process return value --
+// behaves correctly, since a stray or stale gg binary lying around from
+// an earlier build is indistinguishable from a real regression unless
+// this test builds fresh from source every time it runs.
+func TestBinaryExitCodeOnRealisticFlagsDoesNotErrorOnParse(t *testing.T) {
+	bin := buildGGBinary(t)
+	dir := t.TempDir()
+
+	_, stderr, code := runGGBinary(t, bin, "-nA3", "-i", "PM_RESUME", dir)
+	if code != 0 && code != 1 {
+		t.Errorf("exit code = %d, want 0 or 1; stderr=%q", code, stderr)
+	}
+	if strings.Contains(stderr, usageLine) {
+		t.Errorf("stderr = %q, should not print the usage line for a successfully parsed invocation", stderr)
 	}
 }
 
@@ -712,17 +904,18 @@ func buildGGBinary(t *testing.T) string {
 	return bin
 }
 
-func runGGBinary(t *testing.T, bin string, args ...string) (stderr string, code int) {
+func runGGBinary(t *testing.T, bin string, args ...string) (stdout, stderr string, code int) {
 	t.Helper()
 	cmd := exec.Command(bin, args...)
-	var errBuf bytes.Buffer
+	var outBuf, errBuf bytes.Buffer
+	cmd.Stdout = &outBuf
 	cmd.Stderr = &errBuf
 	err := cmd.Run()
 	if exitErr, ok := err.(*exec.ExitError); ok {
-		return errBuf.String(), exitErr.ExitCode()
+		return outBuf.String(), errBuf.String(), exitErr.ExitCode()
 	}
 	if err != nil {
 		t.Fatalf("running gg: %v", err)
 	}
-	return errBuf.String(), 0
+	return outBuf.String(), errBuf.String(), 0
 }
