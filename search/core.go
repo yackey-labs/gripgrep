@@ -30,6 +30,8 @@ func (s *Searcher) resetRun() {
 	s.afterContextLeft = 0
 	s.hasMatched = false
 	s.matchCount = 0
+	s.hasBinaryOffset = false
+	s.binaryOffset = 0
 }
 
 func (s *Searcher) maxContext() int {

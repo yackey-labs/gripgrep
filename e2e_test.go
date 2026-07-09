@@ -260,6 +260,126 @@ func TestGoldenVsRipgrep_BinaryMatchBeforeNUL(t *testing.T) {
 	}
 }
 
+// TestGoldenVsRipgrep_ExplicitFileBinaryMidLineNUL is task #21's
+// regression test: an explicitly-named file (not a directory) whose
+// NUL byte lands in the *middle* of what SearchBytes/mmap treats as one
+// long "line" (no newline immediately before it) -- the realistic shape
+// for actual binary content, which has no reason to respect text line
+// boundaries. Established empirically against the installed rg binary
+// via an offset sweep (60000/65000/65536/65600/70000, both --mmap and
+// --no-mmap): matches whose own line reaches or crosses the NUL's
+// offset must be suppressed exactly like ones entirely after it, not
+// just ones that start after it -- gg's matchTracker originally only
+// checked line-start, which let a "filler...<NUL>needle after" line
+// (one real line straddling the NUL, since the streaming path's NUL
+// rewrite doesn't apply to SearchBytes's read-only slice) through
+// uncaught.
+func TestGoldenVsRipgrep_ExplicitFileBinaryMidLineNUL(t *testing.T) {
+	var content []byte
+	content = append(content, "midlinenul_needle at the very first line\n"...)
+	filler := []byte("filler filler filler filler filler filler filler filler\n")
+	for len(content) < 70000 {
+		content = append(content, filler...)
+	}
+	// Deliberately mid-line: no trailing '\n' was just written, so the
+	// NUL (and everything up to the next real '\n') shares one line
+	// with whatever filler content precedes it.
+	content = content[:70000]
+	content = append(content, 0)
+	content = append(content, "midlinenul_needle right after the nul, same broken line\n"...)
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "midlinenul.bin")
+	if err := os.WriteFile(path, content, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, thisFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("could not determine test file location")
+	}
+	ggBin := buildGG(t, filepath.Dir(thisFile))
+
+	for _, mode := range []string{"--mmap", "--no-mmap"} {
+		t.Run(mode, func(t *testing.T) {
+			args := []string{"-j1", "-n", mode, "midlinenul_needle", path}
+
+			rgOut, rgErr, rgCode := run(t, "rg", args)
+			ggOut, ggErr, ggCode := run(t, ggBin, args)
+
+			if rgCode != ggCode {
+				t.Errorf("exit code mismatch: rg=%d gg=%d\nrg stderr: %s\ngg stderr: %s", rgCode, ggCode, rgErr, ggErr)
+			}
+			if !bytes.Equal(rgOut, ggOut) {
+				t.Errorf("raw stdout mismatch (%s):\n--- rg stdout ---\n%s\n--- gg stdout ---\n%s", mode, rgOut, ggOut)
+			}
+		})
+	}
+
+	// Same fixture, -c: both tools must report the true total (2
+	// matches), not a truncated count -- BinaryConvert's suppression is
+	// a standard-mode display rule only.
+	t.Run("-c", func(t *testing.T) {
+		args := []string{"-j1", "-c", "midlinenul_needle", path}
+		rgOut, rgErr, rgCode := run(t, "rg", args)
+		ggOut, ggErr, ggCode := run(t, ggBin, args)
+		if rgCode != ggCode {
+			t.Errorf("exit code mismatch: rg=%d gg=%d\nrg stderr: %s\ngg stderr: %s", rgCode, ggCode, rgErr, ggErr)
+		}
+		if !bytes.Equal(rgOut, ggOut) {
+			t.Errorf("raw stdout mismatch:\n--- rg stdout ---\n%s\n--- gg stdout ---\n%s", rgOut, ggOut)
+		}
+	})
+}
+
+// TestGoldenVsRipgrep_ExplicitFileBinaryFarNULUntouched covers the other
+// half of task #21's boundary, found via advisor review after the
+// mid-line-NUL fix above: a NUL past DefaultBufferSize that no
+// matched/context line's own bytes ever reach must NOT produce a
+// "binary file matches" message under --mmap, even though the file does
+// have an earlier match. Verified against the installed rg binary: rg's
+// own --mmap leaves this message off entirely here (its SliceByLine
+// never scans bytes it doesn't otherwise need to visit), while
+// --no-mmap's streaming path does add it (it scans every byte it reads
+// regardless of matches) -- so this test intentionally only asserts
+// parity for --mmap, the mode gg's SearchBytes/mmap path is meant to
+// match. --no-mmap parity for the analogous streaming case is already
+// covered by TestGoldenVsRipgrep_ExplicitFileBinaryMidLineNUL and
+// pre-existing walk-file binary tests.
+func TestGoldenVsRipgrep_ExplicitFileBinaryFarNULUntouched(t *testing.T) {
+	var content []byte
+	content = append(content, "farnul_needle at the very first line\n"...)
+	filler := []byte("filler filler filler filler filler filler filler filler\n")
+	for len(content) < 500000 {
+		content = append(content, filler...)
+	}
+	content = append(content, 0)
+	content = append(content, "more filler after the nul, no match anywhere near it\n"...)
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "farnul.bin")
+	if err := os.WriteFile(path, content, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, thisFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("could not determine test file location")
+	}
+	ggBin := buildGG(t, filepath.Dir(thisFile))
+
+	args := []string{"-j1", "-n", "--mmap", "farnul_needle", path}
+	rgOut, rgErr, rgCode := run(t, "rg", args)
+	ggOut, ggErr, ggCode := run(t, ggBin, args)
+
+	if rgCode != ggCode {
+		t.Errorf("exit code mismatch: rg=%d gg=%d\nrg stderr: %s\ngg stderr: %s", rgCode, ggCode, rgErr, ggErr)
+	}
+	if !bytes.Equal(rgOut, ggOut) {
+		t.Errorf("raw stdout mismatch:\n--- rg stdout ---\n%s\n--- gg stdout ---\n%s", rgOut, ggOut)
+	}
+}
+
 // sortedLines splits out on '\n', drops the single trailing empty
 // element a terminal newline produces, and sorts the result so that
 // nondeterministic parallel-search completion order doesn't cause a

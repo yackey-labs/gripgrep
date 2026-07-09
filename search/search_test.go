@@ -609,6 +609,77 @@ func TestSearchBytesBinaryQuitSkipsWholeFile(t *testing.T) {
 	}
 }
 
+// TestSearchBytesDoesNotScanPastDefaultBufferSizeForNUL covers the
+// deliberate boundary of SearchBytes's NUL detection (see its doc): a NUL
+// placed past the first DefaultBufferSize bytes, in a stretch no matched
+// line's own bytes ever cover, must NOT be detected at this layer --
+// Stats.Binary stays false. This mirrors real rg's own SliceByLine
+// (verified against the installed rg binary), which leaves exactly this
+// gap for its mmap path; cmd/gg's matchTracker closes it one layer up by
+// inspecting delivered match/context lines directly (see wire.go's
+// noteLineNUL), not by making this method scan the whole slice.
+func TestSearchBytesDoesNotScanPastDefaultBufferSizeForNUL(t *testing.T) {
+	m := literalMatcher("needle", true)
+	s := newTestSearcher(m, DefaultBufferSize, Searcher{BinaryMode: BinaryConvert})
+	sink := newRecordingSink()
+
+	var data []byte
+	data = append(data, "needle one\n"...)
+	filler := []byte("filler filler filler filler filler filler filler filler\n")
+	for len(data) < DefaultBufferSize+4096 {
+		data = append(data, filler...)
+	}
+	data = append(data, 0)
+	data = append(data, "filler filler filler filler filler filler filler\n"...)
+
+	if err := s.SearchBytes("f", data, sink); err != nil {
+		t.Fatal(err)
+	}
+	if sink.finishStats.Binary {
+		t.Fatal("expected Stats.Binary = false: the NUL falls past DefaultBufferSize and no matched line covers it")
+	}
+	// BinaryConvert never truncates the search itself -- the sole match
+	// (before the NUL) is still found and counted.
+	if sink.finishStats.MatchCount != 1 {
+		t.Errorf("MatchCount = %d, want 1", sink.finishStats.MatchCount)
+	}
+}
+
+// TestSearcher_HasBinaryOffsetLiveDuringScan covers the live (mid-scan)
+// query surface HasBinaryOffset/BinaryOffset exist for: cmd/gg's
+// matchTracker needs to know binary state as of the most recently
+// delivered Matched/Context call, not only once Finish runs.
+func TestSearcher_HasBinaryOffsetLiveDuringScan(t *testing.T) {
+	m := literalMatcher("needle", true)
+	s := newTestSearcher(m, DefaultBufferSize, Searcher{BinaryMode: BinaryConvert})
+
+	if s.HasBinaryOffset() {
+		t.Fatal("HasBinaryOffset should be false before any search runs")
+	}
+
+	data := []byte("needle one\n\x00needle two\n")
+	sink := newRecordingSink()
+	if err := s.SearchBytes("f", data, sink); err != nil {
+		t.Fatal(err)
+	}
+	if !s.HasBinaryOffset() {
+		t.Fatal("HasBinaryOffset should be true immediately after a SearchBytes call that found a NUL")
+	}
+	if want := int64(11); s.BinaryOffset() != want {
+		t.Errorf("BinaryOffset() = %d, want %d", s.BinaryOffset(), want)
+	}
+
+	// A subsequent, NUL-free file must reset the live state, not leak
+	// the previous file's binary detection.
+	sink2 := newRecordingSink()
+	if err := s.SearchBytes("g", []byte("needle three\n"), sink2); err != nil {
+		t.Fatal(err)
+	}
+	if s.HasBinaryOffset() {
+		t.Error("HasBinaryOffset should reset to false for a clean file")
+	}
+}
+
 func equalStrings(a, b []string) bool {
 	if len(a) != len(b) {
 		return false

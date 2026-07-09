@@ -3,10 +3,12 @@ package main
 import (
 	"bytes"
 	"io"
+	"strconv"
 	"sync/atomic"
 	"testing"
 
 	"github.com/yackey-labs/gripgrep/glob"
+	"github.com/yackey-labs/gripgrep/match"
 	"github.com/yackey-labs/gripgrep/printer"
 	"github.com/yackey-labs/gripgrep/search"
 )
@@ -243,51 +245,189 @@ func TestMatchTracker_BinaryQuitDiscardsNonStandardEvenWithMatch(t *testing.T) {
 	}
 }
 
+// binaryConvertFixture returns data containing "needle" once before a
+// NUL placed at or just past offset off (rounded up to the next line
+// boundary, and returned as nulOffset since it generally isn't exactly
+// off), and once more just after it -- the shape needed to distinguish
+// binaryConvertSuppressed's two rules (below vs at/above
+// DefaultBufferSize). The NUL always starts its own line deliberately:
+// SearchBytes (unlike Search) never rewrites a NUL into a line
+// terminator, since a caller-owned mmap'd slice can't be mutated, so a
+// NUL placed mid-line would make that one line span both sides of it --
+// a real, accepted asymmetry documented on SearchBytes itself, but not
+// what this test is targeting (it's about the offset threshold, not
+// that separate edge case).
+func binaryConvertFixture(off int) (data []byte, nulOffset int) {
+	var buf []byte
+	buf = append(buf, "needle before\n"...)
+	filler := []byte("filler filler filler filler filler filler filler filler\n")
+	for len(buf) < off {
+		buf = append(buf, filler...)
+	}
+	nulOffset = len(buf)
+	buf = append(buf, 0)
+	buf = append(buf, "needle after\n"...)
+	return buf, nulOffset
+}
+
+func newTestMatcher(t *testing.T) match.Matcher {
+	t.Helper()
+	m, err := match.New(match.Config{Patterns: []string{"needle"}, Fixed: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return m
+}
+
 // TestMatchTracker_BinaryConvertWritesGenericMessage mirrors
-// `rg -n pat explicit-binary-file`: real rg replaces the file's normal
-// per-line output with one generic "binary file matches" line. -c/-l
+// `rg -n pat explicit-binary-file` for a NUL well within the first
+// DefaultBufferSize bytes: real rg replaces the file's normal per-line
+// output with one generic "binary file matches" line, suppressing even
+// a match textually before the NUL -- verified empirically against the
+// installed rg binary (see binaryConvertSuppressed's doc). This drives
+// the real matchTracker.Matched/Finish path via an actual
+// search.Searcher, not a hand-populated sink, so the suppression logic
+// under test is the one that actually runs in production. -c/-l
 // (standard=false) are unaffected -- see
 // TestMatchTracker_NonStandardBinaryConvertPassesThrough.
 func TestMatchTracker_BinaryConvertWritesGenericMessage(t *testing.T) {
 	var out bytes.Buffer
 	dest := printer.NewDest(&out)
 	std := printer.NewStandard(dest)
+	std.ShowPath = true
 
-	std.Begin("bin.dat")
-	std.Matched(&search.Match{Line: []byte("needle before NUL\n"), LineNumber: 1, HasLineNumber: true})
+	searcher := search.New(search.Searcher{
+		Matcher:     newTestMatcher(t),
+		LineNumbers: true,
+		BinaryMode:  search.BinaryConvert,
+	})
 
 	var matched atomic.Bool
-	tr := &matchTracker{Sink: std, matched: &matched, standard: true, binMode: search.BinaryConvert, showPath: true, dest: dest}
-	if err := tr.Finish("bin.dat", &search.Stats{Matched: true, Binary: true, BinaryOffset: 23}); err != nil {
+	tr := &matchTracker{Sink: std, matched: &matched, standard: true, binMode: search.BinaryConvert, showPath: true, dest: dest, searcher: searcher}
+
+	data, nulOffset := binaryConvertFixture(30) // well under DefaultBufferSize
+	if err := searcher.SearchBytes("bin.dat", data, tr); err != nil {
 		t.Fatal(err)
 	}
 
-	want := `bin.dat: binary file matches (found "\0" byte around offset 23)` + "\n"
+	want := `bin.dat: binary file matches (found "\0" byte around offset ` + strconv.Itoa(nulOffset) + ")\n"
 	if got := out.String(); got != want {
 		t.Errorf("got %q, want %q", got, want)
 	}
 	if !matched.Load() {
-		t.Error("expected matched to be true (a real match occurred)")
+		t.Error("expected matched to be true (a real match occurred, even though it's not displayed)")
+	}
+}
+
+// TestMatchTracker_BinaryConvertShowsPreOffsetMatchPastFirstChunk
+// mirrors the other half of rg's real rule (see
+// binaryConvertSuppressed's doc, and the offset sweep that established
+// it): once the NUL falls at or past DefaultBufferSize, matches before
+// it display normally, and only the summary message replaces anything
+// from the NUL onward.
+func TestMatchTracker_BinaryConvertShowsPreOffsetMatchPastFirstChunk(t *testing.T) {
+	var out bytes.Buffer
+	dest := printer.NewDest(&out)
+	std := printer.NewStandard(dest)
+	std.ShowPath = true
+
+	searcher := search.New(search.Searcher{
+		Matcher:     newTestMatcher(t),
+		LineNumbers: true,
+		BinaryMode:  search.BinaryConvert,
+	})
+
+	var matched atomic.Bool
+	tr := &matchTracker{Sink: std, matched: &matched, standard: true, binMode: search.BinaryConvert, showPath: true, dest: dest, searcher: searcher}
+
+	data, nulOffset := binaryConvertFixture(search.DefaultBufferSize + 4096)
+	if err := searcher.SearchBytes("bin.dat", data, tr); err != nil {
+		t.Fatal(err)
+	}
+
+	want := "bin.dat:1:needle before\n" +
+		`bin.dat: binary file matches (found "\0" byte around offset ` + strconv.Itoa(nulOffset) + ")\n"
+	if got := out.String(); got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+	if !matched.Load() {
+		t.Error("expected matched to be true")
+	}
+}
+
+// TestMatchTracker_BinaryConvertSilentWhenNULUntouchedByAnyLine covers
+// the boundary real rg's mmap path actually has (verified against the
+// installed rg binary: a match at the top of a large file, then filler
+// containing a NUL past DefaultBufferSize with no further match anywhere
+// near it, produces --mmap output with the match line and NO "binary
+// file matches" message at all -- --no-mmap does add the message, since
+// its streaming path scans every byte read regardless of matches, but
+// gg's mmap-backed SearchBytes intentionally mirrors --mmap here, not
+// --no-mmap). This is the case an earlier, since-reverted version of
+// SearchBytes over-detected by scanning the whole slice for a NUL; see
+// SearchBytes's doc and noteLineNUL's doc for why detection is bounded
+// to the first DefaultBufferSize bytes plus whatever a delivered line's
+// own bytes cover, not the whole file.
+func TestMatchTracker_BinaryConvertSilentWhenNULUntouchedByAnyLine(t *testing.T) {
+	var out bytes.Buffer
+	dest := printer.NewDest(&out)
+	std := printer.NewStandard(dest)
+	std.ShowPath = true
+
+	searcher := search.New(search.Searcher{
+		Matcher:     newTestMatcher(t),
+		LineNumbers: true,
+		BinaryMode:  search.BinaryConvert,
+	})
+
+	var matched atomic.Bool
+	tr := &matchTracker{Sink: std, matched: &matched, standard: true, binMode: search.BinaryConvert, showPath: true, dest: dest, searcher: searcher}
+
+	var data []byte
+	data = append(data, "needle before\n"...)
+	filler := []byte("filler filler filler filler filler filler filler filler\n")
+	for len(data) < search.DefaultBufferSize+4096 {
+		data = append(data, filler...)
+	}
+	data = append(data, 0)
+	data = append(data, "filler filler filler filler filler filler filler\n"...)
+
+	if err := searcher.SearchBytes("bin.dat", data, tr); err != nil {
+		t.Fatal(err)
+	}
+
+	want := "bin.dat:1:needle before\n"
+	if got := out.String(); got != want {
+		t.Errorf("got %q, want %q (no binary message: the NUL falls past DefaultBufferSize and no delivered line covers it)", got, want)
+	}
+	if !matched.Load() {
+		t.Error("expected matched to be true")
 	}
 }
 
 // TestMatchTracker_NonStandardBinaryConvertPassesThrough verifies -c/-l
 // sinks (standard=false) are never overridden by the binary message
-// path: rg shows their real count/path exactly as it would for a text
-// file.
+// path, and count every match regardless of where it falls relative to
+// the NUL: rg's own `-c` on such a file reports the true total (both
+// matches here), not a truncated one -- matchTracker.Matched must never
+// suppress delivery to a non-standard sink.
 func TestMatchTracker_NonStandardBinaryConvertPassesThrough(t *testing.T) {
 	var out bytes.Buffer
 	dest := printer.NewDest(&out)
 	c := printer.NewCount(dest)
 	c.ShowPath = true
 
-	c.Begin("bin.dat")
-	c.Matched(&search.Match{Line: []byte("needle\n")})
-	c.Matched(&search.Match{Line: []byte("needle2\n")})
+	searcher := search.New(search.Searcher{
+		Matcher:     newTestMatcher(t),
+		LineNumbers: true,
+		BinaryMode:  search.BinaryConvert,
+	})
 
 	var matched atomic.Bool
-	tr := &matchTracker{Sink: c, matched: &matched, standard: false, binMode: search.BinaryConvert, showPath: true, dest: dest}
-	if err := tr.Finish("bin.dat", &search.Stats{Matched: true, Binary: true, BinaryOffset: 23}); err != nil {
+	tr := &matchTracker{Sink: c, matched: &matched, standard: false, binMode: search.BinaryConvert, showPath: true, dest: dest, searcher: searcher}
+
+	data, _ := binaryConvertFixture(30) // both matches must still count
+	if err := searcher.SearchBytes("bin.dat", data, tr); err != nil {
 		t.Fatal(err)
 	}
 

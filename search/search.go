@@ -137,7 +137,29 @@ type Searcher struct {
 	afterContextLeft int
 	hasMatched       bool
 	matchCount       int64
+	// hasBinaryOffset/binaryOffset mirror the eventual Stats.Binary/
+	// BinaryOffset values, but are kept live (updated as detection
+	// happens, not just at Finish) so HasBinaryOffset/BinaryOffset can be
+	// queried mid-scan -- see those methods' doc for why a caller needs
+	// that.
+	hasBinaryOffset bool
+	binaryOffset    int64
 }
+
+// HasBinaryOffset reports whether a binary byte (NUL) has been detected
+// so far in the file currently being searched. Unlike Stats.Binary
+// (which Sink.Finish only receives once the whole file has been
+// processed), this is live: it may already be true partway through a
+// Search/SearchBytes call, queryable from within a Sink's Matched/
+// Context callback. cmd/gg's matchTracker uses this to implement rg's
+// explicit-file (BinaryConvert) printer-suppression rule, which depends
+// on knowing binary state as each match streams in, not after the fact.
+func (s *Searcher) HasBinaryOffset() bool { return s.hasBinaryOffset }
+
+// BinaryOffset returns the absolute byte offset of the first detected
+// binary byte for the file currently being searched. Valid only when
+// HasBinaryOffset returns true.
+func (s *Searcher) BinaryOffset() int64 { return s.binaryOffset }
 
 // New constructs a Searcher from cfg, allocating its pooled rolling read
 // buffer (DefaultBufferSize) up front.
@@ -182,6 +204,12 @@ func (s *Searcher) Search(path string, r io.Reader, sink Sink) error {
 		if ferr != nil {
 			return ferr
 		}
+		// Sync live binary-detection state from the line buffer before
+		// matchByLine runs on this window, so HasBinaryOffset/
+		// BinaryOffset are already current for every Matched/Context
+		// call this iteration produces (see those methods' doc).
+		s.hasBinaryOffset = s.lb.hasBinaryOffset
+		s.binaryOffset = s.lb.binaryOffset
 		if !more {
 			break
 		}
@@ -207,8 +235,8 @@ func (s *Searcher) Search(path string, r io.Reader, sink Sink) error {
 		Matched:       s.hasMatched,
 		MatchCount:    s.matchCount,
 		BytesSearched: s.lb.absoluteOffset,
-		Binary:        s.lb.hasBinaryOffset,
-		BinaryOffset:  s.lb.binaryOffset,
+		Binary:        s.hasBinaryOffset,
+		BinaryOffset:  s.binaryOffset,
 	}
 	return sink.Finish(path, &s.statsScratch)
 }
@@ -227,10 +255,33 @@ func (s *Searcher) Search(path string, r io.Reader, sink Sink) error {
 // bytes are left as ordinary bytes in the searched content rather than
 // being turned into line breaks — this matches rg's own read-only mmap
 // path (grep-searcher's SliceByLine), which detects but never rewrites.
-// Under BinaryQuit, a NUL in the first DefaultBufferSize bytes skips the
-// file entirely (also matching SliceByLine, which is stricter here than
-// the incremental Search path: a slice is the whole file up front, so
-// there's no partial "searched up to the NUL" result to offer).
+// Under BinaryQuit, any NUL anywhere in data discards the whole slice
+// (searchData is never truncated to just before the NUL): SearchBytes
+// treats the entire slice as a single "read", matching the same
+// whole-chunk-discard rule Search's incremental path applies to
+// whichever single chunk a NUL falls in (see linebuffer.go's fill).
+//
+// Detection only scans the first DefaultBufferSize bytes up front — this
+// is deliberate, not a leftover limitation: empirically, real rg's own
+// SliceByLine does the same bounded check and does NOT scan the rest of
+// the file for a NUL that no matched/context line ever touches (verified
+// against the installed rg binary: a NUL placed well past 64KB, with a
+// match before it and none after, produces no "binary file matches"
+// message at all under --mmap, unlike --no-mmap's streaming path, which
+// does report it because it scans every byte it reads regardless of
+// matches). An earlier version of this method scanned the whole slice to
+// "fix" the past-64KB gap below, but that both regressed throughput (a
+// full memchr pass over the entire file on every search) and made gg
+// diverge from rg by over-detecting NULs rg's own mmap path never notices.
+//
+// The real gap this bounded prefix leaves — a NUL that DOES fall within a
+// line some Sink actually visits (a matched or context line), just past
+// the first DefaultBufferSize bytes — is closed one layer up: cmd/gg's
+// matchTracker inspects each delivered Match/Ctx line's own bytes for a
+// NUL (see its noteLineNUL), which gives the exact same coverage rg's
+// mmap path has at negligible cost (one short memchr per match, not one
+// over the whole file) without this method needing to know anything about
+// line delivery.
 func (s *Searcher) SearchBytes(path string, data []byte, sink Sink) error {
 	ok, err := sink.Begin(path)
 	if err != nil {
@@ -244,16 +295,14 @@ func (s *Searcher) SearchBytes(path string, data []byte, sink Sink) error {
 	s.resetRun()
 
 	searchData := data
-	hasBinary := false
-	var binaryOffset int64
 	if s.BinaryMode != BinaryNone {
-		upto := len(data)
-		if upto > DefaultBufferSize {
-			upto = DefaultBufferSize
+		prefix := data
+		if len(prefix) > DefaultBufferSize {
+			prefix = prefix[:DefaultBufferSize]
 		}
-		if i := bytes.IndexByte(data[:upto], 0); i >= 0 {
-			hasBinary = true
-			binaryOffset = int64(i)
+		if i := bytes.IndexByte(prefix, 0); i >= 0 {
+			s.hasBinaryOffset = true
+			s.binaryOffset = int64(i)
 			if s.BinaryMode == BinaryQuit {
 				searchData = nil
 			}
@@ -270,8 +319,8 @@ func (s *Searcher) SearchBytes(path string, data []byte, sink Sink) error {
 		Matched:       s.hasMatched,
 		MatchCount:    s.matchCount,
 		BytesSearched: int64(len(searchData)),
-		Binary:        hasBinary,
-		BinaryOffset:  binaryOffset,
+		Binary:        s.hasBinaryOffset,
+		BinaryOffset:  s.binaryOffset,
 	}
 	return sink.Finish(path, &s.statsScratch)
 }

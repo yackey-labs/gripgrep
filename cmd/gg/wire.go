@@ -136,6 +136,7 @@ func execute(cfg *Config, stdout, stderr io.Writer) int {
 			heading:        heading,
 			contextEnabled: contextEnabled,
 			dest:           dest,
+			searcher:       unit.searcher,
 		}
 
 		if mmapOK {
@@ -500,6 +501,123 @@ type matchTracker struct {
 	heading        bool
 	contextEnabled bool
 	dest           *printer.Dest
+	// searcher is consulted live, mid-scan, by Matched/Context to
+	// implement the BinaryConvert suppression rule below -- see those
+	// methods' doc and search.Searcher.HasBinaryOffset's doc for why
+	// Stats.Binary (only known at Finish) isn't enough on its own.
+	searcher *search.Searcher
+	// foundBinary/foundBinaryOffset record a NUL noteLineNUL discovered
+	// inside a delivered match/context line's own bytes, past the
+	// searcher's bounded upfront prefix (see SearchBytes's doc and
+	// noteLineNUL's doc for why this lives here rather than in package
+	// search).
+	foundBinary       bool
+	foundBinaryOffset int64
+}
+
+// noteLineNUL checks a just-delivered Matched/Context line's own bytes for
+// a NUL and, if the searcher's bounded upfront prefix check hasn't already
+// found one and this tracker hasn't either, records the offset locally.
+// This is the counterpart to SearchBytes's deliberately bounded detection
+// (see its doc): real rg's own mmap path (SliceByLine) never scans the
+// whole file for a NUL either -- it only notices one that falls within a
+// line it actually visits (matched or context). Checking m.Line/c.Line
+// here, rather than making package search scan the whole slice, gives gg
+// the exact same coverage rg has at effectively zero cost: one short
+// memchr per delivered line, not one over the whole file.
+//
+// Only ever called when t.standard (from Matched/Context, mirroring
+// binaryConvertSuppressed's gating) -- -c/-l don't need the offset since
+// they never suppress or write the summary message.
+func (t *matchTracker) noteLineNUL(lineOffset int64, line []byte) {
+	if t.binMode != search.BinaryConvert || t.foundBinary || t.searcher.HasBinaryOffset() {
+		return
+	}
+	if i := bytes.IndexByte(line, 0); i >= 0 {
+		t.foundBinary = true
+		t.foundBinaryOffset = lineOffset + int64(i)
+	}
+}
+
+// effectiveBinaryOffset returns the NUL offset binaryConvertSuppressed and
+// Finish should use: the searcher's own (bounded-prefix) detection if it
+// found one, else whatever noteLineNUL discovered from a delivered line,
+// else not-ok.
+func (t *matchTracker) effectiveBinaryOffset() (offset int64, ok bool) {
+	if t.searcher.HasBinaryOffset() {
+		return t.searcher.BinaryOffset(), true
+	}
+	if t.foundBinary {
+		return t.foundBinaryOffset, true
+	}
+	return 0, false
+}
+
+// binaryConvertSuppressed reports whether a match/context line spanning
+// absolute byte range [lineStart, lineEnd) should be withheld from the
+// underlying sink under BinaryConvert mode, matching rg's real
+// explicit-file behavior exactly (empirically verified against the
+// installed rg binary with fixtures placing a NUL at several offsets
+// straddling DefaultBufferSize, both --mmap and --no-mmap, identical
+// result both ways):
+//
+//   - If the detected NUL falls within the first DefaultBufferSize
+//     bytes, EVERY line is suppressed -- even ones textually before the
+//     NUL -- so only the one summary message (writeBinaryMessage,
+//     written from Finish) appears for the whole file.
+//   - Otherwise, a line is suppressed once its own byte range reaches
+//     the NUL's offset -- lineEnd > binOffset, not just lineStart -- so
+//     a line whose bytes straddle the NUL (SearchBytes/mmap never
+//     rewrites a NUL into a line terminator the way Search's streaming
+//     path does, so a line containing text on both sides of a NUL is a
+//     completely ordinary occurrence, not a rare edge case) is
+//     suppressed too, exactly like one that starts after it. Lines
+//     entirely before the NUL still display normally, and the summary
+//     message is appended after.
+//
+// This only ever affects the "standard" (default line-printing) sink;
+// -c/-l/-q must keep counting/reporting every match regardless of where
+// it falls (rg's own `-c` on such a file reports the true total, not a
+// truncated one) -- callers must only invoke this when t.standard is
+// already true.
+func (t *matchTracker) binaryConvertSuppressed(lineEnd int64) bool {
+	if t.binMode != search.BinaryConvert {
+		return false
+	}
+	binOffset, ok := t.effectiveBinaryOffset()
+	if !ok {
+		return false
+	}
+	return binOffset < int64(search.DefaultBufferSize) || lineEnd > binOffset
+}
+
+// Matched overrides the embedded Sink to apply binaryConvertSuppressed
+// before formatting a line -- see its doc. Suppressing here (rather
+// than in the shared search package) is deliberate: package search
+// calls every Sink's Matched/Context for every match regardless of mode
+// (Count's own tally, for instance, comes from counting these calls,
+// never from Stats.MatchCount -- see printer.Count's doc), so
+// suppression must live above that shared path, applied only to the
+// standard-mode display sink.
+func (t *matchTracker) Matched(m *search.Match) (bool, error) {
+	if t.standard {
+		t.noteLineNUL(m.Offset, m.Line)
+		if t.binaryConvertSuppressed(m.Offset + int64(len(m.Line))) {
+			return true, nil
+		}
+	}
+	return t.Sink.Matched(m)
+}
+
+// Context overrides the embedded Sink for the same reason as Matched.
+func (t *matchTracker) Context(c *search.Ctx) (bool, error) {
+	if t.standard {
+		t.noteLineNUL(c.Offset, c.Line)
+		if t.binaryConvertSuppressed(c.Offset + int64(len(c.Line))) {
+			return true, nil
+		}
+	}
+	return t.Sink.Context(c)
 }
 
 func (t *matchTracker) Finish(path string, stats *search.Stats) error {
@@ -521,9 +639,23 @@ func (t *matchTracker) Finish(path string, stats *search.Stats) error {
 		}
 		return writeBinaryQuitWarning(t.dest, path, stats.BinaryOffset, t.showPath, t.heading, t.contextEnabled)
 	}
-	if t.binMode == search.BinaryConvert && stats.Binary && stats.Matched && t.standard {
-		t.matched.Store(true)
-		return writeBinaryMessage(t.dest, path, stats.BinaryOffset, t.showPath, t.heading, t.contextEnabled)
+	if t.binMode == search.BinaryConvert {
+		if offset, ok := t.effectiveBinaryOffset(); ok {
+			// Matched/Context have already withheld anything
+			// binaryConvertSuppressed flagged, so whatever the underlying
+			// sink accumulated is exactly what should display normally --
+			// unlike BinaryQuit above, nothing here needs discarding.
+			if stats.Matched {
+				t.matched.Store(true)
+			}
+			if err := t.Sink.Finish(path, stats); err != nil {
+				return err
+			}
+			if !stats.Matched || !t.standard {
+				return nil
+			}
+			return writeBinaryMessage(t.dest, path, offset, t.showPath, t.heading, t.contextEnabled)
+		}
 	}
 	if stats.Matched {
 		t.matched.Store(true)
