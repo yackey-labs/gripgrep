@@ -107,10 +107,28 @@ func (lb *lineBuffer) fill(r io.Reader) (bool, error) {
 			switch lb.binaryMode {
 			case BinaryQuit:
 				if i := bytes.IndexByte(chunk, 0); i >= 0 {
-					lb.end = oldEnd + i
-					lb.last = lb.end
+					// Discard this ENTIRE freshly-read chunk, not just the
+					// bytes from the NUL onward: real rg detects binary
+					// data in the whole chunk just read and stops before
+					// searching any of it at all, even the portion
+					// preceding the NUL within that same read -- verified
+					// both against the real rg binary (a tiny file whose
+					// one-and-only read contains a match immediately
+					// followed by a NUL reports zero matches, not the
+					// pre-NUL one) and against ripgrep's own upstream
+					// searcher tests (binary2/binary3 in
+					// crates/searcher/src/searcher/glue.rs: binary3's
+					// expected byte count lands exactly at the boundary
+					// of the read *before* the one containing the NUL,
+					// discarding a same-chunk match that textually
+					// precedes it). Matches from earlier, NUL-free reads
+					// in this same file are unaffected -- they were
+					// already searched and sunk in a previous fill().
+					// BinaryOffset still reports the NUL's true position.
+					lb.binaryOffset = lb.absoluteOffset + int64(oldEnd+i)
 					lb.hasBinaryOffset = true
-					lb.binaryOffset = lb.absoluteOffset + int64(lb.end)
+					lb.end = oldEnd
+					lb.last = lb.end
 					return lb.pos < lb.end, nil
 				}
 			case BinaryConvert:

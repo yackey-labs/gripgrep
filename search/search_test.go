@@ -429,6 +429,19 @@ func TestSearchBoundaryAtExactBufferSize(t *testing.T) {
 	}
 }
 
+// TestSearchBinaryQuit pins the corrected (rg-parity) semantics: the NUL
+// and the "needle before" match both arrive in the SAME single read (the
+// whole 36-byte content fits in one bytes.Reader.Read call well within
+// DefaultBufferSize), so the entire chunk containing the NUL is discarded
+// -- including "needle before", even though it textually precedes the
+// NUL -- and zero matches are reported. This mirrors the real rg binary
+// exactly (verified: a tiny file with "needle before NUL byte\n" then a
+// NUL reports zero matches, not the pre-NUL one) and ripgrep's own
+// upstream searcher tests (binary2 in
+// ../ripgrep/crates/searcher/src/searcher/glue.rs: "a\x00" reports byte
+// count 0, not a match on the leading "a"). See
+// TestSearchBinaryQuit_MatchInEarlierChunkIsReported for the case where a
+// match in an earlier, separate (NUL-free) read IS reported.
 func TestSearchBinaryQuit(t *testing.T) {
 	m := literalMatcher("needle", true)
 	s := newTestSearcher(m, DefaultBufferSize, Searcher{BinaryMode: BinaryQuit})
@@ -437,14 +450,60 @@ func TestSearchBinaryQuit(t *testing.T) {
 	if err := s.Search("f", bytes.NewReader([]byte(content)), sink); err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"needle before\n"}
-	if got := sink.matchLines(); !equalStrings(got, want) {
-		t.Fatalf("matches = %q, want %q", got, want)
+	if got := sink.matchLines(); len(got) != 0 {
+		t.Fatalf("matches = %q, want none (whole chunk containing the NUL is discarded, including same-chunk content before it)", got)
 	}
 	if !sink.finishStats.Binary {
 		t.Fatal("expected Stats.Binary = true")
 	}
+	if sink.finishStats.Matched {
+		t.Fatal("expected Stats.Matched = false")
+	}
 	wantOffset := int64(bytes.IndexByte([]byte(content), 0))
+	if sink.finishStats.BinaryOffset != wantOffset {
+		t.Fatalf("BinaryOffset = %d, want %d", sink.finishStats.BinaryOffset, wantOffset)
+	}
+}
+
+// TestSearchBinaryQuit_MatchInEarlierChunkIsReported is the counterpart
+// to TestSearchBinaryQuit: a match found in an earlier read that
+// contained no NUL is already searched and sunk before the later read
+// containing the NUL is ever seen, so it must survive -- only the
+// same-chunk-as-the-NUL content is discarded. This is the mechanism that
+// makes real rg print partial results (then a warning) for a large
+// walk-discovered binary file whose matches are spread across many
+// reads before the NUL, e.g. ../ripgrep/tests/data/sherlock-nul.txt
+// (verified against the real rg binary: matches up through line 1565
+// are printed, then "WARNING: stopped searching..."; two more textual
+// matches between there and the NUL, landing in the same final read as
+// the NUL, are silently dropped).
+//
+// chunkReader with chunk=len(line1)=len(line2) forces each line into its
+// own single Read call, so "needle one!" and its NUL-adjacent sibling
+// never share a read with each other.
+func TestSearchBinaryQuit_MatchInEarlierChunkIsReported(t *testing.T) {
+	m := literalMatcher("needle", true)
+	s := newTestSearcher(m, DefaultBufferSize, Searcher{BinaryMode: BinaryQuit})
+	sink := newRecordingSink()
+
+	line1 := "needle one!\n"    // 12 bytes, no NUL: a clean, earlier read.
+	line2 := "needle two\x00\n" // 12 bytes, NUL at index 10: discarded whole.
+	content := line1 + line2
+
+	if err := s.Search("f", &chunkReader{data: []byte(content), chunk: len(line1)}, sink); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{line1}
+	if got := sink.matchLines(); !equalStrings(got, want) {
+		t.Fatalf("matches = %q, want %q (the earlier chunk's match must survive; the NUL-chunk's match must not)", got, want)
+	}
+	if !sink.finishStats.Binary {
+		t.Fatal("expected Stats.Binary = true")
+	}
+	if !sink.finishStats.Matched {
+		t.Fatal("expected Stats.Matched = true (from the earlier, NUL-free chunk)")
+	}
+	wantOffset := int64(len(line1) + bytes.IndexByte([]byte(line2), 0))
 	if sink.finishStats.BinaryOffset != wantOffset {
 		t.Fatalf("BinaryOffset = %d, want %d", sink.finishStats.BinaryOffset, wantOffset)
 	}
