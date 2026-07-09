@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"io"
 	"sync/atomic"
 	"testing"
 
@@ -9,6 +10,58 @@ import (
 	"github.com/yackey-labs/gripgrep/printer"
 	"github.com/yackey-labs/gripgrep/search"
 )
+
+// TestStripUTF8BOM_NonBOMPreservesReadBoundary is a regression test for
+// task #20's manual-diff finding: io.MultiReader (the original
+// implementation) never combines two underlying readers into one Read
+// call, so wrapping a peeked-and-put-back 3-byte prefix with it split a
+// single-read file into a 3-byte read followed by the rest. That
+// artificial split moved a later NUL into a different chunk than an
+// unwrapped read would ever produce, which search's BinaryQuit whole-
+// chunk-discard (linebuffer.go) is sensitive to -- a 3-byte leading
+// fragment of a walk-discovered binary file was wrongly treated as its
+// own clean, NUL-free line (caught by TestGoldenVsRipgrep/invert_match
+// showing a corrupted "binary.bin:1:nee" match). A single Read on the
+// wrapped reader must return everything in one call, exactly like the
+// unwrapped source would have.
+func TestStripUTF8BOM_NonBOMPreservesReadBoundary(t *testing.T) {
+	data := []byte("needle before NUL byte\n\x00needle after NUL byte\n")
+	// bytes.Reader.Read already exhibits the same "fill as much of p as
+	// possible in one call" behavior a real regular-file read() does
+	// (unlike io.MultiReader wrapping two readers, which never combines
+	// them into a single call) -- exactly the property this test pins.
+	r, err := stripUTF8BOM(bytes.NewReader(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	buf := make([]byte, len(data))
+	n, err := r.Read(buf)
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if n != len(data) {
+		t.Fatalf("first Read returned %d bytes, want all %d in one call (read boundary must match the unwrapped source)", n, len(data))
+	}
+	if !bytes.Equal(buf[:n], data) {
+		t.Fatalf("content mismatch: got %q, want %q", buf[:n], data)
+	}
+}
+
+func TestStripUTF8BOM_StripsRealBOM(t *testing.T) {
+	data := append([]byte{0xEF, 0xBB, 0xBF}, []byte("hello\n")...)
+	r, err := stripUTF8BOM(bytes.NewReader(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "hello\n" {
+		t.Errorf("got %q, want %q", got, "hello\n")
+	}
+}
 
 // TestBuildGlobs_PolarityFlip verifies the flipped-polarity encoding
 // buildGlobs uses to reuse glob.Set's gitignore-shaped Match result for
@@ -97,21 +150,87 @@ func TestResolveBinaryMode(t *testing.T) {
 	}
 }
 
-// TestMatchTracker_BinaryQuitDiscardsEverything mirrors real rg's
-// default recursive-walk behavior for a binary file: the whole file's
-// output is discarded and it doesn't count as a match, even though the
-// underlying Standard sink already buffered a real matched line before
-// Finish was called (see matchTracker.Finish's doc).
-func TestMatchTracker_BinaryQuitDiscardsEverything(t *testing.T) {
+// TestMatchTracker_BinaryQuitFlushesEarlierMatchesThenWarns is a
+// regression test for task #20: real rg's walk-mode BinaryQuit does NOT
+// discard the whole file -- matches search's own Searcher already found
+// in earlier, NUL-free reads (already sunk into the Standard sink's
+// buffer before Finish ever runs) are flushed normally, followed by rg's
+// own "WARNING: stopped searching binary file after match..." line
+// (verified against the real rg binary on
+// ../ripgrep/tests/data/sherlock-nul.txt).
+func TestMatchTracker_BinaryQuitFlushesEarlierMatchesThenWarns(t *testing.T) {
 	var out bytes.Buffer
 	dest := printer.NewDest(&out)
 	std := printer.NewStandard(dest)
+	std.ShowPath = true
 
 	std.Begin("bin.dat")
 	std.Matched(&search.Match{Line: []byte("needle before NUL\n"), LineNumber: 1, HasLineNumber: true})
 
 	var matched atomic.Bool
-	tr := &matchTracker{Sink: std, matched: &matched, standard: true, binMode: search.BinaryQuit, dest: dest}
+	tr := &matchTracker{Sink: std, matched: &matched, standard: true, binMode: search.BinaryQuit, showPath: true, dest: dest}
+	if err := tr.Finish("bin.dat", &search.Stats{Matched: true, Binary: true, BinaryOffset: 42}); err != nil {
+		t.Fatal(err)
+	}
+
+	want := "bin.dat:1:needle before NUL\n" +
+		`bin.dat: WARNING: stopped searching binary file after match (found "\0" byte around offset 42)` + "\n"
+	if got := out.String(); got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+	if !matched.Load() {
+		t.Error("expected matched to be true (a real match was found in an earlier, NUL-free read)")
+	}
+}
+
+// TestMatchTracker_BinaryQuitSilentWhenNoMatchAtAll mirrors real rg's
+// behavior when the NUL falls in the very first read, so no match was
+// ever found at all: totally silent, no warning either (rg's own
+// write_binary_message guards on has_match(); verified against the real
+// rg binary: a tiny file whose one-and-only read contains a match
+// immediately followed by a NUL reports zero matches and prints no
+// warning).
+func TestMatchTracker_BinaryQuitSilentWhenNoMatchAtAll(t *testing.T) {
+	var out bytes.Buffer
+	dest := printer.NewDest(&out)
+	std := printer.NewStandard(dest)
+
+	std.Begin("bin.dat")
+	// No Matched calls at all: the NUL-containing chunk was discarded
+	// before anything in it (or before it) was searched.
+
+	var matched atomic.Bool
+	tr := &matchTracker{Sink: std, matched: &matched, standard: true, binMode: search.BinaryQuit, showPath: true, dest: dest}
+	if err := tr.Finish("bin.dat", &search.Stats{Matched: false, Binary: true, BinaryOffset: 23}); err != nil {
+		t.Fatal(err)
+	}
+
+	if out.Len() != 0 {
+		t.Errorf("expected no output at all, got %q", out.String())
+	}
+	if matched.Load() {
+		t.Error("expected matched to remain false")
+	}
+}
+
+// TestMatchTracker_BinaryQuitDiscardsNonStandardEvenWithMatch mirrors
+// `rg -c`/`rg -l` on a walk-discovered binary file with a real match in
+// an earlier read: unlike Standard mode, -c/-l show nothing at all and
+// don't count as matched (verified against the real rg binary on
+// sherlock-nul.txt: `rg -c sherlock <dir>` and `rg -l sherlock <dir>`
+// both print nothing and exit 1, unlike the real count/path they'd show
+// for an explicitly-named Convert-mode binary file).
+func TestMatchTracker_BinaryQuitDiscardsNonStandardEvenWithMatch(t *testing.T) {
+	var out bytes.Buffer
+	dest := printer.NewDest(&out)
+	c := printer.NewCount(dest)
+	c.ShowPath = true
+
+	c.Begin("bin.dat")
+	c.Matched(&search.Match{Line: []byte("needle\n")})
+
+	var matched atomic.Bool
+	tr := &matchTracker{Sink: c, matched: &matched, standard: false, binMode: search.BinaryQuit, showPath: true, dest: dest}
 	if err := tr.Finish("bin.dat", &search.Stats{Matched: true, Binary: true, BinaryOffset: 42}); err != nil {
 		t.Fatal(err)
 	}
@@ -120,7 +239,7 @@ func TestMatchTracker_BinaryQuitDiscardsEverything(t *testing.T) {
 		t.Errorf("expected no output at all, got %q", out.String())
 	}
 	if matched.Load() {
-		t.Error("expected matched to remain false (BinaryQuit discards the file entirely)")
+		t.Error("expected matched to remain false (-c/-l discard the whole file under BinaryQuit)")
 	}
 }
 

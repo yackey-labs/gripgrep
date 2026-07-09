@@ -128,9 +128,14 @@ func execute(cfg *Config, stdout, stderr io.Writer) int {
 			sink = quiet
 		}
 		tracked := &matchTracker{
-			Sink:           sink,
-			matched:        &anyMatched,
-			standard:       unit.isStandard,
+			Sink:    sink,
+			matched: &anyMatched,
+			// -q always overrides Mode (Config.Quiet's doc: "independent
+			// of Mode"), so the binary-message branches below must never
+			// fire under -q even if Mode happens to be ModeStandard --
+			// quiet writes nothing, ever, and matchTracker must not
+			// write to dest on its behalf.
+			standard:       quiet == nil && unit.isStandard,
 			binMode:        unit.searcher.BinaryMode,
 			showPath:       showPath,
 			heading:        heading,
@@ -307,9 +312,48 @@ func stripUTF8BOM(r io.Reader) (io.Reader, error) {
 	if buf == utf8BOM {
 		return r, nil
 	}
-	// Not a BOM: put the 3 already-consumed bytes back in front of the
-	// rest of the stream.
-	return io.MultiReader(bytes.NewReader(buf[:]), r), nil
+	// Not a BOM: the 3 already-consumed bytes need to go back in front of
+	// the rest of the stream. io.MultiReader would do this but at a real
+	// cost: MultiReader.Read never combines two underlying readers into
+	// one call, so the very first Read a caller sees back would return
+	// only these 3 bytes, even when the destination buffer has room for
+	// far more and r itself has more ready to give. search.Searcher's
+	// binary detection (BinaryQuit) discards an entire freshly-read
+	// chunk, not just the bytes at/after a NUL within it (see
+	// linebuffer.go's fill) -- so an artificial 3-byte-then-rest split
+	// here would move the NUL into a later, separate chunk than a real
+	// unwrapped read would ever produce, corrupting which content counts
+	// as "already searched before the NUL" versus "discarded" (caught by
+	// TestGoldenVsRipgrep/invert_match: a 3-byte leading fragment of a
+	// walk-discovered binary file was wrongly treated as a clean,
+	// NUL-free line of its own). prefixReader instead folds the leftover
+	// bytes into the FIRST call to r.Read itself, so read-boundary
+	// behavior is indistinguishable from never having peeked at all.
+	return &prefixReader{prefix: buf[:], r: r}, nil
+}
+
+// prefixReader prepends prefix to r's stream without altering r's own
+// read-boundary behavior: the first Read call copies prefix into the
+// destination buffer and, if room remains, also reads from r to fill the
+// rest -- exactly what a single unwrapped Read would have returned had
+// prefix never been peeked off the front. See stripUTF8BOM's doc for why
+// io.MultiReader's read-splitting is unsafe here.
+type prefixReader struct {
+	prefix []byte
+	r      io.Reader
+}
+
+func (p *prefixReader) Read(b []byte) (int, error) {
+	if len(p.prefix) == 0 {
+		return p.r.Read(b)
+	}
+	n := copy(b, p.prefix)
+	p.prefix = p.prefix[n:]
+	if n == len(b) {
+		return n, nil
+	}
+	m, err := p.r.Read(b[n:])
+	return n + m, err
 }
 
 // workerUnit bundles one search.Searcher with the printer sink it feeds,
@@ -370,12 +414,28 @@ func newWorkerUnit(cfg *Config, matcher match.Matcher, dest *printer.Dest, color
 //  1. Recording whether any file, anywhere, ever matched -- for the
 //     process exit code.
 //  2. rg's binary-file special-casing, verified against the real rg
-//     14.1.1 binary (see the M2 handoff notes for the exact probes):
-//     - BinaryQuit + Stats.Binary: the file's entire output is discarded
-//     and does not count as a match, even if a real match occurred
-//     before the NUL byte. rg's default recursive-walk behavior for a
-//     binary file is total, silent exclusion -- not "report whatever
-//     was found before the NUL".
+//     14.1.1 binary (see the M2 handoff notes and task #20 for the exact
+//     probes, including ../ripgrep/tests/data/sherlock-nul.txt and
+//     ripgrep's own upstream searcher tests binary1-binary4):
+//     - BinaryQuit + Stats.Binary, Standard mode: any matches already
+//     found in earlier, NUL-free reads were already sunk into the
+//     underlying sink's buffer before Finish ever ran (search's own
+//     BinaryQuit discards only the single read chunk that contains
+//     the NUL, not the whole file -- see linebuffer.go's fill), so
+//     they're flushed normally, followed by rg's own
+//     "WARNING: stopped searching binary file after match..." line
+//     (verified against the real rg binary on the sherlock-nul.txt
+//     fixture: real matches print, then that exact warning).
+//     If Stats.Matched is false, nothing was found at all (the NUL
+//     fell in the very first read), so nothing is printed -- rg is
+//     silent in that case too (verified: a small file whose one-and-
+//     only read contains a match immediately followed by a NUL
+//     reports zero matches and prints no warning).
+//     - BinaryQuit + Stats.Binary, -c/-l (standard=false): discarded
+//     entirely regardless of Stats.Matched -- verified against the
+//     real rg binary: `rg -c`/`rg -l` on the same sherlock-nul.txt
+//     walk show nothing and exit 1, unlike the real count/path they'd
+//     show for an explicitly-named (Convert-mode) binary file.
 //     - BinaryConvert + Stats.Binary + Stats.Matched, Standard mode only:
 //     rg replaces the file's entire per-line output with one generic
 //     `binary file matches (found "\0" byte around offset N)` line
@@ -399,6 +459,17 @@ func newWorkerUnit(cfg *Config, matcher match.Matcher, dest *printer.Dest, color
 // output shape entirely. -uuu is untested (no golden case exercises it);
 // documented here rather than fixed, since matching it exactly would
 // need a third matchTracker branch with its own message format.
+//
+// Known approximation: the BinaryQuit warning line is written as its own
+// dest block (see writeBinaryQuitWarning), reusing the same inter-block
+// separator rule as writeBinaryMessage. In the (untested, non-default)
+// combination of Heading or context mode with a Quit-mode file that has
+// real matches, this would insert a spurious separator between the last
+// match and the warning that real rg does not -- real rg's warning is
+// part of the exact same write sequence as the file's own lines, with no
+// separator at all. Plain (non-heading, non-context) mode -- the only
+// combination verified against real rg -- is unaffected: its separator
+// is nil either way.
 type matchTracker struct {
 	search.Sink
 	matched        *atomic.Bool
@@ -412,12 +483,22 @@ type matchTracker struct {
 
 func (t *matchTracker) Finish(path string, stats *search.Stats) error {
 	if t.binMode == search.BinaryQuit && stats.Binary {
-		// Discard entirely: don't even call the underlying sink's
-		// Finish, since Standard/Count/FilesWithMatches would otherwise
-		// unconditionally flush whatever partial output they already
-		// buffered during Matched/Context. The next Begin on this
-		// (pooled) sink resets that buffer, so nothing leaks.
-		return nil
+		if !t.standard {
+			// -c/-l: discard entirely, without even calling the
+			// underlying sink's Finish (which would otherwise flush
+			// whatever real count/path it already accumulated).
+			return nil
+		}
+		if stats.Matched {
+			t.matched.Store(true)
+		}
+		if err := t.Sink.Finish(path, stats); err != nil {
+			return err
+		}
+		if !stats.Matched {
+			return nil
+		}
+		return writeBinaryQuitWarning(t.dest, path, stats.BinaryOffset, t.showPath, t.heading, t.contextEnabled)
 	}
 	if t.binMode == search.BinaryConvert && stats.Binary && stats.Matched && t.standard {
 		t.matched.Store(true)
@@ -429,13 +510,25 @@ func (t *matchTracker) Finish(path string, stats *search.Stats) error {
 	return t.Sink.Finish(path, stats)
 }
 
+// binarySeparator computes the same inter-block separator
+// Standard.interFileSeparator would use (heading -> blank line, context
+// -> "--", else none), so a binary-related message written directly to
+// dest chains correctly with neighboring file blocks.
+func binarySeparator(heading, contextEnabled bool) []byte {
+	switch {
+	case heading:
+		return []byte("\n")
+	case contextEnabled:
+		return []byte("--\n")
+	default:
+		return nil
+	}
+}
+
 // writeBinaryMessage writes rg's generic binary-match line directly to
 // dest, bypassing the Standard sink's own buffer/Finish entirely (see
 // matchTracker.Finish). The path prefix follows the same ShowPath
-// heuristic as normal output; the inter-file separator matches
-// Standard.interFileSeparator's rule (heading -> blank line, context ->
-// "--", else none) so a binary file's message chains correctly with
-// neighboring files' output.
+// heuristic as normal output.
 func writeBinaryMessage(dest *printer.Dest, path string, offset int64, showPath, heading, contextEnabled bool) error {
 	var buf []byte
 	if showPath {
@@ -445,13 +538,22 @@ func writeBinaryMessage(dest *printer.Dest, path string, offset int64, showPath,
 	buf = append(buf, `binary file matches (found "\0" byte around offset `...)
 	buf = strconv.AppendInt(buf, offset, 10)
 	buf = append(buf, ")\n"...)
+	return dest.WriteBlock(buf, binarySeparator(heading, contextEnabled))
+}
 
-	var sep []byte
-	switch {
-	case heading:
-		sep = []byte("\n")
-	case contextEnabled:
-		sep = []byte("--\n")
+// writeBinaryQuitWarning writes rg's "stopped searching" warning line
+// directly to dest, after the real matches (already flushed via the
+// underlying sink's own Finish) -- see matchTracker.Finish's BinaryQuit
+// branch and its doc for the verified wording and the known separator
+// approximation in heading/context mode.
+func writeBinaryQuitWarning(dest *printer.Dest, path string, offset int64, showPath, heading, contextEnabled bool) error {
+	var buf []byte
+	if showPath {
+		buf = append(buf, path...)
+		buf = append(buf, ':', ' ')
 	}
-	return dest.WriteBlock(buf, sep)
+	buf = append(buf, `WARNING: stopped searching binary file after match (found "\0" byte around offset `...)
+	buf = strconv.AppendInt(buf, offset, 10)
+	buf = append(buf, ")\n"...)
+	return dest.WriteBlock(buf, binarySeparator(heading, contextEnabled))
 }
