@@ -3,7 +3,7 @@ PGO_PROFILE := cmd/gg/default.pgo
 PGO_TREE := benchmark-data/linux
 PGO_TEXT := /dev/shm/gg-bench/en.sample.txt
 
-.PHONY: build build-release test vet cover bench bench-e2e pgo-collect clean
+.PHONY: build build-release test vet cover bench bench-e2e pgo-collect parity-doc clean
 
 # Portable baseline: default GOAMD64, no explicit -pgo flag. `go build`
 # still auto-detects and uses $(PGO_PROFILE) if present (that's Go's
@@ -77,6 +77,15 @@ pgo-collect: build
 	go tool pprof -proto -output=$(PGO_PROFILE) /tmp/gg-pgo-*.prof
 	rm -f /tmp/gg-pgo-*.prof
 	@echo "refreshed $(PGO_PROFILE) -- 'make build'/'make build-release' pick it up automatically"
+
+# Regenerates docs/rg-parity.md's generated regions (the flag-by-flag
+# tables and the "Score: N of M" line) from the checked-in rg flag
+# inventory (internal/parity/rg-flags.json) and cmd/gg/flags.go. No rg
+# checkout needed -- that's only required to re-extract the inventory
+# itself, via internal/parity/extract, when the rg pin moves (see
+# docs/rg-parity.md's "Regenerating this document").
+parity-doc:
+	go run ./internal/parity/gen
 
 clean:
 	rm -f gg gg-release

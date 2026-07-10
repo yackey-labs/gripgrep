@@ -1,0 +1,618 @@
+{
+  "pin": {
+    "commit": "3a570990c4cf",
+    "date": "2026-07-09",
+    "version": "15.1.0"
+  },
+  "flags": [
+    {
+      "long": "after-context",
+      "short": "A",
+      "category": "Output",
+      "docShort": "Show NUM lines after each match."
+    },
+    {
+      "long": "auto-hybrid-regex",
+      "negated": "no-auto-hybrid-regex",
+      "category": "Search",
+      "docShort": "(DEPRECATED) Use PCRE2 if appropriate."
+    },
+    {
+      "long": "before-context",
+      "short": "B",
+      "category": "Output",
+      "docShort": "Show NUM lines before each match."
+    },
+    {
+      "long": "binary",
+      "negated": "no-binary",
+      "category": "Filter",
+      "docShort": "Search binary files."
+    },
+    {
+      "long": "block-buffered",
+      "negated": "no-block-buffered",
+      "category": "Output",
+      "docShort": "Force block buffering."
+    },
+    {
+      "long": "byte-offset",
+      "short": "b",
+      "negated": "no-byte-offset",
+      "category": "Output",
+      "docShort": "Print the byte offset for each matching line."
+    },
+    {
+      "long": "case-sensitive",
+      "short": "s",
+      "category": "Search",
+      "docShort": "Search case sensitively (default)."
+    },
+    {
+      "long": "color",
+      "category": "Output",
+      "docShort": "When to use color."
+    },
+    {
+      "long": "colors",
+      "category": "Output",
+      "docShort": "Configure color settings and styles."
+    },
+    {
+      "long": "column",
+      "negated": "no-column",
+      "category": "Output",
+      "docShort": "Show column numbers."
+    },
+    {
+      "long": "context",
+      "short": "C",
+      "category": "Output",
+      "docShort": "Show NUM lines before and after each match."
+    },
+    {
+      "long": "context-separator",
+      "negated": "no-context-separator",
+      "category": "Output",
+      "docShort": "Set the separator for contextual chunks."
+    },
+    {
+      "long": "count",
+      "short": "c",
+      "category": "OutputModes",
+      "docShort": "Show count of matching lines for each file."
+    },
+    {
+      "long": "count-matches",
+      "category": "OutputModes",
+      "docShort": "Show count of every match for each file."
+    },
+    {
+      "long": "crlf",
+      "negated": "no-crlf",
+      "category": "Search",
+      "docShort": "Use CRLF line terminators (nice for Windows)."
+    },
+    {
+      "long": "debug",
+      "category": "Logging",
+      "docShort": "Show debug messages."
+    },
+    {
+      "long": "dfa-size-limit",
+      "category": "Search",
+      "docShort": "The upper size limit of the regex DFA."
+    },
+    {
+      "long": "encoding",
+      "short": "E",
+      "negated": "no-encoding",
+      "category": "Search",
+      "docShort": "Specify the text encoding of files to search."
+    },
+    {
+      "long": "engine",
+      "category": "Search",
+      "docShort": "Specify which regex engine to use."
+    },
+    {
+      "long": "field-context-separator",
+      "category": "Output",
+      "docShort": "Set the field context separator."
+    },
+    {
+      "long": "field-match-separator",
+      "category": "Output",
+      "docShort": "Set the field match separator."
+    },
+    {
+      "long": "file",
+      "short": "f",
+      "category": "Input",
+      "docShort": "Search for patterns from the given file."
+    },
+    {
+      "long": "files",
+      "category": "OtherBehaviors",
+      "docShort": "Print each file that would be searched."
+    },
+    {
+      "long": "files-with-matches",
+      "short": "l",
+      "category": "OutputModes",
+      "docShort": "Print the paths with at least one match."
+    },
+    {
+      "long": "files-without-match",
+      "category": "OutputModes",
+      "docShort": "Print the paths that contain zero matches."
+    },
+    {
+      "long": "fixed-strings",
+      "short": "F",
+      "negated": "no-fixed-strings",
+      "category": "Search",
+      "docShort": "Treat all patterns as literals."
+    },
+    {
+      "long": "follow",
+      "short": "L",
+      "negated": "no-follow",
+      "category": "Filter",
+      "docShort": "Follow symbolic links."
+    },
+    {
+      "long": "generate",
+      "category": "OtherBehaviors",
+      "docShort": "Generate man pages and completion scripts."
+    },
+    {
+      "long": "glob",
+      "short": "g",
+      "category": "Filter",
+      "docShort": "Include or exclude file paths."
+    },
+    {
+      "long": "glob-case-insensitive",
+      "negated": "no-glob-case-insensitive",
+      "category": "Filter",
+      "docShort": "Process all glob patterns case insensitively."
+    },
+    {
+      "long": "heading",
+      "negated": "no-heading",
+      "category": "Output",
+      "docShort": "Print matches grouped by each file."
+    },
+    {
+      "long": "help",
+      "short": "h",
+      "category": "Output",
+      "docShort": "Show help output."
+    },
+    {
+      "long": "hidden",
+      "short": ".",
+      "negated": "no-hidden",
+      "category": "Filter",
+      "docShort": "Search hidden files and directories."
+    },
+    {
+      "long": "hostname-bin",
+      "category": "Output",
+      "docShort": "Run a program to get this system's hostname."
+    },
+    {
+      "long": "hyperlink-format",
+      "category": "Output",
+      "docShort": "Set the format of hyperlinks."
+    },
+    {
+      "long": "iglob",
+      "category": "Filter",
+      "docShort": "Include/exclude paths case insensitively."
+    },
+    {
+      "long": "ignore-case",
+      "short": "i",
+      "category": "Search",
+      "docShort": "Case insensitive search."
+    },
+    {
+      "long": "ignore-file",
+      "category": "Filter",
+      "docShort": "Specify additional ignore files."
+    },
+    {
+      "long": "ignore-file-case-insensitive",
+      "negated": "no-ignore-file-case-insensitive",
+      "category": "Filter",
+      "docShort": "Process ignore files case insensitively."
+    },
+    {
+      "long": "include-zero",
+      "negated": "no-include-zero",
+      "category": "Output",
+      "docShort": "Include zero matches in summary output."
+    },
+    {
+      "long": "invert-match",
+      "short": "v",
+      "negated": "no-invert-match",
+      "category": "Search",
+      "docShort": "Invert matching."
+    },
+    {
+      "long": "json",
+      "negated": "no-json",
+      "category": "OutputModes",
+      "docShort": "Show search results in a JSON Lines format."
+    },
+    {
+      "long": "line-buffered",
+      "negated": "no-line-buffered",
+      "category": "Output",
+      "docShort": "Force line buffering."
+    },
+    {
+      "long": "line-number",
+      "short": "n",
+      "category": "Output",
+      "docShort": "Show line numbers."
+    },
+    {
+      "long": "no-line-number",
+      "short": "N",
+      "category": "Output",
+      "docShort": "Suppress line numbers."
+    },
+    {
+      "long": "line-regexp",
+      "short": "x",
+      "category": "Search",
+      "docShort": "Show matches surrounded by line boundaries."
+    },
+    {
+      "long": "max-columns",
+      "short": "M",
+      "category": "Output",
+      "docShort": "Omit lines longer than this limit."
+    },
+    {
+      "long": "max-columns-preview",
+      "negated": "no-max-columns-preview",
+      "category": "Output",
+      "docShort": "Show preview for lines exceeding the limit."
+    },
+    {
+      "long": "max-count",
+      "short": "m",
+      "category": "Search",
+      "docShort": "Limit the number of matching lines."
+    },
+    {
+      "long": "max-depth",
+      "short": "d",
+      "aliases": [
+        "maxdepth"
+      ],
+      "category": "Filter",
+      "docShort": "Descend at most NUM directories."
+    },
+    {
+      "long": "max-filesize",
+      "category": "Filter",
+      "docShort": "Ignore files larger than NUM in size."
+    },
+    {
+      "long": "mmap",
+      "negated": "no-mmap",
+      "category": "Search",
+      "docShort": "Search with memory maps when possible."
+    },
+    {
+      "long": "multiline",
+      "short": "U",
+      "negated": "no-multiline",
+      "category": "Search",
+      "docShort": "Enable searching across multiple lines."
+    },
+    {
+      "long": "multiline-dotall",
+      "negated": "no-multiline-dotall",
+      "category": "Search",
+      "docShort": "Make '.' match line terminators."
+    },
+    {
+      "long": "no-config",
+      "category": "OtherBehaviors",
+      "docShort": "Never read configuration files."
+    },
+    {
+      "long": "no-ignore",
+      "negated": "ignore",
+      "category": "Filter",
+      "docShort": "Don't use ignore files."
+    },
+    {
+      "long": "no-ignore-dot",
+      "negated": "ignore-dot",
+      "category": "Filter",
+      "docShort": "Don't use .ignore or .rgignore files."
+    },
+    {
+      "long": "no-ignore-exclude",
+      "negated": "ignore-exclude",
+      "category": "Filter",
+      "docShort": "Don't use local exclusion files."
+    },
+    {
+      "long": "no-ignore-files",
+      "negated": "ignore-files",
+      "category": "Filter",
+      "docShort": "Don't use --ignore-file arguments."
+    },
+    {
+      "long": "no-ignore-global",
+      "negated": "ignore-global",
+      "category": "Filter",
+      "docShort": "Don't use global ignore files."
+    },
+    {
+      "long": "no-ignore-messages",
+      "negated": "ignore-messages",
+      "category": "Logging",
+      "docShort": "Suppress gitignore parse error messages."
+    },
+    {
+      "long": "no-ignore-parent",
+      "negated": "ignore-parent",
+      "category": "Filter",
+      "docShort": "Don't use ignore files in parent directories."
+    },
+    {
+      "long": "no-ignore-vcs",
+      "negated": "ignore-vcs",
+      "category": "Filter",
+      "docShort": "Don't use ignore files from source control."
+    },
+    {
+      "long": "no-messages",
+      "negated": "messages",
+      "category": "Logging",
+      "docShort": "Suppress some error messages."
+    },
+    {
+      "long": "no-pcre2-unicode",
+      "negated": "pcre2-unicode",
+      "category": "Search",
+      "docShort": "(DEPRECATED) Disable Unicode mode for PCRE2."
+    },
+    {
+      "long": "no-require-git",
+      "negated": "require-git",
+      "category": "Filter",
+      "docShort": "Use .gitignore outside of git repositories."
+    },
+    {
+      "long": "no-unicode",
+      "negated": "unicode",
+      "category": "Search",
+      "docShort": "Disable Unicode mode."
+    },
+    {
+      "long": "null",
+      "short": "0",
+      "category": "Output",
+      "docShort": "Print a NUL byte after file paths."
+    },
+    {
+      "long": "null-data",
+      "category": "Search",
+      "docShort": "Use NUL as a line terminator."
+    },
+    {
+      "long": "one-file-system",
+      "negated": "no-one-file-system",
+      "category": "Filter",
+      "docShort": "Skip directories on other file systems."
+    },
+    {
+      "long": "only-matching",
+      "short": "o",
+      "category": "Output",
+      "docShort": "Print only matched parts of a line."
+    },
+    {
+      "long": "path-separator",
+      "category": "Output",
+      "docShort": "Set the path separator for printing paths."
+    },
+    {
+      "long": "passthru",
+      "aliases": [
+        "passthrough"
+      ],
+      "category": "Output",
+      "docShort": "Print both matching and non-matching lines."
+    },
+    {
+      "long": "pcre2",
+      "short": "P",
+      "negated": "no-pcre2",
+      "category": "Search",
+      "docShort": "Enable PCRE2 matching."
+    },
+    {
+      "long": "pcre2-version",
+      "category": "OtherBehaviors",
+      "docShort": "Print the version of PCRE2 that ripgrep uses."
+    },
+    {
+      "long": "pre",
+      "negated": "no-pre",
+      "category": "Input",
+      "docShort": "Search output of COMMAND for each PATH."
+    },
+    {
+      "long": "pre-glob",
+      "category": "Input",
+      "docShort": "Include or exclude files from a preprocessor."
+    },
+    {
+      "long": "pretty",
+      "short": "p",
+      "category": "Output",
+      "docShort": "Alias for colors, headings and line numbers."
+    },
+    {
+      "long": "quiet",
+      "short": "q",
+      "category": "Output",
+      "docShort": "Do not print anything to stdout."
+    },
+    {
+      "long": "regex-size-limit",
+      "category": "Search",
+      "docShort": "The size limit of the compiled regex."
+    },
+    {
+      "long": "regexp",
+      "short": "e",
+      "category": "Input",
+      "docShort": "A pattern to search for."
+    },
+    {
+      "long": "replace",
+      "short": "r",
+      "category": "Output",
+      "docShort": "Replace matches with the given text."
+    },
+    {
+      "long": "search-zip",
+      "short": "z",
+      "negated": "no-search-zip",
+      "category": "Input",
+      "docShort": "Search in compressed files."
+    },
+    {
+      "long": "smart-case",
+      "short": "S",
+      "category": "Search",
+      "docShort": "Smart case search."
+    },
+    {
+      "long": "sort-files",
+      "negated": "no-sort-files",
+      "category": "Output",
+      "docShort": "(DEPRECATED) Sort results by file path."
+    },
+    {
+      "long": "sort",
+      "category": "Output",
+      "docShort": "Sort results in ascending order."
+    },
+    {
+      "long": "sortr",
+      "category": "Output",
+      "docShort": "Sort results in descending order."
+    },
+    {
+      "long": "stats",
+      "negated": "no-stats",
+      "category": "Logging",
+      "docShort": "Print statistics about the search."
+    },
+    {
+      "long": "stop-on-nonmatch",
+      "category": "Search",
+      "docShort": "Stop searching after a non-match."
+    },
+    {
+      "long": "text",
+      "short": "a",
+      "negated": "no-text",
+      "category": "Search",
+      "docShort": "Search binary files as if they were text."
+    },
+    {
+      "long": "threads",
+      "short": "j",
+      "category": "Search",
+      "docShort": "Set the approximate number of threads to use."
+    },
+    {
+      "long": "trace",
+      "category": "Logging",
+      "docShort": "Show trace messages."
+    },
+    {
+      "long": "trim",
+      "negated": "no-trim",
+      "category": "Output",
+      "docShort": "Trim prefix whitespace from matches."
+    },
+    {
+      "long": "type",
+      "short": "t",
+      "category": "Filter",
+      "docShort": "Only search files matching TYPE."
+    },
+    {
+      "long": "type-add",
+      "category": "Filter",
+      "docShort": "Add a new glob for a file type."
+    },
+    {
+      "long": "type-clear",
+      "category": "Filter",
+      "docShort": "Clear globs for a file type."
+    },
+    {
+      "long": "type-not",
+      "short": "T",
+      "category": "Filter",
+      "docShort": "Do not search files matching TYPE."
+    },
+    {
+      "long": "type-list",
+      "category": "OtherBehaviors",
+      "docShort": "Show all supported file types."
+    },
+    {
+      "long": "unrestricted",
+      "short": "u",
+      "category": "Filter",
+      "docShort": "Reduce the level of \"smart\" filtering."
+    },
+    {
+      "long": "version",
+      "short": "V",
+      "category": "OtherBehaviors",
+      "docShort": "Print ripgrep's version."
+    },
+    {
+      "long": "vimgrep",
+      "category": "Output",
+      "docShort": "Print results in a vim compatible format."
+    },
+    {
+      "long": "with-filename",
+      "short": "H",
+      "category": "Output",
+      "docShort": "Print the file path with each matching line."
+    },
+    {
+      "long": "no-filename",
+      "short": "I",
+      "category": "Output",
+      "docShort": "Never print the path with each matching line."
+    },
+    {
+      "long": "word-regexp",
+      "short": "w",
+      "category": "Search",
+      "docShort": "Show matches surrounded by word boundaries."
+    }
+  ]
+}
