@@ -90,6 +90,15 @@ type Options struct {
 // Walk traverses roots in parallel per opts, calling visit for every
 // matched file-system entry.
 //
+// A root of "" means "the current directory, because the caller had no
+// PATH argument to substitute a default for" -- distinct from an
+// explicit ".", which is a real, common CLI invocation of its own and
+// must echo a "./" prefix on every discovered path to match rg exactly.
+// See buildRootTask's doc for the verified-against-rg behavior this
+// distinction preserves; callers defaulting an empty path list must pass
+// "" here, not ".", or every discovered path will carry a "./" prefix
+// rg's own default-directory behavior doesn't have.
+//
 // Walk distributes roots round-robin across a fixed pool of worker
 // goroutines, each running a work-stealing loop over per-worker LIFO
 // deques (see dirQueue): a worker processes directories depth-first from
@@ -146,23 +155,43 @@ func Walk(roots []string, opts Options, visit Visitor) error {
 // matching the common CLI convention that an argument you named directly
 // is always followed, even when discovered-during-traversal symlinks are
 // left alone.
+//
+// root == "" is a special case, distinct from ".": it means "search the
+// current directory because no PATH argument was given at all" -- as
+// opposed to a user literally typing "." on the command line, which
+// joinPath's doc explains DOES echo a "./" prefix on every discovered
+// path (verified against real rg: `rg -n pat .` prints "./file", not
+// "file"). Real rg's own behavior differs for the two cases: with no
+// PATH argument at all, `rg` prints unprefixed relative paths ("file",
+// not "./file") -- verified directly (`rg --files` vs `rg --files .`).
+// Since both cases resolve to the identical string "." by the time a
+// caller could pass it here, the caller (cmd/gg) must use "" to convey
+// "this is a default, not something the user typed" -- real filesystem
+// calls still need a real path, so "" is resolved to "." for those,
+// while t.path (which every descendant's displayed Path is built from,
+// via joinPath) keeps the caller's original "" -- see
+// TestEmptyRootProducesUnprefixedPaths.
 func buildRootTask(root string, opts *Options) *dirTask {
+	fsRoot := root
+	if fsRoot == "" {
+		fsRoot = "."
+	}
 	t := &dirTask{path: root, depth: 0}
 
-	info, err := os.Lstat(root)
+	info, err := os.Lstat(fsRoot)
 	if err != nil {
 		t.rootKind = rootInvalid
 		t.rootErr = err
 		return t
 	}
-	if abs, err := filepath.Abs(root); err == nil {
+	if abs, err := filepath.Abs(fsRoot); err == nil {
 		t.abs = abs
 	} else {
-		t.abs = root
+		t.abs = fsRoot
 	}
 
 	if info.Mode()&os.ModeSymlink != 0 {
-		target, err := os.Stat(root)
+		target, err := os.Stat(fsRoot)
 		if err != nil {
 			t.rootKind = rootInvalid
 			t.rootErr = err

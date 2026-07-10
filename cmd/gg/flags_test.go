@@ -307,6 +307,70 @@ func TestSearchModeLastWins(t *testing.T) {
 	}
 }
 
+// TestFilesMode covers --files's parsing-level contract (M3 #25): no
+// PATTERN is required, every positional becomes a Path, and its
+// mode-precedence interaction with -c/-l is plain last-flag-wins, same
+// as -c vs -l themselves -- verified against the real rg binary directly
+// (see the SearchMode doc comment): rg's own claimed "search modes can't
+// override non-search modes" doesn't hold in the actual binary, so
+// gg intentionally does NOT special-case this.
+func TestFilesMode(t *testing.T) {
+	// No PATTERN needed at all: bare --files with zero positionals must
+	// not trip the "at least one pattern" requirement.
+	cfg := mustParse(t, "--files")
+	if cfg.Mode != ModeFiles {
+		t.Errorf("--files: Mode = %v, want ModeFiles", cfg.Mode)
+	}
+	if len(cfg.Paths) != 0 {
+		t.Errorf("--files with no positionals: Paths = %v, want empty", cfg.Paths)
+	}
+
+	// Every positional becomes a Path, never a pattern.
+	cfg = mustParse(t, "--files", "path1", "path2")
+	if got, want := cfg.Paths, []string{"path1", "path2"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("--files path1 path2: Paths = %v, want %v", got, want)
+	}
+	if len(cfg.Patterns) != 0 {
+		t.Errorf("--files path1 path2: Patterns = %v, want empty", cfg.Patterns)
+	}
+
+	// -e still populates Patterns (harmless, just unused downstream in
+	// Files mode -- verified against real rg: `rg --files -e pat` lists
+	// every file, ignoring "pat" entirely), but must not consume any
+	// positional as a pattern.
+	cfg = mustParse(t, "--files", "-e", "pat", "path1")
+	if got, want := cfg.Paths, []string{"path1"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("--files -e pat path1: Paths = %v, want %v", got, want)
+	}
+
+	// Last-flag-wins mode precedence, both directions -- verified against
+	// real rg: `rg --files -l` (with zero positionals) errors ("requires
+	// at least one pattern"), since after -l wins, we're in
+	// ModeFilesWithMatches with no pattern given; `rg -l --files` lists
+	// files instead, since --files wins there. gg's plain "last write
+	// wins" SearchMode field assignment already produces exactly this
+	// without any special-casing.
+	wantErr(t, "--files", "-l")
+	wantErr(t, "--files", "-c")
+	if cfg := mustParse(t, "-l", "--files"); cfg.Mode != ModeFiles {
+		t.Errorf("-l --files: Mode = %v, want ModeFiles (last wins)", cfg.Mode)
+	}
+	if cfg := mustParse(t, "-c", "--files"); cfg.Mode != ModeFiles {
+		t.Errorf("-c --files: Mode = %v, want ModeFiles (last wins)", cfg.Mode)
+	}
+
+	// --files -l with an actual pattern positional: since -l is what's in
+	// effect after last-wins, that positional IS the pattern (Files mode
+	// is not in effect here) -- verified against real rg:
+	// `rg --files -l somepattern` searches for "somepattern" in
+	// FilesWithMatches mode, treating "somepattern" as the pattern, not a
+	// path.
+	cfg = mustParse(t, "--files", "-l", "somepattern")
+	if got, want := cfg.Patterns, []string{"somepattern"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("--files -l somepattern: Patterns = %v, want %v (Mode ended as ModeFilesWithMatches, not ModeFiles)", got, want)
+	}
+}
+
 func TestQuiet(t *testing.T) {
 	if cfg := mustParse(t, "pat"); cfg.Quiet {
 		t.Errorf("default Quiet = true, want false")

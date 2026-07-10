@@ -82,8 +82,8 @@ gg [flags] PATTERN [PATH...]
 names, same defaults, same output bytes, same exit codes (0 match /
 1 no match / 2 error). Currently implemented: `-F -i -s -S -w -e`,
 `--hidden --no-ignore -g -u/-uu/-uuu --max-filesize`, `-n/-N -c -l -q
---color -A/-B/-C -v`, `-j -a`. rg flags that gg doesn't implement yet
-fail loudly with exit 2 — never silently ignored.
+--color -A/-B/-C -v`, `-j -a`, `--files`. rg flags that gg doesn't
+implement yet fail loudly with exit 2 — never silently ignored.
 
 ## Library usage
 

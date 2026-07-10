@@ -10,6 +10,7 @@ type PathPrinter struct {
 	dest  *Dest
 	paths chan string
 	done  chan struct{}
+	color bool
 }
 
 // batchSize bounds how many paths PathPrinter accumulates before
@@ -17,12 +18,19 @@ type PathPrinter struct {
 const pathBatchSize = 256
 
 // NewPathPrinter starts the printer's goroutine, which reads paths sent
-// on Paths() and writes them to dest until that channel is closed.
-func NewPathPrinter(dest *Dest) *PathPrinter {
+// on Paths() and writes them to dest until that channel is closed. color
+// enables coloring each path (matching rg's own `--files --color=always`
+// behavior, verified against the real rg binary -- it does colorize
+// --files output, the same magenta used for paths everywhere else); it
+// is a constructor parameter rather than a field set after construction
+// because run's goroutine starts immediately and reads it on every path,
+// so setting it later would race.
+func NewPathPrinter(dest *Dest, color bool) *PathPrinter {
 	p := &PathPrinter{
 		dest:  dest,
 		paths: make(chan string, pathBatchSize),
 		done:  make(chan struct{}),
+		color: color,
 	}
 	go p.run()
 	return p
@@ -46,7 +54,11 @@ func (p *PathPrinter) run() {
 	buf := getBuf()
 	n := 0
 	for path := range p.paths {
-		buf = append(buf, path...)
+		if p.color {
+			buf = appendColoredBytes(buf, ansiPath, []byte(path))
+		} else {
+			buf = append(buf, path...)
+		}
 		buf = append(buf, '\n')
 		n++
 		if n >= pathBatchSize || len(buf) >= maxPooledCap {

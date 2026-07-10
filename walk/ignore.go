@@ -119,7 +119,25 @@ func buildNode(parent *ignoreNode, dir string, hasGit bool) *ignoreNode {
 // since that is what matters for the overwhelmingly common case and
 // avoids stat-ing arbitrarily many ancestors (e.g. under /home) for no
 // behavioral gain in v1.
+//
+// If absRoot itself already has a .git marker, it IS a repository root,
+// and no ancestor climbing happens at all -- a real, found bug (not a
+// hypothetical): a nested git repo used as a walk root (e.g. a vendored
+// corpus checked out under a project that has its own outer .gitignore)
+// used to have the OUTER repo's .gitignore rules leak in regardless,
+// since the old code unconditionally started climbing from
+// filepath.Dir(absRoot) without ever checking whether absRoot was
+// already a boundary. Concretely: walking benchmark-data/linux (its own
+// nested git repo) picked up this project's own top-level .gitignore
+// rule `*.exe`, wrongly excluding a real, tracked Linux kernel test
+// fixture (tools/perf/tests/pe-file.exe) that real rg (and `git
+// check-ignore`) correctly does not exclude. --files (M3 #25) is what
+// exposed this: it was the first exhaustive, unfiltered full-listing
+// comparison against real rg on that corpus.
 func buildParentChain(absRoot string) *ignoreNode {
+	if hasGitMarker(absRoot) {
+		return nil
+	}
 	dir := filepath.Dir(absRoot)
 	if dir == absRoot {
 		return nil

@@ -172,6 +172,35 @@ func TestParentGitignoreAppliesAboveWalkRoot(t *testing.T) {
 	}
 }
 
+// TestWalkRootAtNestedRepoBoundaryStopsClimbing is the counterpart to
+// TestParentGitignoreAppliesAboveWalkRoot: when the walk ROOT ITSELF is
+// already a repository boundary (has its own .git), buildParentChain
+// must not climb past it into an outer repo at all. Real bug found via
+// M3 #25 (--files, the first exhaustive full-listing comparison against
+// real rg): walking a nested repo (e.g. a vendored corpus checked out
+// under a project with its own top-level .gitignore) picked up the
+// OUTER repo's ignore rules regardless, since the old code
+// unconditionally started climbing from the walk root's PARENT without
+// ever checking whether the root itself was already a boundary.
+func TestWalkRootAtNestedRepoBoundaryStopsClimbing(t *testing.T) {
+	outer := t.TempDir()
+	markGitRepo(t, outer)
+	writeFile(t, filepath.Join(outer, ".gitignore"), "*.exe\n")
+
+	inner := filepath.Join(outer, "vendor", "nested-repo")
+	markGitRepo(t, inner)
+	writeFile(t, filepath.Join(inner, "real-file.exe"), "not actually excluded")
+	writeFile(t, filepath.Join(inner, "keep.txt"), "keep")
+
+	// Walk root is the NESTED repo itself: its own boundary means the
+	// outer repo's "*.exe" rule must never apply here.
+	got := visitFiles(t, inner, Options{})
+	want := []string{"keep.txt", "real-file.exe"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Errorf("got %v, want %v (a nested repo's own boundary must stop ancestor .gitignore climbing)", got, want)
+	}
+}
+
 func TestNoIgnoreDisablesAllIgnoreFiles(t *testing.T) {
 	root := t.TempDir()
 	markGitRepo(t, root)

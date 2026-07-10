@@ -88,6 +88,197 @@ func TestGoldenVsRipgrep(t *testing.T) {
 	}
 }
 
+// TestGoldenVsRipgrep_Files covers M3 #25 (--files): every case the task
+// mandate calls for, run against testdata/corpus, which already has the
+// hidden/gitignore fixtures (.hidden/, ignored/, *.secret) --files needs
+// to compose correctly with. --files takes no PATTERN at all, so these
+// args never include one.
+func TestGoldenVsRipgrep_Files(t *testing.T) {
+	_, thisFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("could not determine test file location")
+	}
+	root := filepath.Dir(thisFile)
+	corpus := filepath.Join(root, "testdata", "corpus")
+	ggBin := buildGG(t, root)
+
+	cases := []struct {
+		name string
+		args []string
+	}{
+		{"bare", []string{"--files", corpus}},
+		{"hidden", []string{"--files", "--hidden", corpus}},
+		{"no_ignore", []string{"--files", "--no-ignore", corpus}},
+		{"glob_filter", []string{"--files", "-g", "*.txt", corpus}},
+		{"explicit_subdir_path_arg", []string{"--files", filepath.Join(corpus, "a")}},
+		{"mode_precedence_dash_l_then_files_still_lists", []string{"-l", "--files", corpus}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rgOut, rgErr, rgCode := run(t, "rg", tc.args)
+			ggOut, ggErr, ggCode := run(t, ggBin, tc.args)
+
+			if rgCode != ggCode {
+				t.Errorf("exit code mismatch: rg=%d gg=%d\nrg stderr: %s\ngg stderr: %s", rgCode, ggCode, rgErr, ggErr)
+			}
+			rgLines := sortedLines(rgOut)
+			ggLines := sortedLines(ggOut)
+			if diff := diffLines(rgLines, ggLines); diff != "" {
+				t.Errorf("sort-normalized stdout mismatch:\n%s\n--- raw rg stdout ---\n%s\n--- raw gg stdout ---\n%s",
+					diff, rgOut, ggOut)
+			}
+		})
+	}
+}
+
+// TestGoldenVsRipgrep_FilesQuietExitCodes covers --files -q specifically:
+// no output at all, exit code alone communicates found-or-not. Verified
+// against the real rg binary directly (see flags.go's ModeFiles doc):
+// -q suppresses --files' path listing entirely but still reflects a real
+// find as exit 0.
+func TestGoldenVsRipgrep_FilesQuietExitCodes(t *testing.T) {
+	_, thisFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("could not determine test file location")
+	}
+	root := filepath.Dir(thisFile)
+	corpus := filepath.Join(root, "testdata", "corpus")
+	ggBin := buildGG(t, root)
+
+	cases := []struct {
+		name string
+		args []string
+	}{
+		{"found", []string{"--files", "-q", corpus}},
+		{"not_found_via_glob", []string{"--files", "-q", "-g", "*.this-extension-does-not-exist", corpus}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rgOut, rgErr, rgCode := run(t, "rg", tc.args)
+			ggOut, ggErr, ggCode := run(t, ggBin, tc.args)
+
+			if rgCode != ggCode {
+				t.Errorf("exit code mismatch: rg=%d gg=%d\nrg stderr: %s\ngg stderr: %s", rgCode, ggCode, rgErr, ggErr)
+			}
+			if len(rgOut) != 0 || len(ggOut) != 0 {
+				t.Errorf("-q must produce no stdout at all: rg=%q gg=%q", rgOut, ggOut)
+			}
+		})
+	}
+}
+
+// TestGoldenVsRipgrep_FilesOnRepoTree runs --files against gripgrep's own
+// repo root: a real, non-synthetic tree with its own .gitignore, several
+// nested directories, and (crucially, unlike testdata/corpus) enough
+// depth and file variety that a full unfiltered listing is a meaningful
+// exercise of gitignore/glob composition end to end, not just the
+// hand-picked fixtures.
+func TestGoldenVsRipgrep_FilesOnRepoTree(t *testing.T) {
+	_, thisFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("could not determine test file location")
+	}
+	root := filepath.Dir(thisFile)
+	ggBin := buildGG(t, root)
+
+	cases := []struct {
+		name string
+		args []string
+	}{
+		{"bare_no_path_arg", []string{"--files"}},
+		{"explicit_dot", []string{"--files", "."}},
+		{"hidden", []string{"--files", "--hidden"}},
+		{"glob_filter_go", []string{"--files", "-g", "*.go"}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rgCmd := exec.Command("rg", tc.args...)
+			rgCmd.Dir = root
+			var rgOut, rgErr bytes.Buffer
+			rgCmd.Stdout, rgCmd.Stderr = &rgOut, &rgErr
+			rgErrRun := rgCmd.Run()
+			rgCode := 0
+			if exitErr, ok := rgErrRun.(*exec.ExitError); ok {
+				rgCode = exitErr.ExitCode()
+			} else if rgErrRun != nil {
+				t.Fatalf("running rg: %v", rgErrRun)
+			}
+
+			ggCmd := exec.Command(ggBin, tc.args...)
+			ggCmd.Dir = root
+			var ggOut, ggErr bytes.Buffer
+			ggCmd.Stdout, ggCmd.Stderr = &ggOut, &ggErr
+			ggErrRun := ggCmd.Run()
+			ggCode := 0
+			if exitErr, ok := ggErrRun.(*exec.ExitError); ok {
+				ggCode = exitErr.ExitCode()
+			} else if ggErrRun != nil {
+				t.Fatalf("running gg: %v", ggErrRun)
+			}
+
+			if rgCode != ggCode {
+				t.Errorf("exit code mismatch: rg=%d gg=%d\nrg stderr: %s\ngg stderr: %s", rgCode, ggCode, rgErr.String(), ggErr.String())
+			}
+			rgLines := sortedLines(rgOut.Bytes())
+			ggLines := sortedLines(ggOut.Bytes())
+			if diff := diffLines(rgLines, ggLines); diff != "" {
+				t.Errorf("sort-normalized stdout mismatch:\n%s", diff)
+			}
+		})
+	}
+}
+
+// TestGoldenVsRipgrep_FilesOnLinuxTree is the mandate's "benchmark-data/
+// linux" corpus case: skipped (not failed) when that corpus isn't
+// checked out, since it's gitignored and not universally present. Where
+// present, this is the exact scenario that surfaced a real bug during
+// #25's development: benchmark-data/linux is its own nested git repo,
+// and gg's ignore-stack construction used to leak this outer repo's own
+// top-level ".gitignore" (which excludes "*.exe" build artifacts) into
+// that inner repo's walk, wrongly excluding a real, tracked Linux kernel
+// test fixture (tools/perf/tests/pe-file.exe) that real rg does not
+// exclude -- fixed in walk/ignore.go's buildParentChain (see its doc).
+func TestGoldenVsRipgrep_FilesOnLinuxTree(t *testing.T) {
+	_, thisFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("could not determine test file location")
+	}
+	root := filepath.Dir(thisFile)
+	linuxTree := filepath.Join(root, "benchmark-data", "linux")
+	if _, err := os.Stat(linuxTree); err != nil {
+		t.Skipf("benchmark-data/linux not present (gitignored corpus, not checked out): %v", err)
+	}
+	ggBin := buildGG(t, root)
+
+	cases := []struct {
+		name string
+		args []string
+	}{
+		{"bare", []string{"--files", linuxTree}},
+		{"hidden", []string{"--files", "--hidden", linuxTree}},
+		{"glob_filter_c", []string{"--files", "-g", "*.c", linuxTree}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rgOut, rgErr, rgCode := run(t, "rg", tc.args)
+			ggOut, ggErr, ggCode := run(t, ggBin, tc.args)
+
+			if rgCode != ggCode {
+				t.Errorf("exit code mismatch: rg=%d gg=%d\nrg stderr: %s\ngg stderr: %s", rgCode, ggCode, rgErr, ggErr)
+			}
+			rgLines := sortedLines(rgOut)
+			ggLines := sortedLines(ggOut)
+			if diff := diffLines(rgLines, ggLines); diff != "" {
+				t.Errorf("sort-normalized stdout mismatch:\n%s", diff)
+			}
+		})
+	}
+}
+
 // TestGoldenVsRipgrep_ContextOrdering closes the sort-normalization
 // blind spot this file's top comment documents: TestGoldenVsRipgrep's
 // "context" case only proves gg and rg produce the same *set* of lines,

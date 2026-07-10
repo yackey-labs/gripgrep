@@ -40,6 +40,13 @@ import (
 // semantics were verified against rg's SliceByLine (searcher/glue.rs)
 // directly -- see search.go's SearchBytes doc.
 func execute(cfg *Config, stdout, stderr io.Writer) int {
+	if cfg.Mode == ModeFiles {
+		// --files skips the matcher/searcher pipeline entirely (see
+		// executeFiles's doc) -- dispatched before buildMatcher runs
+		// since --files needs no pattern at all.
+		return executeFiles(cfg, stdout, stderr)
+	}
+
 	matcher, err := buildMatcher(cfg)
 	if err != nil {
 		fmt.Fprintf(stderr, "gg: %s\n", err)
@@ -52,10 +59,7 @@ func execute(cfg *Config, stdout, stderr io.Writer) int {
 		return 2
 	}
 
-	paths := cfg.Paths
-	if len(paths) == 0 {
-		paths = []string{"."}
-	}
+	paths, walkRoots := resolvePaths(cfg.Paths)
 
 	// mmapOK is a once-per-invocation decision (mirroring rg exactly --
 	// see mmapEligible's doc), not a per-file heuristic: it's computed
@@ -179,7 +183,7 @@ func execute(cfg *Config, stdout, stderr io.Writer) int {
 		return walk.Continue
 	}
 
-	if err := walk.Walk(paths, walkOpts, visitor); err != nil {
+	if err := walk.Walk(walkRoots, walkOpts, visitor); err != nil {
 		fmt.Fprintf(stderr, "gg: %s\n", err)
 		return 2
 	}
@@ -255,6 +259,31 @@ func resolveParallelWorkers(threads int) int {
 		return threads
 	}
 	return defaultParallelWorkers
+}
+
+// resolvePaths splits a possibly-empty cfg.Paths into the two forms the
+// rest of execute()/executeFiles() need, which must differ when no PATH
+// argument was given at all:
+//
+//   - statPaths always has at least one real, stat-able entry ("."
+//     substituted for empty) -- for computeShowPath and mmapEligible,
+//     which call os.Stat and need something valid to call it on.
+//   - walkRoots is what actually gets passed to walk.Walk. Here the
+//     substitute must be "" (see walk.Walk's doc), not ".": rg's own
+//     default-directory invocation (no PATH argument) prints unprefixed
+//     relative paths, while an explicit "." argument DOES echo a "./"
+//     prefix on every discovered path -- two different, both
+//     real-rg-verified behaviors that resolve to the identical string
+//     "." by the time a caller could stat it, so only walk.Walk's root
+//     list can still tell them apart.
+//
+// When cfg.Paths is non-empty, both results are just cfg.Paths itself --
+// an explicit path is never substituted for anything.
+func resolvePaths(cfgPaths []string) (statPaths, walkRoots []string) {
+	if len(cfgPaths) == 0 {
+		return []string{"."}, []string{""}
+	}
+	return cfgPaths, cfgPaths
 }
 
 // computeShowPath implements rg's with-filename heuristic for gg's v1

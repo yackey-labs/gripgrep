@@ -12,7 +12,7 @@ import (
 // inherent nondeterminism), only the resulting set of lines.
 func TestPathPrinter_WritesAllPaths(t *testing.T) {
 	dest, out := newTestDest()
-	pp := NewPathPrinter(dest)
+	pp := NewPathPrinter(dest, false)
 
 	want := []string{"a.txt", "b/c.txt", "d/e/f.txt"}
 	for _, p := range want {
@@ -38,7 +38,7 @@ func TestPathPrinter_WritesAllPaths(t *testing.T) {
 // nothing sent writes nothing at all.
 func TestPathPrinter_EmptyProducesNoOutput(t *testing.T) {
 	dest, out := newTestDest()
-	pp := NewPathPrinter(dest)
+	pp := NewPathPrinter(dest, false)
 	close(pp.Paths())
 	pp.Wait()
 
@@ -47,12 +47,30 @@ func TestPathPrinter_EmptyProducesNoOutput(t *testing.T) {
 	}
 }
 
+// TestPathPrinter_Color verifies --files --color=always's path coloring
+// (verified against the real rg binary: `rg --files --color=always` does
+// colorize its output, wrapping each path reset-magenta-text-reset, the
+// same ansiPath scheme Count/FilesWithMatches use for their own paths).
+func TestPathPrinter_Color(t *testing.T) {
+	dest, out := newTestDest()
+	pp := NewPathPrinter(dest, true)
+
+	pp.Paths() <- "a.txt"
+	close(pp.Paths())
+	pp.Wait()
+
+	want := "\x1b[0m\x1b[35ma.txt\x1b[0m\n"
+	if got := out.String(); got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
 // TestPathPrinter_ManyPathsFlushInBatches exercises the flush-on-batch-
 // size path (more than pathBatchSize paths sent) to make sure batching
 // doesn't drop or duplicate anything.
 func TestPathPrinter_ManyPathsFlushInBatches(t *testing.T) {
 	dest, out := newTestDest()
-	pp := NewPathPrinter(dest)
+	pp := NewPathPrinter(dest, false)
 
 	n := pathBatchSize*3 + 7
 	for i := 0; i < n; i++ {

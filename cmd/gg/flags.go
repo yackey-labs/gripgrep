@@ -42,15 +42,28 @@ const (
 	CaseSmart
 )
 
-// SearchMode mirrors the subset of rg's SearchMode that gg's v1 scope
-// implements. Like rg's Mode::update, any later mode flag overwrites an
-// earlier one.
+// SearchMode mirrors the subset of rg's SearchMode/Mode that gg's v1
+// scope implements. Like rg's Mode::update, any later mode flag
+// overwrites an earlier one -- verified against the real rg binary for
+// the case that matters most here: rg's own Mode::update doc comment
+// claims a search mode (like -c/-l) can never override a non-search mode
+// (like --files), but that is NOT what the binary actually does --
+// `rg --files -l` errors ("requires at least one pattern"), while
+// `rg -l --files` lists files. Whichever mode-setting flag appears LAST
+// wins, full stop, regardless of "search" vs "non-search" -- exactly the
+// plain last-write-wins gg already does below for -c/-l, so ModeFiles
+// needs no special-case override logic of its own.
 type SearchMode int
 
 const (
 	ModeStandard SearchMode = iota
 	ModeCount
 	ModeFilesWithMatches
+	// ModeFiles is --files: list every file that would be searched,
+	// without searching it. See the SearchMode doc above for its
+	// last-flag-wins interaction with -c/-l, and ParseArgs for how it
+	// exempts positionals from the "at least one pattern" requirement.
+	ModeFiles
 )
 
 // BinaryMode mirrors rg's BinaryMode.
@@ -323,6 +336,17 @@ func buildV1Flags() []*flagSpec {
 			},
 		},
 		{
+			// --files has no short form in real rg (defs.rs's Files flag
+			// never overrides name_short). No PATTERN is required with
+			// --files; see ParseArgs's positional-resolution step for how
+			// that's exempted.
+			long: "files", kind: kindSwitch,
+			applySwitch: func(cfg *Config, _ *parseState, _ bool) error {
+				cfg.Mode = ModeFiles
+				return nil
+			},
+		},
+		{
 			long: "quiet", short: 'q', kind: kindSwitch,
 			applySwitch: func(cfg *Config, _ *parseState, _ bool) error {
 				cfg.Quiet = true
@@ -588,7 +612,18 @@ func ParseArgs(args []string) (*Config, error) {
 		return cfg, nil
 	}
 
-	if ps.sawPattern {
+	if cfg.Mode == ModeFiles {
+		// --files never needs a PATTERN (verified against the real rg
+		// binary: `rg --files somepath` treats "somepath" as a PATH, not
+		// a pattern, and bare `rg --files` with zero positionals
+		// searches "." -- same "no positionals" fallback execute()
+		// already applies). Any pattern given anyway via -e is harmless
+		// but unused, exactly like real rg (`rg --files -e pat` lists
+		// every file, ignoring "pat" entirely) -- cfg.Patterns may or may
+		// not be populated by -e above; ModeFiles callers must not read
+		// it.
+		cfg.Paths = ps.positionals
+	} else if ps.sawPattern {
 		// -e/--regexp was given at least once: per rg (Regexp's doc
 		// comment: "When --file or --regexp is used, then ripgrep
 		// treats all positional arguments as files or directories to

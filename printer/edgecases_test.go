@@ -174,7 +174,7 @@ func TestCount_MultiMBSingleLine(t *testing.T) {
 // both a ':' and invalid UTF-8 bytes.
 func TestPathPrinter_NonUTF8AndColonPaths(t *testing.T) {
 	dest, out := newTestDest()
-	pp := NewPathPrinter(dest)
+	pp := NewPathPrinter(dest, false)
 
 	paths := []string{"weird:name/f.txt", "nonutf8-\xff\xfe-dir/f.txt"}
 	for _, p := range paths {

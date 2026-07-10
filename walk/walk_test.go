@@ -420,6 +420,42 @@ func TestDotRootPreservesPrefix(t *testing.T) {
 	}
 }
 
+// TestEmptyRootProducesUnprefixedPaths is the companion to
+// TestDotRootPreservesPrefix, covering the other real-rg-verified half
+// of the same distinction: a caller with no PATH argument at all must
+// pass "" (not ".") as the root, or every discovered path wrongly gets a
+// "./" prefix real rg's own default-directory invocation doesn't have
+// (verified directly: `rg --files` prints "sub/file.txt", while
+// `rg --files .` prints "./sub/file.txt", for the identical directory).
+// See buildRootTask's doc for the "" convention this exercises.
+func TestEmptyRootProducesUnprefixedPaths(t *testing.T) {
+	root := buildTree(t, map[string]string{"sub/file.txt": "x"})
+
+	origWd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(root); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chdir(origWd)
+
+	var got []string
+	err = Walk([]string{""}, Options{NoIgnore: true}, func(e *Entry) WalkState {
+		if e.Type == TypeFile {
+			got = append(got, clone(e.Path))
+		}
+		return Continue
+	})
+	if err != nil {
+		t.Fatalf("Walk: %v", err)
+	}
+	want := []string{"sub/file.txt"}
+	if !slicesEqualStrings(got, want) {
+		t.Errorf("got %v, want %v (an empty root, unlike an explicit \".\", must not add a \"./\" prefix)", got, want)
+	}
+}
+
 func slicesEqualStrings(a, b []string) bool {
 	if len(a) != len(b) {
 		return false
