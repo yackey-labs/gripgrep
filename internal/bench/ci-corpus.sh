@@ -48,6 +48,14 @@ if [ ! -d linux ]; then
     (
       cd linux
       git config core.longpaths true
+      # protectNTFS validates EVERY index entry against Win32 naming
+      # rules and hard-fails checkout on the reserved names ("error:
+      # invalid path 'drivers/.../aux.c'") -- sparse-checkout alone
+      # can't save us, because skip-worktree entries still live in the
+      # index. Disabling it is safe here: this is a trusted, throwaway,
+      # read-only benchmark clone, and the sparse patterns below are
+      # what keep the un-creatable files off the filesystem.
+      git config core.protectNTFS false
       { echo '/*'
         git ls-tree -r --name-only HEAD \
           | grep -iE '(^|/)(aux|con|nul|prn|com[0-9]|lpt[0-9])(\.[^/]*)?$' \
