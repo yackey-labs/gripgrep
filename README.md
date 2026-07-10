@@ -63,28 +63,32 @@ across ~79k small files) — the current optimization frontier. The tree
 gap has closed from 3.74× to 1.41× through profile-driven work, and every
 number above is reproducible from this repo.
 
-### macOS and Windows (hosted CI runners)
+### Hosted CI runners (Linux, macOS, Windows)
 
 The table above is the authoritative one, measured on a controlled Linux
-box. macOS and Windows numbers come from the on-demand benchmark
-workflow (`.github/workflows/bench.yml`) instead: each tool on its own
-fresh hosted runner, same hyperfine settings, identically-built corpora
+box. These numbers come from the on-demand benchmark workflow
+(`.github/workflows/bench.yml`) instead: each tool on its own fresh
+hosted runner, same hyperfine settings, identically-built corpora
 (Windows checks out the same frozen kernel fork via sparse-checkout,
-minus its 3 reserved-DOS-name files). Hosted hardware varies run to run,
-so these are ranges across benchmark runs on 2026-07-10, indicative
-rather than authoritative:
+minus its 3 reserved-DOS-name files). Hosted hardware varies run to run
+— rg's leg can land on a faster or slower machine than gg's — so these
+are ranges across four benchmark runs on 2026-07-10, indicative rather
+than authoritative:
 
-| Benchmark | macOS (arm64) | Windows (x64) |
-|---|---|---|
-| Linux kernel tree, literal, gitignore-aware | 1.6–4× **slower** | **~1.1× faster** |
-| Same tree, `--files` (pure walk, no search) | **1.1–1.4× faster** | **~3.4× faster** |
-| OpenSubtitles ~830MB, literal | **1.5–2.2× faster** | **~1.9× faster** |
-| Same file, `Sherlock\|Watson` | **1.1–1.3× faster** | **~1.5× faster** |
+| Benchmark | Linux (x64) | macOS (arm64) | Windows (x64) |
+|---|---|---|---|
+| Linux kernel tree, literal, gitignore-aware | ~parity (1.1× slower–1.1× faster) | 1.6–4× **slower** | **~1.1× faster** |
+| Same tree, `--files` (pure walk, no search) | **1.6–2.1× faster** | **1.1–1.4× faster** | **~3.4× faster** |
+| OpenSubtitles ~830MB, literal | **1.3–2× faster** | **1.5–2.2× faster** | **~1.9× faster** |
+| Same file, `Sherlock\|Watson` | 1.0–1.3× **slower** | **1.1–1.3× faster** | **~1.5× faster** |
 
-Windows sweeps all four rows. The one honest red is macOS tree search:
-the per-file open path's poller-bypass trick (`rawfile_unix.go`) was
-profiled and tuned on Linux, and the win doesn't transfer — that row
-hasn't had a single optimization pass on macOS yet.
+Windows sweeps all four rows. Two honest reds: macOS tree search — the
+per-file open path's poller-bypass trick (`rawfile_unix.go`) was
+profiled and tuned on Linux, and the win doesn't transfer; that row
+hasn't had a single optimization pass on macOS yet — and hosted-Linux
+multi-literal, which the controlled box wins (PGO tipped it there) but
+the cloud runners consistently don't, so that win doesn't yet
+generalize across x64 hardware.
 
 The optimization log lives in the commit history (`git log --grep "M3
 perf"`); dead ends are documented alongside wins.
