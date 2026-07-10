@@ -254,3 +254,178 @@ func slicesEq(a, b []string) bool {
 	}
 	return true
 }
+
+// TestFacadeNewOptionsVsCLI is round #33's gate: each Options field added
+// for the round #31/#32 flags (MaxCount, LineRegexp, MaxDepth, IGlobs,
+// GlobCaseInsensitive) must agree with the real CLI's own output for the
+// equivalent flag, on small dedicated fixtures under testdata/facade/
+// (deliberately not testdata/corpus, which other tests pin -- see this
+// round's brief) so the comparison always runs, without a benchmark-data
+// skip guard.
+func TestFacadeNewOptionsVsCLI(t *testing.T) {
+	_, thisFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("could not determine test file location")
+	}
+	root := filepath.Dir(thisFile)
+	bin := buildGGForFacadeTest(t)
+
+	t.Run("MaxCount", func(t *testing.T) {
+		relPath := "testdata/facade/maxcount.txt"
+		absPath := filepath.Join(root, relPath)
+
+		cliOut := runGG(t, bin, root, "-n", "-H", "-m", "2", "alpha", relPath)
+		wantLines := sortedNonEmptyLines(cliOut)
+
+		gotMatches, err := Options{MaxCount: 2}.Search("alpha", absPath)
+		if err != nil {
+			t.Fatalf("Search: %v", err)
+		}
+		gotLines := formatMatchesAsGGLines(t, root, gotMatches)
+		if !slicesEq(wantLines, gotLines) {
+			t.Errorf("MaxCount=2 mismatch:\nCLI:    %v\nfacade: %v", wantLines, gotLines)
+		}
+		if len(gotMatches) != 2 {
+			t.Errorf("MaxCount=2: got %d matches, want 2", len(gotMatches))
+		}
+	})
+
+	t.Run("LineRegexp", func(t *testing.T) {
+		relPath := "testdata/facade/lineregexp.txt"
+		absPath := filepath.Join(root, relPath)
+
+		cliOut := runGG(t, bin, root, "-n", "-H", "-x", "cat", relPath)
+		wantLines := sortedNonEmptyLines(cliOut)
+
+		gotMatches, err := Options{LineRegexp: true}.Search("cat", absPath)
+		if err != nil {
+			t.Fatalf("Search: %v", err)
+		}
+		gotLines := formatMatchesAsGGLines(t, root, gotMatches)
+		if !slicesEq(wantLines, gotLines) {
+			t.Errorf("LineRegexp mismatch:\nCLI:    %v\nfacade: %v", wantLines, gotLines)
+		}
+		// Exactly the one whole-line "cat" (not "cats", " cat", or
+		// "category") must match -x, proving anchoring actually applied.
+		if len(gotMatches) != 1 || gotMatches[0].Line != "cat" {
+			t.Errorf("LineRegexp: got %+v, want exactly one match on the literal line \"cat\"", gotMatches)
+		}
+	})
+
+	t.Run("MaxDepth", func(t *testing.T) {
+		relPath := "testdata/facade/maxdepth"
+		absPath := filepath.Join(root, relPath)
+
+		cliOut := runGG(t, bin, root, "-l", "-d", "2", "needle", relPath)
+		wantFiles := parseCLIPaths(cliOut)
+
+		gotFiles, err := Options{MaxDepth: 2}.FilesWithMatch("needle", absPath)
+		if err != nil {
+			t.Fatalf("FilesWithMatch: %v", err)
+		}
+		gotFilesRel := relPaths(t, root, gotFiles)
+		sort.Strings(gotFilesRel)
+		if !slicesEq(wantFiles, gotFilesRel) {
+			t.Errorf("MaxDepth=2 mismatch:\nCLI:    %v\nfacade: %v", wantFiles, gotFilesRel)
+		}
+		// root.txt (depth 1) and a/one.txt (depth 2) match; a/b/two.txt
+		// (depth 3) must be pruned.
+		for _, f := range gotFilesRel {
+			if strings.Contains(f, "two.txt") {
+				t.Errorf("MaxDepth=2: two.txt at depth 3 should have been pruned, got %v", gotFilesRel)
+			}
+		}
+	})
+
+	t.Run("IGlobs", func(t *testing.T) {
+		relPath := "testdata/facade/globs"
+		absPath := filepath.Join(root, relPath)
+
+		cliOut := runGG(t, bin, root, "-l", "--iglob", "*.txt", "needle", relPath)
+		wantFiles := parseCLIPaths(cliOut)
+
+		gotFiles, err := Options{IGlobs: []string{"*.txt"}}.FilesWithMatch("needle", absPath)
+		if err != nil {
+			t.Fatalf("FilesWithMatch: %v", err)
+		}
+		gotFilesRel := relPaths(t, root, gotFiles)
+		sort.Strings(gotFilesRel)
+		if !slicesEq(wantFiles, gotFilesRel) {
+			t.Errorf("IGlobs mismatch:\nCLI:    %v\nfacade: %v", wantFiles, gotFilesRel)
+		}
+		// --iglob is always case-insensitive: both File.TXT and file.txt
+		// must match, other.md must not.
+		if len(gotFilesRel) != 2 {
+			t.Errorf("IGlobs *.txt: got %v, want File.TXT and file.txt (2 files)", gotFilesRel)
+		}
+	})
+
+	t.Run("GlobCaseInsensitive", func(t *testing.T) {
+		relPath := "testdata/facade/globs"
+		absPath := filepath.Join(root, relPath)
+
+		cliOut := runGG(t, bin, root, "-l", "-g", "*.TXT", "--glob-case-insensitive", "needle", relPath)
+		wantFiles := parseCLIPaths(cliOut)
+
+		gotFiles, err := Options{Globs: []string{"*.TXT"}, GlobCaseInsensitive: true}.FilesWithMatch("needle", absPath)
+		if err != nil {
+			t.Fatalf("FilesWithMatch: %v", err)
+		}
+		gotFilesRel := relPaths(t, root, gotFiles)
+		sort.Strings(gotFilesRel)
+		if !slicesEq(wantFiles, gotFilesRel) {
+			t.Errorf("GlobCaseInsensitive mismatch:\nCLI:    %v\nfacade: %v", wantFiles, gotFilesRel)
+		}
+		// Without --glob-case-insensitive, -g "*.TXT" would only match
+		// File.TXT; with it, file.txt matches too.
+		if len(gotFilesRel) != 2 {
+			t.Errorf("GlobCaseInsensitive -g *.TXT: got %v, want File.TXT and file.txt (2 files)", gotFilesRel)
+		}
+	})
+}
+
+// TestOptions_WordLineRegexpTieBreak covers the facade-only contract
+// documented on Options.LineRegexp: since match.Config forbids setting
+// both Word and LineRegexp, and Options exposes them as two independent
+// bools (unlike the CLI's order-dependent last-flag-wins), setting both
+// must resolve deterministically to LineRegexp -- and must actually take
+// effect, not silently collapse to Word (which this test also checks by
+// diffing against a Word-only run over the same fixture, where -w's
+// unanchored word-boundary match and -x's whole-line anchor disagree).
+func TestOptions_WordLineRegexpTieBreak(t *testing.T) {
+	_, thisFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("could not determine test file location")
+	}
+	root := filepath.Dir(thisFile)
+	absPath := filepath.Join(root, "testdata/facade/lineregexp.txt")
+
+	both, err := Options{Word: true, LineRegexp: true}.Search("cat", absPath)
+	if err != nil {
+		t.Fatalf("Search (Word+LineRegexp): %v", err)
+	}
+	lineRegexpOnly, err := Options{LineRegexp: true}.Search("cat", absPath)
+	if err != nil {
+		t.Fatalf("Search (LineRegexp only): %v", err)
+	}
+	wordOnly, err := Options{Word: true}.Search("cat", absPath)
+	if err != nil {
+		t.Fatalf("Search (Word only): %v", err)
+	}
+
+	if len(both) != len(lineRegexpOnly) {
+		t.Fatalf("Word+LineRegexp gave %d matches, LineRegexp-only gave %d -- LineRegexp must win outright", len(both), len(lineRegexpOnly))
+	}
+	for i := range both {
+		if both[i].Path != lineRegexpOnly[i].Path || both[i].LineNumber != lineRegexpOnly[i].LineNumber || both[i].Line != lineRegexpOnly[i].Line {
+			t.Fatalf("Word+LineRegexp match %d = %+v, want it to equal LineRegexp-only's %+v", i, both[i], lineRegexpOnly[i])
+		}
+	}
+	// -w "cat" against this fixture matches "cat" (line 1, whole line)
+	// AND " cat" (line 3, word-bounded but not whole-line) -- two
+	// matches, not one -- so if the tie-break silently fell back to Word
+	// instead of LineRegexp, this comparison would catch it.
+	if len(wordOnly) == len(lineRegexpOnly) {
+		t.Fatalf("Word-only and LineRegexp-only gave the same %d matches on this fixture -- the fixture doesn't actually distinguish the two boundary modes, so the tie-break isn't proven", len(wordOnly))
+	}
+}

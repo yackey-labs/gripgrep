@@ -36,12 +36,30 @@ type Match struct {
 type Options struct {
 	IgnoreCase   bool // -i/--ignore-case
 	SmartCase    bool // -S/--smart-case; wins over IgnoreCase if both are set (rg's own -i -S ordering can't be expressed by two independent bools, so this struct picks the more specific flag deterministically rather than reproducing "last one wins")
-	Word         bool // -w/--word-regexp
+	Word         bool // -w/--word-regexp; see LineRegexp's doc for the tie-break if both are set
 	FixedStrings bool // -F/--fixed-strings
+
+	// LineRegexp is -x/--line-regexp. Word and LineRegexp mirror the
+	// engine's single shared boundary mode (match.Config's doc: callers
+	// must never set both) -- the CLI resolves this from -w/-x order
+	// (last one given wins), which two independent bools can't
+	// reproduce, so -- same tie-break style as SmartCase-vs-IgnoreCase
+	// above -- LineRegexp wins if both are set.
+	LineRegexp bool
 
 	Hidden   bool     // --hidden
 	NoIgnore bool     // --no-ignore
 	Globs    []string // -g/--glob, repeatable; a leading '!' negates, exactly like the CLI
+	// IGlobs is --iglob, repeatable; same verbatim/negation convention
+	// as Globs but always matched case-insensitively regardless of
+	// GlobCaseInsensitive, exactly like the CLI (see
+	// internal/engine.Config.IGlobs' doc for the combined-ordering
+	// rule with Globs).
+	IGlobs []string
+	// GlobCaseInsensitive is --glob-case-insensitive: makes every Globs
+	// pattern (not IGlobs, already always case-insensitive) match
+	// case-insensitively.
+	GlobCaseInsensitive bool
 
 	// Context sets both Before and After at once, like -C. Before/After
 	// each independently override their side when non-zero, like -B/-A
@@ -56,6 +74,21 @@ type Options struct {
 	After   int
 
 	InvertMatch bool // -v/--invert-match
+
+	// MaxCount is -m/--max-count: 0 = unlimited (CLI default). The
+	// engine's own field is *int (nil = unlimited, a non-nil 0 is a
+	// legal "match nothing" limit -- see internal/engine.Config.MaxCount's
+	// doc), but Options stays a plain int per this package's
+	// zero-value-means-default policy: a non-zero value here converts to
+	// a pointer at the engine boundary (see toEngineConfig), and the
+	// CLI's `-m 0` ("match nothing") is deliberately inexpressible --
+	// callers wanting that don't call Search.
+	MaxCount int
+	// MaxDepth is -d/--max-depth: 0 = unlimited (CLI default), same
+	// pointer-conversion rationale as MaxCount above. The CLI's `-d 0`
+	// (roots only) is not expressible; pass explicit file paths instead
+	// of a directory root if that's what you need.
+	MaxDepth int
 
 	MaxFilesize int64 // 0 = unlimited, like the CLI's default
 	Workers     int   // -j/--threads; 0 = auto, like the CLI's default
@@ -91,6 +124,28 @@ func (o Options) caseMode() engine.CaseMode {
 	}
 }
 
+// intPtrIfSet converts n to *int, following the engine's nil-means-
+// unlimited convention (see Options.MaxCount/MaxDepth's docs): a zero
+// Options field -- "unset" in this package's zero-value-means-default
+// policy -- becomes nil rather than a pointer to 0.
+func intPtrIfSet(n int) *int {
+	if n == 0 {
+		return nil
+	}
+	return &n
+}
+
+// boundaryMode resolves Word/LineRegexp into the (word, lineRegexp) pair
+// the engine's shared boundary field allows -- see LineRegexp's doc for
+// the deterministic tie-break this struct uses in place of the CLI's
+// order-dependent last-flag-wins.
+func (o Options) boundaryMode() (word, lineRegexp bool) {
+	if o.LineRegexp {
+		return false, true
+	}
+	return o.Word, false
+}
+
 // toEngineConfig translates o plus a pattern/path list into an
 // engine.Config, the facade's half of the same config->engine boundary
 // cmd/gg's own toEngineConfig implements (see internal/engine's doc).
@@ -101,22 +156,28 @@ func (o Options) caseMode() engine.CaseMode {
 // CLI, which only computes them when isatty(stdout) or -n asks for it).
 func (o Options) toEngineConfig(pattern string, paths []string) engine.Config {
 	before, after := resolveContext(o)
+	word, lineRegexp := o.boundaryMode()
 	return engine.Config{
-		Patterns:      []string{pattern},
-		Case:          o.caseMode(),
-		Fixed:         o.FixedStrings,
-		Word:          o.Word,
-		Paths:         paths,
-		Hidden:        o.Hidden,
-		NoIgnore:      o.NoIgnore,
-		Globs:         o.Globs,
-		MaxFilesize:   o.MaxFilesize,
-		Threads:       o.Workers,
-		Binary:        engine.BinaryAuto,
-		Mmap:          engine.MmapAuto,
-		Invert:        o.InvertMatch,
-		LineNumbers:   true,
-		BeforeContext: before,
-		AfterContext:  after,
+		Patterns:            []string{pattern},
+		Case:                o.caseMode(),
+		Fixed:               o.FixedStrings,
+		Word:                word,
+		LineRegexp:          lineRegexp,
+		Paths:               paths,
+		Hidden:              o.Hidden,
+		NoIgnore:            o.NoIgnore,
+		Globs:               o.Globs,
+		IGlobs:              o.IGlobs,
+		GlobCaseInsensitive: o.GlobCaseInsensitive,
+		MaxFilesize:         o.MaxFilesize,
+		MaxDepth:            intPtrIfSet(o.MaxDepth),
+		Threads:             o.Workers,
+		Binary:              engine.BinaryAuto,
+		Mmap:                engine.MmapAuto,
+		Invert:              o.InvertMatch,
+		LineNumbers:         true,
+		BeforeContext:       before,
+		AfterContext:        after,
+		MaxCount:            intPtrIfSet(o.MaxCount),
 	}
 }
