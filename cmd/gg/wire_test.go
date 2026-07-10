@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"sync/atomic"
 	"testing"
+	"testing/iotest"
 
 	"github.com/yackey-labs/gripgrep/glob"
 	"github.com/yackey-labs/gripgrep/match"
@@ -62,6 +63,73 @@ func TestStripUTF8BOM_StripsRealBOM(t *testing.T) {
 	}
 	if string(got) != "hello\n" {
 		t.Errorf("got %q, want %q", got, "hello\n")
+	}
+}
+
+// TestStripUTF8BOM_EdgeCases covers round #27's rewrite (folding the BOM
+// check into the caller's own first full-size Read instead of a separate
+// 3-byte probe read): the sizes/shapes too small or too irregular for the
+// bomReader.Read fast path to ever fire, forcing finishBOMCheck's
+// buffering fallback.
+func TestStripUTF8BOM_EdgeCases(t *testing.T) {
+	cases := []struct {
+		name string
+		in   []byte
+		want []byte
+	}{
+		{"empty", nil, nil},
+		{"one-byte", []byte("x"), []byte("x")},
+		{"two-byte-not-a-bom", []byte{0xEF, 0xBB}, []byte{0xEF, 0xBB}},
+		{"bom-only", []byte{0xEF, 0xBB, 0xBF}, nil},
+		{"bom-plus-content", append([]byte{0xEF, 0xBB, 0xBF}, "hi\n"...), []byte("hi\n")},
+		{"three-byte-not-a-bom", []byte("abc"), []byte("abc")},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			r, err := stripUTF8BOM(bytes.NewReader(c.in))
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := io.ReadAll(r)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(got, c.want) {
+				t.Errorf("got %q, want %q", got, c.want)
+			}
+		})
+	}
+}
+
+// TestStripUTF8BOM_SplitAcrossShortReads forces the underlying reader to
+// return exactly one byte per Read call (iotest.OneByteReader), so a BOM
+// straddles several short reads instead of ever being handed to
+// bomReader.Read in one shot -- the case finishBOMCheck's buffering loop
+// exists for. Also exercises a real caller-supplied buffer smaller than
+// 3 bytes (bomReader.Read's other fallback branch) for good measure.
+func TestStripUTF8BOM_SplitAcrossShortReads(t *testing.T) {
+	data := append([]byte{0xEF, 0xBB, 0xBF}, "needle\n"...)
+	r, err := stripUTF8BOM(iotest.OneByteReader(bytes.NewReader(data)))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Read one byte at a time throughout, not just during the BOM check,
+	// so bomReader.Read's own len(b) < 3 branch is exercised too.
+	var got []byte
+	buf := make([]byte, 1)
+	for {
+		n, err := r.Read(buf)
+		got = append(got, buf[:n]...)
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if string(got) != "needle\n" {
+		t.Errorf("got %q, want %q", got, "needle\n")
 	}
 }
 
