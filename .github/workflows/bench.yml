@@ -25,7 +25,7 @@ on:
         default: true
 
 env:
-  RG_VERSION: "14.1.1"
+  RG_VERSION: "15.1.0"
   HYPERFINE_VERSION: "1.19.0"
 
 jobs:
@@ -52,7 +52,7 @@ jobs:
     runs-on: ${{ matrix.runner }}
     name: bench ${{ matrix.tool }} on ${{ matrix.platform }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # Spotlight taxes the bench: the corpus step writes ~104k files
       # (fresh build or cache restore alike) and mdworker then indexes
@@ -69,7 +69,7 @@ jobs:
         run: sudo mdutil -a -i off
 
       - name: Cache corpus
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: bench-corpus
           # v2: Windows corpus gained the kernel tree (sparse-checkout
@@ -84,7 +84,7 @@ jobs:
 
       - name: Set up Go
         if: matrix.tool == 'gg'
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
 
@@ -140,7 +140,7 @@ jobs:
           echo "gg does not build on ${{ matrix.platform }} yet" \
             > "results/bench-${{ matrix.platform }}-${{ matrix.tool }}/UNPORTED.txt"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: bench-${{ matrix.platform }}-${{ matrix.tool }}
           path: results/bench-${{ matrix.platform }}-${{ matrix.tool }}
@@ -151,8 +151,8 @@ jobs:
     if: always()
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
         with:
           path: artifacts
       - name: Render summary

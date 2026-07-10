@@ -63,6 +63,27 @@ across ~79k small files) — the current optimization frontier. The tree
 gap has closed from 3.74× to 1.41× through profile-driven work, and every
 number above is reproducible from this repo.
 
+### Apple Silicon reference (M4 Pro)
+
+A second controlled reference point, same methodology (warm cache,
+hyperfine `--warmup 3 -m 15 -N`, corpora built with the
+`internal/bench/ci-corpus.sh` recipe): MacBook Pro, Apple M4 Pro
+(10 performance + 4 efficiency cores, 24GB), macOS 26.5.1, go 1.26.4,
+rg 15.1.0, 2026-07-10:
+
+| Benchmark | gg vs rg |
+|---|---|
+| Linux kernel tree (~104k files), literal, gitignore-aware | **~parity** (1.581s gg vs 1.516s rg, within σ) — both tools almost entirely `open(2)`-bound on macOS |
+| Same tree, `--files` (pure walk, no search) | **1.07× FASTER** (91ms vs 98ms) |
+| OpenSubtitles ~830MB, literal | **2.07× FASTER** (49ms vs 102ms) |
+| Same file, `Sherlock\|Watson` (multi-literal) | **1.63× FASTER** (95ms vs 155ms) |
+
+Three wins and a statistical tie, against a newer rg than the x64 rows
+above. The single-file rows scale with the hardware — mmap plus
+intra-file parallelism across 10 performance cores puts the literal row
+at ~17 GB/s effective — and multi-literal, a loss on hosted x64 Linux,
+is a clear win on arm64.
+
 ### Hosted CI runners (Linux, macOS, Windows)
 
 The table above is the authoritative one, measured on a controlled Linux
@@ -72,15 +93,16 @@ hosted runner, same hyperfine settings, identically-built corpora
 (Windows checks out the same frozen kernel fork via sparse-checkout,
 minus its 3 reserved-DOS-name files). Hosted hardware varies run to run
 — rg's leg can land on a faster or slower machine than gg's — so these
-are ranges across four benchmark runs on 2026-07-10, indicative rather
-than authoritative:
+are ranges across the 2026-07-10 benchmark runs (rg pinned at 14.1.1
+for the earlier runs, 15.1.0 from the current pin onward), indicative
+rather than authoritative:
 
 | Benchmark | Linux (x64) | macOS (arm64) | Windows (x64) |
 |---|---|---|---|
-| Linux kernel tree, literal, gitignore-aware | ~parity (1.1× slower–1.1× faster) | noisy: 1.4× faster–1.7× slower | **~1.1× faster** |
-| Same tree, `--files` (pure walk, no search) | **1.6–2.1× faster** | **1.1–3× faster** | **~3.4× faster** |
-| OpenSubtitles ~830MB, literal | **1.3–2× faster** | **1.3–2.8× faster** | **~1.9× faster** |
-| Same file, `Sherlock\|Watson` | 1.0–1.3× **slower** | 1.1× slower–1.6× faster | **~1.5× faster** |
+| Linux kernel tree, literal, gitignore-aware | ~parity (1.1× slower–1.1× faster) | noisy: 1.4× faster–1.7× slower | **1.1–1.7× faster** |
+| Same tree, `--files` (pure walk, no search) | **1.6–2.1× faster** | **1.1–3× faster** | **3.4–5× faster** |
+| OpenSubtitles ~830MB, literal | **1.3–2× faster** | **1.3–2.8× faster** | **1.9–2.2× faster** |
+| Same file, `Sherlock\|Watson` | 1.0–1.3× **slower** | 1.1× slower–1.7× faster | **1.5–2× faster** |
 
 Windows sweeps all four rows. The macOS legs quiet Spotlight before
 building the corpus (mdworker indexing ~104k fresh files during the
