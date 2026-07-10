@@ -25,3 +25,4 @@ mem.prof
 
 # local benchmark corpora (large, never committed)
 /benchmark-data/
+__pycache__/
