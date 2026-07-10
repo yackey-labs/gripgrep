@@ -225,6 +225,44 @@ func TestGitCheckIgnoreOracle(t *testing.T) {
 		{"bare-slash-file", []string{"/"}, "foo", false},
 		{"bare-slash-dir", []string{"/"}, "foo", true},
 		{"bare-slash-nested", []string{"/"}, "foo/bar", false},
+
+		// Round #27: pathBetweenOfTokens -- rooted, single-segment
+		// (empty prefix or suffix means the whole basename is the wild
+		// part on that side, but the pattern is still single-segment
+		// anchored, so a nested path with the same tail must NOT match).
+		{"rooted-suffix-top", []string{"/*.spec"}, "foo.spec", false},
+		{"rooted-suffix-nested-rejected", []string{"/*.spec"}, "sub/foo.spec", false},
+		{"rooted-prefix-top", []string{"/load_address_*"}, "load_address_1", false},
+		{"rooted-prefix-nested-rejected", []string{"/load_address_*"}, "sub/load_address_1", false},
+		{"rooted-between-top", []string{"/processed-schema*.yaml"}, "processed-schema1.yaml", false},
+		{"rooted-between-nested-rejected", []string{"/processed-schema*.yaml"}, "sub/processed-schema1.yaml", false},
+		{"rooted-between-no-match", []string{"/processed-schema*.yaml"}, "processed-schema1.json", false},
+
+		// Round #27: pathBetweenOfTokens -- rooted, multi-segment (an
+		// interior '/' in both the prefix and suffix literals).
+		{"path-between-multi-seg-dir", []string{"/arch/*/include/generated/"}, "arch/x86/include/generated", true},
+		{"path-between-multi-seg-not-dir", []string{"/arch/*/include/generated/"}, "arch/x86/include/generated", false},
+		{"path-between-multi-seg-extra-depth-rejected", []string{"/arch/*/include/generated/"}, "arch/x86/foo/include/generated", true},
+		{"path-between-interior-slash-anchor", []string{"policy/*.conf"}, "policy/foo.conf", false},
+		{"path-between-interior-slash-nested-rejected", []string{"policy/*.conf"}, "policy/sub/foo.conf", false},
+
+		// Round #27: chainOfTokens -- basename patterns with 2+ wildcard
+		// gaps, unanchored on both ends (from the linux tree's
+		// `*.c.[012]*.*`, which after #23's char-class expansion becomes
+		// e.g. `*.c.0*.*`).
+		{"chain-basic-match", []string{"*.c.0*.*"}, "vmlinux.c.012345.tmp.o", false},
+		{"chain-basic-nested-match", []string{"*.c.0*.*"}, "sub/vmlinux.c.012345.tmp.o", false},
+		{"chain-missing-trailing-dot-rejected", []string{"*.c.0*.*"}, "vmlinux.c.0", false},
+		{"chain-missing-c0-rejected", []string{"*.c.0*.*"}, "vmlinux.foo.bar", false},
+		{"chain-both-anchored-match", []string{"a*b*c"}, "aXbYc", false},
+		{"chain-both-anchored-must-start-with-a", []string{"a*b*c"}, "XaXbYc", false},
+		{"chain-unanchored-start-anchored-end-match", []string{"*a*b"}, "XaYb", false},
+		{"chain-unanchored-start-anchored-end-must-end-with-b", []string{"*a*b"}, "XaYbZ", false},
+
+		// Whitelist / last-match-wins interplay with the new classes.
+		{"rooted-suffix-whitelist", []string{"/*.spec", "!keep.spec"}, "keep.spec", false},
+		{"rooted-suffix-whitelist-other-still-ignored", []string{"/*.spec", "!keep.spec"}, "drop.spec", false},
+		{"chain-whitelist-reverse-order-loses", []string{"!keep.c.0x.o", "*.c.0*.*"}, "keep.c.0x.o", false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -275,16 +313,42 @@ var (
 // literal+extension combo — the shapes that dominate real gitignore
 // files.
 func genGlobComponent(c *fuzzCursor) string {
-	switch c.intn(4) {
+	switch c.intn(5) {
 	case 0:
 		return fuzzSegments[c.intn(len(fuzzSegments))]
 	case 1:
 		return "*" + fuzzExts[c.intn(len(fuzzExts))]
 	case 2:
 		return fuzzWildcards[c.intn(len(fuzzWildcards))]
+	case 3:
+		return genChainComponent(c)
 	default:
 		return fuzzSegments[c.intn(len(fuzzSegments))] + fuzzExts[c.intn(len(fuzzExts))]
 	}
+}
+
+// genChainComponent produces a slash-free component with two or more `*`
+// wildcards separating literal runs (optionally unanchored at either
+// end), the shape round #27's chainOfTokens/chainMatches added a fast
+// class for -- e.g. "*foo*bar" or "foo*bar*" or "*foo*bar*baz*". Plain
+// genGlobComponent never emits more than one `*` in a single component,
+// so without this the fuzzer would never stress chainOfTokens at all.
+func genChainComponent(c *fuzzCursor) string {
+	var sb strings.Builder
+	if c.bool() {
+		sb.WriteByte('*')
+	}
+	n := 2 + c.intn(3)
+	for i := 0; i < n; i++ {
+		if i > 0 {
+			sb.WriteByte('*')
+		}
+		sb.WriteString(fuzzSegments[c.intn(len(fuzzSegments))])
+	}
+	if c.bool() {
+		sb.WriteByte('*')
+	}
+	return sb.String()
 }
 
 // genPattern produces a syntactically valid gitignore pattern line:

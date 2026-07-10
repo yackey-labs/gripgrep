@@ -19,6 +19,8 @@ const (
 	kindPrefix
 	kindContains
 	kindBetween
+	kindPathBetween
+	kindChain
 	kindRegex
 )
 
@@ -30,8 +32,17 @@ type compiledPattern struct {
 	isWhitelist bool
 	isOnlyDir   bool
 	kind        patternKind
-	literal     string // valid for kindLiteral / kindBasename / kindExt / kindSuffix / kindPrefix / kindContains / kindBetween (prefix half)
-	literal2    string // valid for kindBetween only (suffix half)
+	literal     string // valid for kindLiteral / kindBasename / kindExt / kindSuffix / kindPrefix / kindContains / kindBetween / kindPathBetween (prefix half)
+	literal2    string // valid for kindBetween / kindPathBetween only (suffix half)
+
+	// chunks/chainAnchoredStart/chainAnchoredEnd are valid for kindChain
+	// only: chunks are the pattern's literal runs in match order, and the
+	// two bools record whether the first/last chunk is pinned to the
+	// start/end of the basename (no wildcard on that side) or free to
+	// occur anywhere (a wildcard precedes/follows it). See chainOfTokens.
+	chunks             []string
+	chainAnchoredStart bool
+	chainAnchoredEnd   bool
 
 	re *regexp.Regexp // valid for kindRegex
 }
@@ -125,13 +136,14 @@ func compileLine(index int, raw string) (cps []compiledPattern, err error) {
 		expanded := make([]compiledPattern, 0, len(variants))
 		allFast := true
 		for _, vtoks := range variants {
-			lit, lit2, kind, kok := classifyFast(vtoks)
+			lit, lit2, chunks, chainAS, chainAE, kind, kok := classifyFast(vtoks)
 			if !kok {
 				allFast = false
 				break
 			}
 			cp := base
 			cp.kind, cp.literal, cp.literal2 = kind, lit, lit2
+			cp.chunks, cp.chainAnchoredStart, cp.chainAnchoredEnd = chunks, chainAS, chainAE
 			expanded = append(expanded, cp)
 		}
 		if allFast {
@@ -144,9 +156,10 @@ func compileLine(index int, raw string) (cps []compiledPattern, err error) {
 		// compile the original, unexpanded pattern below instead.
 	}
 
-	if lit, lit2, kind, ok := classifyFast(toks); ok {
+	if lit, lit2, chunks, chainAS, chainAE, kind, ok := classifyFast(toks); ok {
 		cp := base
 		cp.kind, cp.literal, cp.literal2 = kind, lit, lit2
+		cp.chunks, cp.chainAnchoredStart, cp.chainAnchoredEnd = chunks, chainAS, chainAE
 		return []compiledPattern{cp}, nil
 	}
 

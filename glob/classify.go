@@ -190,29 +190,42 @@ func expandClasses(tokens []token) ([][]token, bool) {
 // compileLine uses for an ordinary pattern: whole-basename literal,
 // whole-path literal, extension, then literal suffix. It never touches
 // the regex fallback -- ok is false if tokens fit none of these.
-func classifyFast(tokens []token) (literal, literal2 string, kind patternKind, ok bool) {
+func classifyFast(tokens []token) (literal, literal2 string, chunks []string, chainAnchoredStart, chainAnchoredEnd bool, kind patternKind, ok bool) {
 	if lit, bok := basenameLiteralOf(tokens); bok {
-		return lit, "", kindBasename, true
+		return lit, "", nil, false, false, kindBasename, true
 	}
 	if lit, lok := literalOf(tokens); lok {
-		return lit, "", kindLiteral, true
+		return lit, "", nil, false, false, kindLiteral, true
 	}
 	if ext, eok := extOfTokens(tokens); eok {
-		return ext, "", kindExt, true
+		return ext, "", nil, false, false, kindExt, true
 	}
 	if suf, sok := suffixOfTokens(tokens); sok {
-		return suf, "", kindSuffix, true
+		return suf, "", nil, false, false, kindSuffix, true
 	}
 	if pre, pok := prefixOfTokens(tokens); pok {
-		return pre, "", kindPrefix, true
+		return pre, "", nil, false, false, kindPrefix, true
 	}
 	if sub, cok := containsOfTokens(tokens); cok {
-		return sub, "", kindContains, true
+		return sub, "", nil, false, false, kindContains, true
 	}
 	if pre, suf, wok := betweenOfTokens(tokens); wok {
-		return pre, suf, kindBetween, true
+		return pre, suf, nil, false, false, kindBetween, true
 	}
-	return "", "", 0, false
+	// The two classes below don't require basenameTokens' `**/`-prefix
+	// check, so they're disjoint from every class above: an unanchored
+	// pattern always gets a `**/` prefix in compileLine (see
+	// hasDoubleStarPrefix there), so any token sequence reaching this
+	// point either already failed the classes above or was rooted from
+	// the start (leading '/' or an interior '/' elsewhere in the
+	// pattern) and could never have matched them anyway.
+	if pre, suf, pok := pathBetweenOfTokens(tokens); pok {
+		return pre, suf, nil, false, false, kindPathBetween, true
+	}
+	if cs, as, ae, cok := chainOfTokens(tokens); cok {
+		return "", "", cs, as, ae, kindChain, true
+	}
+	return "", "", nil, false, false, 0, false
 }
 
 // prefixOfTokens returns (prefix, true) if the pattern is `**/{lit}*` for
@@ -384,4 +397,136 @@ func basenameLiteralOf(tokens []token) (string, bool) {
 		sb.WriteRune(t.lit)
 	}
 	return sb.String(), true
+}
+
+// pathBetweenOfTokens returns (prefix, suffix, true) if tokens is a
+// literal run (possibly containing '/', possibly empty), then exactly
+// one `*`, then another literal run (same conditions) -- e.g. the
+// compiled form of a rooted pattern like `/*.spec` (prefix="",
+// suffix=".spec"), `/load_address_*` (prefix="load_address_",
+// suffix=""), or `arch/*/include/generated` (prefix="arch/",
+// suffix="/include/generated", from the gitignore pattern
+// `/arch/*/include/generated/`).
+//
+// Unlike prefixOfTokens/containsOfTokens/betweenOfTokens (which require a
+// `**/` prefix and operate on just the basename), this class has no such
+// prefix: a rooted pattern is anchored to the start of the *whole* path
+// Match receives (already relative to the governing ignore file's
+// directory -- see gitignore's rule that a leading or interior '/'
+// anchors a pattern there), so this matches against path directly, not
+// basename. A path matches if and only if it starts with prefix, ends
+// with suffix, is long enough for both without overlapping, and --
+// critically, since `*` never crosses '/' -- the stretch of path between
+// prefix and suffix contains no '/' of its own. That last check is what
+// makes a bare `/*.spec` (prefix="", suffix=".spec") correctly reject a
+// nested "sub/foo.spec": the "middle" there is "sub/foo", which contains
+// a '/'. See Set.Match's pathBetweens loop for where that check lives.
+//
+// Found via round #27's post-#23 census on the linux tree:
+// `/*.spec`, `/arch/*/include/generated/`, `/processed-schema*.yaml`,
+// `/processed-schema*.json`, `/test_fortify/*.log`, `po/*.gmo`,
+// `/*.skel.h`, `policy/*.conf`, and `/load_address_*` were the largest
+// remaining regex-fallback contributors once #23's basename-anchored
+// classes had already landed -- every one of them anchored (by a leading
+// '/' or an interior '/' elsewhere in the pattern) rather than basename-
+// relative, which is exactly what basenameTokens' `**/`-prefix
+// requirement excludes.
+func pathBetweenOfTokens(tokens []token) (prefix, suffix string, ok bool) {
+	starIdx := -1
+	for i, t := range tokens {
+		switch t.kind {
+		case tZeroOrMore:
+			if starIdx != -1 {
+				return "", "", false // more than one wildcard
+			}
+			starIdx = i
+		case tLiteral:
+			// ok, may include '/' -- unlike basenameTokens' literal scan,
+			// a '/' here is a real path separator this class intends to
+			// match literally, not a boundary violation.
+		default:
+			return "", "", false
+		}
+	}
+	if starIdx == -1 {
+		return "", "", false // no wildcard at all -- literalOf's job
+	}
+	var pre, suf strings.Builder
+	for _, t := range tokens[:starIdx] {
+		pre.WriteRune(t.lit)
+	}
+	for _, t := range tokens[starIdx+1:] {
+		suf.WriteRune(t.lit)
+	}
+	return pre.String(), suf.String(), true
+}
+
+// chainOfTokens returns (chunks, anchoredStart, anchoredEnd, true) if
+// tokens (after stripping a `**/` prefix, so this is a basename-relative
+// class like prefixOfTokens/containsOfTokens/betweenOfTokens) is a
+// sequence of literal runs separated by one or more `*` each -- the
+// general case those three classes leave uncovered once there are two or
+// more separating wildcards, e.g. `*.c.0*.*` (chunks=[".c.0", "."],
+// unanchored on both ends since it starts and ends with `*`).
+// anchoredStart is true when the first chunk has no leading `*` (must be
+// a prefix of the basename); anchoredEnd is true when the last chunk has
+// no trailing `*` (must be a suffix). A run of two or more consecutive
+// `*` tokens (possible from a literal "**" mid-pattern -- see
+// parseStar) collapses to a single gap, same as one `*` would.
+//
+// Match existence for this shape reduces to a simple greedy left-to-right
+// scan (see matchChain): find each interior chunk via the first
+// occurrence at or after the end of the previous match, since basename
+// (unlike a general path) is guaranteed free of '/' -- so unlike
+// pathBetweenOfTokens's single-wildcard class, there is no "did the
+// wildcard cross a separator" check to make; every position in basename
+// is fair game for every wildcard here. This greedy-leftmost strategy is
+// the standard technique for existence-only wildcard matching (it never
+// needs to backtrack: matching each chunk as early as possible only ever
+// leaves *more* room for the chunks still to come, never less).
+//
+// Found via round #27's census: after prefixOfTokens/containsOfTokens/
+// betweenOfTokens (#23) and pathBetweenOfTokens (this round) had already
+// landed, `*.c.[012]*.*` was the single largest remaining regex
+// contributor on the linux tree -- its post-char-class-expansion variants
+// like `*.c.0*.*` need two wildcard gaps, one more than betweenOfTokens
+// allows.
+func chainOfTokens(tokens []token) (chunks []string, anchoredStart, anchoredEnd bool, ok bool) {
+	rest, bok := basenameTokens(tokens)
+	if !bok || len(rest) == 0 {
+		return nil, false, false, false
+	}
+	anchoredStart = rest[0].kind != tZeroOrMore
+	anchoredEnd = rest[len(rest)-1].kind != tZeroOrMore
+
+	var sb strings.Builder
+	inLiteral := false
+	for _, t := range rest {
+		switch t.kind {
+		case tLiteral:
+			sb.WriteRune(t.lit)
+			inLiteral = true
+		case tZeroOrMore:
+			if inLiteral {
+				chunks = append(chunks, sb.String())
+				sb.Reset()
+				inLiteral = false
+			}
+			// A consecutive `*` (no literal since the last one) is just
+			// a wider gap -- nothing to close.
+		default:
+			// tAny, tClass, tAlternates, or a recursive token: give up,
+			// not worth the complexity of reasoning through these here.
+			return nil, false, false, false
+		}
+	}
+	if inLiteral {
+		chunks = append(chunks, sb.String())
+	}
+	if len(chunks) == 0 {
+		// An all-`*` pattern (e.g. a bare "*"): matches everything,
+		// not worth a dedicated fast class here.
+		return nil, false, false, false
+	}
+	return chunks, anchoredStart, anchoredEnd, true
 }

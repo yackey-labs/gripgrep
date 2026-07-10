@@ -9,32 +9,40 @@ import (
 // Set is a compiled collection of gitignore-style glob patterns, queried
 // as one combined unit per path.
 //
-// Patterns are dispatched through seven fast classes before falling back
+// Patterns are dispatched through nine fast classes before falling back
 // to regexp: an exact full-path literal map, a basename literal map, an
 // extension map (for patterns of the exact shape `**/*.ext`), a suffix
 // list (`**/*<literal tail>` whose tail isn't a single dot-segment, e.g.
 // `**/*.dtb.S` -- see suffixOfTokens), a prefix list (`**/<literal>*`,
 // e.g. `cscope.*` -- see prefixOfTokens), a contains list
-// (`**/*<literal>*`, e.g. `*.o.*` -- see containsOfTokens), and a
-// between list (`**/<prefix>*<suffix>`, e.g. `#*#` -- see
-// betweenOfTokens). The prefix/contains/between classes were added after
-// M3 #23's evaluation-count census found real-world .gitignore files
-// (the Linux kernel's own) lean heavily on exactly these shapes, and
-// every one of them was landing in the regex fallback and being
-// evaluated on nearly every path in the entire tree. Every other pattern
-// (containing wildcards, classes, alternates, or anchored wildcard
-// patterns like `/*.ext`) compiles to a regexp and is tried linearly.
-// See Match for how these combine to resolve gitignore's last-match-wins
-// precedence.
+// (`**/*<literal>*`, e.g. `*.o.*` -- see containsOfTokens), a between
+// list (`**/<prefix>*<suffix>`, e.g. `#*#` -- see betweenOfTokens), a
+// path-between list for rooted single-wildcard patterns matched against
+// the whole path rather than just the basename (e.g. `/*.spec` or
+// `/arch/*/include/generated/` -- see pathBetweenOfTokens), and a chain
+// list for basename patterns with two or more wildcards separating
+// literal runs (e.g. `*.c.0*.*` -- see chainOfTokens). The
+// prefix/contains/between classes were added by M3 #23's
+// evaluation-count census of real-world .gitignore files (the Linux
+// kernel's own); path-between and chain were added by round #27's
+// follow-up census once those three no longer left much regex-fallback
+// weight to find. Every one of them was landing in the regex fallback
+// and being evaluated on nearly every path in the entire tree. Every
+// other pattern (containing `?`, character classes, alternates, or more
+// wildcards than a class here handles) compiles to a regexp and is tried
+// linearly. See Match for how these combine to resolve gitignore's
+// last-match-wins precedence.
 type Set struct {
-	literalMap  map[string][]patternRef
-	basenameMap map[string][]patternRef
-	extMap      map[string][]patternRef
-	suffixes    []suffixEntry
-	prefixes    []prefixEntry
-	contains    []containsEntry
-	betweens    []betweenEntry
-	regexes     []regexEntry
+	literalMap   map[string][]patternRef
+	basenameMap  map[string][]patternRef
+	extMap       map[string][]patternRef
+	suffixes     []suffixEntry
+	prefixes     []prefixEntry
+	contains     []containsEntry
+	betweens     []betweenEntry
+	pathBetweens []pathBetweenEntry
+	chains       []chainEntry
+	regexes      []regexEntry
 }
 
 // patternRef is everything Match needs about a pattern once it has
@@ -79,6 +87,28 @@ type betweenEntry struct {
 	patternRef
 	prefix []byte
 	suffix []byte
+}
+
+// pathBetweenEntry is a compiled kindPathBetween pattern: a rooted,
+// single-wildcard pattern matched against the whole path (not just the
+// basename) -- see pathBetweenOfTokens. prefix/suffix are precomputed as
+// []byte once at Build time so Match's HasPrefix/HasSuffix checks never
+// allocate or convert.
+type pathBetweenEntry struct {
+	patternRef
+	prefix []byte
+	suffix []byte
+}
+
+// chainEntry is a compiled kindChain pattern: chunks are a basename's
+// required literal runs in match order, each precomputed as []byte once
+// at Build time; anchoredStart/anchoredEnd mirror chainOfTokens' return
+// values. See chainMatches for how these combine into a match test.
+type chainEntry struct {
+	patternRef
+	chunks        [][]byte
+	anchoredStart bool
+	anchoredEnd   bool
 }
 
 type regexEntry struct {
@@ -136,6 +166,14 @@ func (b *Builder) Build() (*Set, error) {
 				s.contains = append(s.contains, containsEntry{patternRef: ref, substr: []byte(cp.literal)})
 			case kindBetween:
 				s.betweens = append(s.betweens, betweenEntry{patternRef: ref, prefix: []byte(cp.literal), suffix: []byte(cp.literal2)})
+			case kindPathBetween:
+				s.pathBetweens = append(s.pathBetweens, pathBetweenEntry{patternRef: ref, prefix: []byte(cp.literal), suffix: []byte(cp.literal2)})
+			case kindChain:
+				chunks := make([][]byte, len(cp.chunks))
+				for i, c := range cp.chunks {
+					chunks[i] = []byte(c)
+				}
+				s.chains = append(s.chains, chainEntry{patternRef: ref, chunks: chunks, anchoredStart: cp.chainAnchoredStart, anchoredEnd: cp.chainAnchoredEnd})
 			case kindRegex:
 				s.regexes = append(s.regexes, regexEntry{patternRef: ref, re: cp.re})
 			}
@@ -277,6 +315,40 @@ func (s *Set) Match(path []byte, isDir bool) MatchResult {
 		}
 	}
 
+	for i := range s.pathBetweens {
+		pb := &s.pathBetweens[i]
+		if pb.index <= bestIdx {
+			continue
+		}
+		if pb.isOnlyDir && !isDir {
+			continue
+		}
+		// Matched against path directly (not base): a pathBetween entry
+		// is already anchored to the start of whatever path Match
+		// receives (see pathBetweenOfTokens' doc), unlike every class
+		// above which matches within base.
+		if len(path) >= len(pb.prefix)+len(pb.suffix) &&
+			bytes.HasPrefix(path, pb.prefix) && bytes.HasSuffix(path, pb.suffix) {
+			mid := path[len(pb.prefix) : len(path)-len(pb.suffix)]
+			if bytes.IndexByte(mid, '/') < 0 {
+				bestIdx, bestWhitelist = pb.index, pb.isWhitelist
+			}
+		}
+	}
+
+	for i := range s.chains {
+		c := &s.chains[i]
+		if c.index <= bestIdx {
+			continue
+		}
+		if c.isOnlyDir && !isDir {
+			continue
+		}
+		if chainMatches(base, c.chunks, c.anchoredStart, c.anchoredEnd) {
+			bestIdx, bestWhitelist = c.index, c.isWhitelist
+		}
+	}
+
 	for i := range s.regexes {
 		re := &s.regexes[i]
 		if re.index <= bestIdx {
@@ -299,4 +371,50 @@ func (s *Set) Match(path []byte, isDir bool) MatchResult {
 	default:
 		return Ignored
 	}
+}
+
+// chainMatches reports whether base matches the kindChain shape
+// described by chunks/anchoredStart/anchoredEnd (see chainOfTokens):
+// each chunk in turn, greedily matched at or after the position the
+// previous chunk left off. This is safe as an existence-only test
+// (no need to backtrack across alternative chunk positions) because
+// matching each chunk as early as possible only ever leaves *more* of
+// base available for the chunks still to come, never less -- the
+// standard greedy-leftmost strategy for wildcard existence matching.
+//
+// base is guaranteed free of '/' (it came from basenameTokens via
+// chainOfTokens), so unlike pathBetweenOfTokens' single-wildcard class,
+// there's no "did a wildcard cross a separator" check to make here: every
+// position in base is fair game for every gap between chunks.
+func chainMatches(base []byte, chunks [][]byte, anchoredStart, anchoredEnd bool) bool {
+	pos := 0
+	last := len(chunks) - 1
+	for i, c := range chunks {
+		switch {
+		case i == 0 && anchoredStart && i == last && anchoredEnd:
+			// A single chunk anchored on both ends is a plain literal
+			// equality check -- not reachable via classifyFast (that
+			// shape is basenameLiteralOf's job), but correct in
+			// isolation regardless.
+			return bytes.Equal(base, c)
+		case i == 0 && anchoredStart:
+			if !bytes.HasPrefix(base, c) {
+				return false
+			}
+			pos = len(c)
+		case i == last && anchoredEnd:
+			start := len(base) - len(c)
+			if start < pos {
+				return false
+			}
+			return bytes.HasSuffix(base, c)
+		default:
+			idx := bytes.Index(base[pos:], c)
+			if idx < 0 {
+				return false
+			}
+			pos += idx + len(c)
+		}
+	}
+	return true
 }

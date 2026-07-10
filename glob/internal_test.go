@@ -458,7 +458,7 @@ func TestBetweenMatchRejectsOverlap(t *testing.T) {
 func TestExpandClasses(t *testing.T) {
 	render := func(t *testing.T, toks []token) string {
 		t.Helper()
-		lit, _, _, ok := classifyFast(toks)
+		lit, _, _, _, _, _, ok := classifyFast(toks)
 		if !ok {
 			t.Fatalf("expanded variant %v didn't classify as fast", toks)
 		}
