@@ -91,7 +91,18 @@ type Result struct {
 // failed (a bad -g/--glob pattern, or walk.Walk's own setup error);
 // per-file errors during a successful walk are reported via Result and
 // stderr instead.
-func Run(cfg Config, newWorker NewWorkerFunc, quiet QuitSink, bm BinaryMessaging, stderr io.Writer) (Result, error) {
+//
+// stop, if non-nil, is checked before every visited file exactly like
+// quiet.Found() (and combines with it via OR) but WITHOUT quiet's sink
+// override: quiet always replaces every worker's own Sink (rg's -q shows
+// no output at all, ever), whereas a caller that wants early-exit while
+// still keeping its real per-worker sinks -- and their per-file state,
+// such as the root facade's SearchStream grouping context lines -- needs
+// the stop check on its own. cmd/gg's -q passes stop=nil (quiet already
+// covers it); the facade's SearchStream passes quiet=nil and its own
+// stop func backed by the same flag its sinks set when the caller's
+// early-stop callback returns false.
+func Run(cfg Config, newWorker NewWorkerFunc, quiet QuitSink, stop func() bool, bm BinaryMessaging, stderr io.Writer) (Result, error) {
 	globSet, globsRequireMatch, err := buildGlobs(cfg.Globs)
 	if err != nil {
 		return Result{}, err
@@ -119,7 +130,7 @@ func Run(cfg Config, newWorker NewWorkerFunc, quiet QuitSink, bm BinaryMessaging
 	}
 
 	visitor := func(e *walk.Entry) walk.WalkState {
-		if quiet != nil && quiet.Found() {
+		if (quiet != nil && quiet.Found()) || (stop != nil && stop()) {
 			return walk.Quit
 		}
 		if e.Err != nil {

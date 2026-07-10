@@ -80,7 +80,7 @@ func execute(cfg *Config, stdout, stderr io.Writer) int {
 		ContextEnabled: contextEnabled,
 	}
 
-	result, err := engine.Run(econf, newWorker, quietSink, bm, stderr)
+	result, err := engine.Run(econf, newWorker, quietSink, nil, bm, stderr)
 	if err != nil {
 		fmt.Fprintf(stderr, "gg: %s\n", err)
 		return 2
