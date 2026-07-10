@@ -1,5 +1,6 @@
 # Built binaries
 /gg
+/gg-release
 *.exe
 *.test
 *.out

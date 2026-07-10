@@ -45,11 +45,13 @@ buffer instead) raises it to ~2.3x, so mmap page-fault handling is a real
 but partial contributor; the rest isn't fully isolated yet. v1 of
 intra-file parallelism only covers the no-context, non-invert case
 (`-A`/`-B`/`-C`/`-v` fall back to the existing serial path); context
-support is designed but not yet landed. What's left: the linux-tree gap
-is now mostly walker syscall/scheduling overhead rather than glob
-matching (a residual couple of genuinely hard-to-fast-class regex
-patterns aside), and full Teddy-class SIMD multi-literal matching
-remains the path to complete parity on the regex row.
+support is designed but not yet landed. Walker syscall/scheduling
+overhead (blind ignore-file probes, nanosleep-based idle spin) has since
+been fixed (M3 #24: real cond-var parking, ~10k blind openat probes
+eliminated) and PGO has landed (M3 #26); what's left on the linux-tree
+row is a residual couple of genuinely hard-to-fast-class glob patterns
+and full Teddy-class SIMD multi-literal matching, which remains the path
+to complete parity on the regex row.
 
 The optimization log lives in the commit history (`git log --grep "M3
 perf"`); dead ends are documented alongside wins.
@@ -136,13 +138,26 @@ one `Dest` (see `cmd/gg/wire.go` for the real wiring, including
 ## Dev workflow
 
 ```
-make build      # go build -o gg ./cmd/gg
+make build         # go build -o gg ./cmd/gg -- portable baseline, still gets
+                   # PGO automatically if cmd/gg/default.pgo is present
+make build-release # GOAMD64=v3 + PGO -> gg-release, an opt-in release flavor
 make test       # go test -race ./...
 make cover      # coverage report (floor: 80%/package)
 make bench      # per-package Go benchmarks (-benchmem)
 make bench-e2e  # hyperfine timing vs rg (run internal/bench/setup.sh once)
+make pgo-collect # refresh cmd/gg/default.pgo from a representative query mix
 go test -tags e2e .   # golden gg-vs-rg end-to-end suite (needs rg on PATH)
 ```
+
+`cmd/gg/default.pgo` is checked in (M3 #26): measured +1.2% to +7.7% across
+the benchmark mix on the reference box, no regressions. `GOAMD64=v3`
+(`make build-release`) was measured as a wash on its own on that box --
+the hottest loops (`bytes.IndexByte`/`Index`) are hand-written AVX2
+assembly that already dispatches on runtime CPU-feature detection
+regardless of the GOAMD64 build level, so v3 mainly affects the smaller
+slice of compiler-generated code around them. Shipped anyway since it's
+free and the conventional release flavor; `make build` stays at the
+portable baseline.
 
 ## Docs
 

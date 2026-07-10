@@ -1,10 +1,34 @@
 GOAMD64 ?= v3
 PGO_PROFILE := cmd/gg/default.pgo
+PGO_TREE := benchmark-data/linux
+PGO_TEXT := /dev/shm/gg-bench/en.sample.txt
 
-.PHONY: build test vet cover bench bench-e2e pgo pgo-collect clean
+.PHONY: build build-release test vet cover bench bench-e2e pgo-collect clean
 
+# Portable baseline: default GOAMD64, no explicit -pgo flag. `go build`
+# still auto-detects and uses $(PGO_PROFILE) if present (that's Go's
+# default -pgo=auto behavior for any main package sitting next to a
+# default.pgo) -- PGO is not opt-in, only GOAMD64=v3 is (see
+# build-release). Measured M3 #26: PGO alone is worth +1.2% to +7.7%
+# across the benchmark mix on this box.
 build:
 	go build -o gg ./cmd/gg
+
+# Release build: GOAMD64=v3 (this box's hardware baseline supports AVX2)
+# on top of the same PGO profile. Shipped as a distinct binary
+# (gg-release) so it never silently clobbers the portable `gg` from
+# `make build`. Measured M3 #26: GOAMD64=v3 was a wash on its own on this
+# box (no consistent delta either direction across 5 rows) -- the hot
+# loops (bytes.IndexByte/Index) are hand-written AVX2 assembly that
+# already dispatches on runtime CPU-feature detection regardless of the
+# GOAMD64 build level, so v3 only touches the smaller slice of
+# compiler-generated code around them. Shipped anyway: it costs nothing,
+# is the conventional release flavor for AVX2-capable deploy targets, and
+# may pay off more once Teddy/SWAR (PLAN.md's M3 queue) adds
+# vectorizable Go code of our own rather than relying solely on stdlib
+# asm.
+build-release:
+	GOAMD64=$(GOAMD64) go build -pgo=$(PGO_PROFILE) -o gg-release ./cmd/gg
 
 # -race is mandatory, not optional: walk's work-stealing deque/quiescence
 # and printer's per-worker buffer flush are exactly the kind of real
@@ -34,16 +58,25 @@ bench:
 bench-e2e: build
 	./internal/bench/bench.sh
 
-# Collect a representative CPU profile for PGO. TODO(M2+): cmd/gg needs a
-# hidden -cpuprofile flag before this target does anything useful; until
-# then it's a documented placeholder.
+# Refreshes $(PGO_PROFILE) from a representative query mix (M3 #26):
+# walk-only, tree literal search, single-file literal/multi-literal/
+# case-insensitive, and a glob-filtered tree search -- spanning the walk,
+# glob, match, and search packages rather than over-fitting one path.
+# Requires the benchmark corpora to already exist ($(PGO_TREE) --
+# internal/bench/setup.sh's linux clone or this repo's benchmark-data/
+# fixture -- and $(PGO_TEXT), the OpenSubtitles corpus); this target
+# does not provision them. Uses cmd/gg's hidden GG_CPUPROFILE hook, then
+# merges with `go tool pprof -proto`.
 pgo-collect: build
-	@echo "TODO: run a representative search with -cpuprofile, then:"
-	@echo "  cp cpu.prof $(PGO_PROFILE)"
-
-# Builds with PGO (if a profile has been committed) and GOAMD64=v3.
-pgo:
-	GOAMD64=$(GOAMD64) go build -pgo=$(PGO_PROFILE) -o gg ./cmd/gg
+	GG_CPUPROFILE=/tmp/gg-pgo-1.prof ./gg -n PM_RESUME $(PGO_TREE) >/dev/null
+	GG_CPUPROFILE=/tmp/gg-pgo-2.prof ./gg --files $(PGO_TREE) >/dev/null
+	GG_CPUPROFILE=/tmp/gg-pgo-3.prof ./gg -n "Sherlock Holmes" $(PGO_TEXT) >/dev/null
+	GG_CPUPROFILE=/tmp/gg-pgo-4.prof ./gg -n "Sherlock|Watson" $(PGO_TEXT) >/dev/null
+	GG_CPUPROFILE=/tmp/gg-pgo-5.prof ./gg -n -i "sherlock holmes" $(PGO_TEXT) >/dev/null
+	GG_CPUPROFILE=/tmp/gg-pgo-6.prof ./gg -n -g '*.c' PM_RESUME $(PGO_TREE) >/dev/null
+	go tool pprof -proto -output=$(PGO_PROFILE) /tmp/gg-pgo-*.prof
+	rm -f /tmp/gg-pgo-*.prof
+	@echo "refreshed $(PGO_PROFILE) -- 'make build'/'make build-release' pick it up automatically"
 
 clean:
-	rm -f gg
+	rm -f gg gg-release
