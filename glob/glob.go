@@ -120,24 +120,47 @@ type regexEntry struct {
 // The zero value is ready to use.
 type Builder struct {
 	patterns []string
+	ci       []bool // parallel to patterns; true iff added via AddCI
 }
 
-// Add registers one gitignore-style pattern. A pattern prefixed with '!'
-// is a whitelist (re-include) entry, matching gitignore syntax. Add
-// never fails outright; a malformed pattern is recorded and surfaced by
-// Build. Add returns the Builder to allow chaining.
+// Add registers one gitignore-style pattern, matched case-sensitively. A
+// pattern prefixed with '!' is a whitelist (re-include) entry, matching
+// gitignore syntax. Add never fails outright; a malformed pattern is
+// recorded and surfaced by Build. Add returns the Builder to allow
+// chaining.
 //
 // A pattern that gitignore syntax defines as inert — a `#`-comment line
 // or a blank line — is accepted here too and simply contributes nothing
 // to the compiled Set.
 func (b *Builder) Add(pattern string) *Builder {
 	b.patterns = append(b.patterns, pattern)
+	b.ci = append(b.ci, false)
 	return b
 }
 
-// Build compiles all patterns added via Add into a single Set. Patterns
-// are numbered by their Add-order for last-match-wins resolution;
-// compilation stops at (and reports) the first invalid pattern.
+// AddCI registers one gitignore-style pattern, matched case-insensitively
+// -- for gg's --iglob and --glob-case-insensitive (rg parity: verified
+// against the real rg binary, `--iglob '*.txt'` matches `UPPER.TXT`).
+// Otherwise identical to Add, including '!' whitelist handling.
+//
+// A case-insensitive pattern always compiles to the regexp fallback (see
+// compileLine), bypassing every fast class in Set -- those were built
+// assuming case-sensitive byte comparison (bytes.HasPrefix/HasSuffix/
+// Contains/Equal), and folding them correctly would need a second,
+// case-folded copy of every literal they precompute. -g/--iglob patterns
+// are a small, CLI-supplied set evaluated once per Set (not per walked
+// entry the way ignore-file patterns are), so paying regexp cost for
+// just the case-insensitive ones costs nothing measurable.
+func (b *Builder) AddCI(pattern string) *Builder {
+	b.patterns = append(b.patterns, pattern)
+	b.ci = append(b.ci, true)
+	return b
+}
+
+// Build compiles all patterns added via Add/AddCI into a single Set.
+// Patterns are numbered by their Add-order for last-match-wins
+// resolution; compilation stops at (and reports) the first invalid
+// pattern.
 func (b *Builder) Build() (*Set, error) {
 	s := &Set{
 		literalMap:  make(map[string][]patternRef),
@@ -145,7 +168,7 @@ func (b *Builder) Build() (*Set, error) {
 		extMap:      make(map[string][]patternRef),
 	}
 	for i, raw := range b.patterns {
-		cps, err := compileLine(i, raw)
+		cps, err := compileLine(i, raw, b.ci[i])
 		if err != nil {
 			return nil, err
 		}

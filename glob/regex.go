@@ -19,10 +19,11 @@ import (
 //     behave like globset's byte-level matching would. Given gripgrep
 //     targets UTF-8/ASCII source trees (PLAN.md v1 scope), this is an
 //     accepted gap, not a bug.
-//   - No `(?-u)`/`(?i)` prefix is needed or emitted since Go's regexp has
-//     no separate unicode-mode toggle and this package never exposes a
-//     case-insensitive builder option (case_insensitive is unused by
-//     gitignore parsing).
+//   - No `(?-u)` prefix is needed since Go's regexp has no separate
+//     unicode-mode toggle. `(?i)` IS used, but not by this function --
+//     compileLine prepends it to this function's output for a
+//     Builder.AddCI pattern (see its doc), since case_insensitive here
+//     would need per-token handling this translation doesn't do.
 func tokensToRegex(tokens []token) string {
 	var sb strings.Builder
 	sb.WriteByte('^')

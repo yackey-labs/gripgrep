@@ -601,3 +601,59 @@ func TestBasenameTokensRequiresLiteralSeparatorSafety(t *testing.T) {
 		t.Errorf("basenameTokens(\"**/fo*o\") = %+v, want %+v", got, want)
 	}
 }
+
+// TestAddCIMatchesCaseInsensitively covers round #32's --iglob/
+// --glob-case-insensitive support (Builder.AddCI): a pattern that would
+// otherwise classify into a fast class (kindExt here -- "*.txt" is the
+// exact "**/*.ext" shape) must still match a differently-cased basename.
+func TestAddCIMatchesCaseInsensitively(t *testing.T) {
+	var b Builder
+	b.AddCI("*.txt")
+	s, err := b.Build()
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	for _, path := range []string{"UPPER.TXT", "Mixed.Txt", "lower.txt"} {
+		if got := s.Match([]byte(path), false); got != Ignored {
+			t.Errorf("AddCI(%q).Match(%q) = %v, want Ignored", "*.txt", path, got)
+		}
+	}
+	if got := s.Match([]byte("other.md"), false); got != NoMatch {
+		t.Errorf("AddCI(%q).Match(%q) = %v, want NoMatch", "*.txt", "other.md", got)
+	}
+}
+
+// TestAddCIBypassesFastClasses confirms AddCI patterns never populate any
+// of Set's fast-class slices/maps (see AddCI's doc for why those aren't
+// safe to use for a case-insensitive pattern) -- every AddCI pattern
+// must land in s.regexes instead, even for a pattern shape (like "*.txt")
+// that Add would classify into extMap.
+func TestAddCIBypassesFastClasses(t *testing.T) {
+	var b Builder
+	b.AddCI("*.txt")
+	s, err := b.Build()
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if n := len(s.literalMap) + len(s.basenameMap) + len(s.extMap) + len(s.suffixes) +
+		len(s.prefixes) + len(s.contains) + len(s.betweens) + len(s.pathBetweens) + len(s.chains); n != 0 {
+		t.Errorf("AddCI(%q) populated a fast class (total %d entries across all fast classes), want 0", "*.txt", n)
+	}
+	if len(s.regexes) != 1 {
+		t.Fatalf("AddCI(%q) produced %d regex entries, want 1", "*.txt", len(s.regexes))
+	}
+}
+
+// TestAddPlainRemainsCaseSensitive is AddCI's negative control: an
+// ordinary Add pattern of the identical shape must NOT match a
+// differently-cased basename, confirming AddCI's case-folding is opt-in
+// per pattern, not a global Set-wide change.
+func TestAddPlainRemainsCaseSensitive(t *testing.T) {
+	s := buildSet(t, "*.txt")
+	if got := s.Match([]byte("UPPER.TXT"), false); got == Ignored {
+		t.Errorf("Add(%q).Match(%q) = Ignored, want NoMatch (case-sensitive by default)", "*.txt", "UPPER.TXT")
+	}
+	if got := s.Match([]byte("lower.txt"), false); got != Ignored {
+		t.Errorf("Add(%q).Match(%q) = %v, want Ignored", "*.txt", "lower.txt", got)
+	}
+}

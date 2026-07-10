@@ -65,7 +65,12 @@ type compiledPattern struct {
 // All returned patterns share this line's index/isWhitelist/isOnlyDir,
 // since they came from the same gitignore line and must resolve
 // last-match-wins precedence together.
-func compileLine(index int, raw string) (cps []compiledPattern, err error) {
+//
+// ci forces a case-insensitive match (see Builder.AddCI): when true, the
+// fast-class classification below is skipped entirely and the pattern
+// always compiles to a case-insensitive regexp, never one of Set's fast
+// classes (see AddCI's doc for why bypassing them is correct and cheap).
+func compileLine(index int, raw string, ci bool) (cps []compiledPattern, err error) {
 	line := raw
 	if strings.HasPrefix(line, "#") {
 		return nil, nil
@@ -132,38 +137,43 @@ func compileLine(index int, raw string) (cps []compiledPattern, err error) {
 
 	base := compiledPattern{index: index, isWhitelist: isWhitelist, isOnlyDir: isOnlyDir}
 
-	if variants, ok := expandClasses(toks); ok {
-		expanded := make([]compiledPattern, 0, len(variants))
-		allFast := true
-		for _, vtoks := range variants {
-			lit, lit2, chunks, chainAS, chainAE, kind, kok := classifyFast(vtoks)
-			if !kok {
-				allFast = false
-				break
+	if !ci {
+		if variants, ok := expandClasses(toks); ok {
+			expanded := make([]compiledPattern, 0, len(variants))
+			allFast := true
+			for _, vtoks := range variants {
+				lit, lit2, chunks, chainAS, chainAE, kind, kok := classifyFast(vtoks)
+				if !kok {
+					allFast = false
+					break
+				}
+				cp := base
+				cp.kind, cp.literal, cp.literal2 = kind, lit, lit2
+				cp.chunks, cp.chainAnchoredStart, cp.chainAnchoredEnd = chunks, chainAS, chainAE
+				expanded = append(expanded, cp)
 			}
+			if allFast {
+				return expanded, nil
+			}
+			// At least one expanded variant still needs regex (the class
+			// wasn't the pattern's only wildcard) -- expanding would trade
+			// one regex for several without removing the regex fallback
+			// requirement at all, a pure regression, so fall through and
+			// compile the original, unexpanded pattern below instead.
+		}
+
+		if lit, lit2, chunks, chainAS, chainAE, kind, ok := classifyFast(toks); ok {
 			cp := base
 			cp.kind, cp.literal, cp.literal2 = kind, lit, lit2
 			cp.chunks, cp.chainAnchoredStart, cp.chainAnchoredEnd = chunks, chainAS, chainAE
-			expanded = append(expanded, cp)
+			return []compiledPattern{cp}, nil
 		}
-		if allFast {
-			return expanded, nil
-		}
-		// At least one expanded variant still needs regex (the class
-		// wasn't the pattern's only wildcard) -- expanding would trade
-		// one regex for several without removing the regex fallback
-		// requirement at all, a pure regression, so fall through and
-		// compile the original, unexpanded pattern below instead.
-	}
-
-	if lit, lit2, chunks, chainAS, chainAE, kind, ok := classifyFast(toks); ok {
-		cp := base
-		cp.kind, cp.literal, cp.literal2 = kind, lit, lit2
-		cp.chunks, cp.chainAnchoredStart, cp.chainAnchoredEnd = chunks, chainAS, chainAE
-		return []compiledPattern{cp}, nil
 	}
 
 	reSrc := tokensToRegex(toks)
+	if ci {
+		reSrc = "(?i)" + reSrc
+	}
 	re, rerr := regexp.Compile(reSrc)
 	if rerr != nil {
 		return nil, fmt.Errorf("compile regex %q (from glob %q): %w", reSrc, raw, rerr)
