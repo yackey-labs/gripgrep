@@ -201,50 +201,41 @@ exit 2 — never silently ignored.
 
 ## Library usage
 
+The root package is the CLI without the CLI — same engine, same
+defaults (recursive, gitignore-aware, binary-filtering, parallel), one
+line:
+
 ```go
-package main
+import "github.com/yackey-labs/gripgrep"
 
-import (
-	"os"
-
-	"github.com/yackey-labs/gripgrep/match"
-	"github.com/yackey-labs/gripgrep/printer"
-	"github.com/yackey-labs/gripgrep/search"
-	"github.com/yackey-labs/gripgrep/walk"
-)
-
-func main() {
-	m, err := match.New(match.Config{
-		Patterns: []string{"TODO"},
-		CaseMode: match.CaseSmart,
-	})
-	if err != nil {
-		panic(err)
-	}
-
-	dest := printer.NewDest(os.Stdout)
-	sink := printer.NewStandard(dest)
-	s := search.New(search.Searcher{Matcher: m, LineNumbers: true})
-
-	_ = walk.Walk([]string{"."}, walk.Options{}, func(e *walk.Entry) walk.WalkState {
-		if e.Type != walk.TypeFile {
-			return walk.Continue
-		}
-		f, ferr := os.Open(e.Path)
-		if ferr != nil {
-			return walk.Continue
-		}
-		_ = s.Search(e.Path, f, sink)
-		f.Close()
-		return walk.Continue
-	})
-}
+matches, err := gripgrep.Search("TODO", ".")          // []Match: Path, LineNumber, Line
+files, err := gripgrep.FilesWithMatch("TODO", ".")    // like -l
+counts, err := gripgrep.CountMatches("TODO", ".")     // like -c, map[path]count
+all, err := gripgrep.Files("src", "docs")             // like --files
 ```
 
-Note: `walk.Walk` calls the visitor from multiple goroutines; for
-parallel use, give each worker its own `Searcher` + `Standard` sharing
-one `Dest` (see `cmd/gg/wire.go` for the real wiring, including
-`sync.Pool` sharing and binary-mode selection).
+CLI-flag-equivalent control via `Options` (its zero value is exactly
+the defaults above; fields mirror the flags):
+
+```go
+opts := gripgrep.Options{IgnoreCase: true, Globs: []string{"*.go"}, Context: 2}
+matches, err := opts.Search("todo", "./internal")
+```
+
+Streaming with early stop:
+
+```go
+err := gripgrep.SearchStream("TODO", []string{"."}, func(m gripgrep.Match) bool {
+	fmt.Printf("%s:%d: %s\n", m.Path, m.LineNumber, m.Line)
+	return true // false stops the search
+})
+```
+
+Everything the facade returns is an independent copy — safe to retain,
+map-key, or pass between goroutines. The lower-level packages (`glob`,
+`walk`, `match`, `search`, `printer`) remain public for callers who
+want the zero-copy hot path and are willing to do their own wiring; see
+their godoc.
 
 ## Dev workflow
 
