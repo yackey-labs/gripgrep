@@ -30,6 +30,7 @@ func (s *Searcher) resetRun() {
 	s.afterContextLeft = 0
 	s.hasMatched = false
 	s.matchCount = 0
+	s.matchLimitReached = s.MaxCount != nil && *s.MaxCount <= 0
 	s.hasBinaryOffset = false
 	s.binaryOffset = 0
 }
@@ -63,6 +64,16 @@ func (s *Searcher) matchByLine(buf []byte, sink Sink) (scanOutcome, error) {
 // matchByLineSlow steps line by line, calling Matcher.Verify on each. It
 // handles Invert directly (a non-match becomes a "match" and vice versa)
 // since there is no whole-buffer prefilter to exploit.
+//
+// -m/--max-count: once matchLimitReached is set (by an earlier iteration
+// reaching MaxCount, or already true from the start for MaxCount==0 --
+// see resetRun/runChunk), success is forced false regardless of what
+// Verify returned, so no FURTHER match is ever found or sunk -- but the
+// `else if afterContextLeft >= 1` branch still fires normally, draining
+// any trailing after-context still owed to the last counted match. Once
+// both the limit is reached AND that trailing context is fully drained,
+// the loop returns scanStop immediately rather than continuing to Verify
+// lines that can no longer produce any output.
 func (s *Searcher) matchByLineSlow(buf []byte, sink Sink) (scanOutcome, error) {
 	step := newLineStep(s.pos, len(buf))
 	for {
@@ -73,7 +84,7 @@ func (s *Searcher) matchByLineSlow(buf []byte, sink Sink) (scanOutcome, error) {
 		matched := s.Matcher.Verify(withoutTerminator(buf[start:end]))
 		s.pos = end
 
-		success := matched != s.Invert
+		success := matched != s.Invert && !s.matchLimitReached
 		if success {
 			s.hasMatched = true
 			s.matchCount++
@@ -87,6 +98,9 @@ func (s *Searcher) matchByLineSlow(buf []byte, sink Sink) (scanOutcome, error) {
 			if !more {
 				return scanStop, nil
 			}
+			if s.MaxCount != nil && s.matchCount >= int64(*s.MaxCount) {
+				s.matchLimitReached = true
+			}
 		} else if s.afterContextLeft >= 1 {
 			more, err := s.sinkContext(buf, sink, start, end, true)
 			if err != nil {
@@ -97,6 +111,9 @@ func (s *Searcher) matchByLineSlow(buf []byte, sink Sink) (scanOutcome, error) {
 			}
 			s.afterContextLeft--
 		}
+		if s.matchLimitReached && s.afterContextLeft == 0 {
+			return scanStop, nil
+		}
 	}
 	return scanContinue, nil
 }
@@ -104,8 +121,24 @@ func (s *Searcher) matchByLineSlow(buf []byte, sink Sink) (scanOutcome, error) {
 // matchByLineFast jumps straight to candidate bytes via Matcher.FindCandidate
 // over the whole buffer, expanding each hit to its enclosing line, rather
 // than stepping line by line. Ported from rg's match_by_line_fast.
+//
+// -m/--max-count: matchLimitReached is checked at the TOP of the loop
+// (before either the invert or non-invert branch runs), so once the
+// limit is hit no further FindCandidate/matchByLineFastInvert work is
+// ever attempted -- the loop just falls straight through to the same
+// trailing afterContextByLine call that normally runs at natural
+// buffer-end, which correctly drains any after-context still owed to the
+// last counted match regardless of which chunk/window it spans. Once
+// that context is fully drained too, scanStop is returned immediately
+// (rather than scanContinue) so Search's caller stops reading further
+// input for this file entirely -- for MaxCount==0 (matchLimitReached
+// already true from the very first call, see resetRun/runChunk) this
+// means at most one read chunk is ever consumed.
 func (s *Searcher) matchByLineFast(buf []byte, sink Sink) (scanOutcome, error) {
 	for s.pos < len(buf) {
+		if s.matchLimitReached {
+			break
+		}
 		if s.Invert {
 			keepGoing, err := s.matchByLineFastInvert(buf, sink)
 			if err != nil {
@@ -142,11 +175,17 @@ func (s *Searcher) matchByLineFast(buf []byte, sink Sink) (scanOutcome, error) {
 		if !more {
 			return scanStop, nil
 		}
+		if s.MaxCount != nil && s.matchCount >= int64(*s.MaxCount) {
+			s.matchLimitReached = true
+		}
 	}
 	if outcome, err := s.afterContextByLine(buf, sink, len(buf)); outcome == scanStop || err != nil {
 		return scanStop, err
 	}
 	s.pos = len(buf)
+	if s.matchLimitReached && s.afterContextLeft == 0 {
+		return scanStop, nil
+	}
 	return scanContinue, nil
 }
 
@@ -192,6 +231,17 @@ func (s *Searcher) matchByLineFastInvert(buf []byte, sink Sink) (keepGoing bool,
 		}
 		if !more {
 			return false, nil
+		}
+		if s.MaxCount != nil && s.matchCount >= int64(*s.MaxCount) {
+			// -m + -v: stop emitting further lines from THIS gap once
+			// the limit is hit -- s.pos is already correctly positioned
+			// past the whole gap (set above, before this inner loop
+			// started), so no line is lost or reprocessed. keepGoing
+			// still returns true: matchByLineFast's own top-of-loop
+			// matchLimitReached check (not this function) is what stops
+			// the outer scan and drains any trailing after-context.
+			s.matchLimitReached = true
+			break
 		}
 	}
 	return true, nil

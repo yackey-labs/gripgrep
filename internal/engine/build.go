@@ -45,6 +45,7 @@ func NewSearcher(cfg Config, matcher match.Matcher) *search.Searcher {
 		LineNumbers:     cfg.LineNumbers,
 		BeforeContext:   cfg.BeforeContext,
 		AfterContext:    cfg.AfterContext,
+		MaxCount:        cfg.MaxCount,
 		ParallelWorkers: resolveParallelWorkers(cfg.Threads),
 	})
 }

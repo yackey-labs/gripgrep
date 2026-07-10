@@ -152,6 +152,12 @@ type Config struct {
 	ContextBefore int
 	ContextAfter  int
 	Invert        bool // -v/--invert-match
+	// MaxCount is -m/--max-count: nil = unset/unlimited. A non-nil 0 is
+	// a real, legal value (rg parity, verified against the real binary:
+	// `rg -m 0 pat file` searches nothing and reports no match) -- NOT
+	// the same as unset, which is why this is a pointer rather than a
+	// plain int with a 0-means-unlimited convention.
+	MaxCount *int
 
 	Threads int        // -j/--threads; 0 = auto (rg's None)
 	Binary  BinaryMode // resolved from -a/--text and -uuu; last one processed wins
@@ -457,6 +463,24 @@ func buildV1Flags() []*flagSpec {
 			long: "invert-match", short: 'v', negated: "no-invert-match", kind: kindSwitch,
 			applySwitch: func(cfg *Config, _ *parseState, on bool) error {
 				cfg.Invert = on
+				return nil
+			},
+		},
+		{
+			// -m/--max-count NUM: repeatable, last one given wins (plain
+			// overwrite of the same field, same as -A/-B/-C's ps.after/
+			// before/both pattern, except MaxCount has no separate
+			// "both sides" concept to resolve -- it just writes straight
+			// to cfg). 0 is a legal value (verified against the real rg
+			// binary: -m 0 searches nothing), distinct from "not given at
+			// all" -- see Config.MaxCount's doc for why this is a pointer.
+			long: "max-count", short: 'm', kind: kindValue,
+			applyValue: func(cfg *Config, _ *parseState, val string) error {
+				n, err := parseNonNegInt(val)
+				if err != nil {
+					return err
+				}
+				cfg.MaxCount = &n
 				return nil
 			},
 		},

@@ -112,6 +112,12 @@ func TestGoldenVsRipgrep(t *testing.T) {
 		{"word_line_regexp_last_wins", []string{"-n", "-w", "-x", "second line", corpus}},
 		{"line_regexp_no_match", []string{"-n", "-x", "short second", corpus}},
 		{"invert_match", []string{"-n", "-v", "hello", corpus}},
+		{"max_count_1", []string{"-n", "-m", "1", "hello", corpus}},
+		{"max_count_0", []string{"-n", "-m", "0", "hello", corpus}},
+		{"max_count_with_count_mode", []string{"-c", "-m", "1", "hello", corpus}},
+		{"max_count_with_context", []string{"-n", "-m", "1", "-C", "1", "hello", corpus}},
+		{"max_count_with_invert", []string{"-n", "-m", "2", "-v", "hello", corpus}},
+		{"max_count_with_files_with_matches", []string{"-l", "-m", "1", "hello", corpus}},
 		{"count_mode", []string{"-c", "hello", corpus}},
 		{"files_with_matches", []string{"-l", "hello", corpus}},
 		{"hidden_excluded_by_default", []string{"-n", "secret", corpus}},
@@ -382,6 +388,53 @@ func TestGoldenVsRipgrep_ContextOrdering(t *testing.T) {
 	ggBin := buildGG(t, filepath.Dir(thisFile))
 
 	args := []string{"-j1", "-n", "-C", "1", "hello", path}
+
+	rgOut, rgErr, rgCode := run(t, "rg", args)
+	ggOut, ggErr, ggCode := run(t, ggBin, args)
+
+	if rgCode != ggCode {
+		t.Errorf("exit code mismatch: rg=%d gg=%d\nrg stderr: %s\ngg stderr: %s", rgCode, ggCode, rgErr, ggErr)
+	}
+	if !bytes.Equal(rgOut, ggOut) {
+		t.Errorf("raw (unsorted, -j1, single-file) stdout mismatch:\n--- rg stdout ---\n%s\n--- gg stdout ---\n%s", rgOut, ggOut)
+	}
+}
+
+// TestGoldenVsRipgrep_MaxCountContextOrdering covers round 31's -m
+// requirement that trailing -A context after the FINAL counted match
+// still prints, while everything past the limit (including further
+// matches with their own trailing context) must not -- an ordering/
+// exact-block-boundary property sort-normalization can't catch (see
+// TestGoldenVsRipgrep_ContextOrdering's doc for why this needs its own
+// raw, single-file, -j1 byte comparison instead).
+//
+// Fixture: three matches. -m2 must produce exactly match1's own
+// after-context and match2's own after-context (with the "--" block
+// separator the gap at line 4 requires), and nothing at all from match3
+// or its context, even though both are physically present in the file.
+func TestGoldenVsRipgrep_MaxCountContextOrdering(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "maxcount.txt")
+	content := "hello one\n" +
+		"ctx1a\n" +
+		"ctx1b\n" +
+		"filler\n" +
+		"hello two\n" +
+		"ctx2a\n" +
+		"ctx2b\n" +
+		"hello three\n" +
+		"ctx3a\n"
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, thisFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("could not determine test file location")
+	}
+	ggBin := buildGG(t, filepath.Dir(thisFile))
+
+	args := []string{"-j1", "-n", "-A", "2", "-m", "2", "hello", path}
 
 	rgOut, rgErr, rgCode := run(t, "rg", args)
 	ggOut, ggErr, ggCode := run(t, ggBin, args)

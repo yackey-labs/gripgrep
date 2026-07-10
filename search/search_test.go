@@ -356,6 +356,103 @@ func TestSearchStopEarly(t *testing.T) {
 	}
 }
 
+// maxCountPtr is a small helper for Searcher.MaxCount's *int field.
+func maxCountPtr(n int) *int { return &n }
+
+// TestSearchMaxCount covers -m/--max-count's per-file line limit, across
+// both the fast (NonMatchingLineTerm) and slow line-by-line paths.
+func TestSearchMaxCount(t *testing.T) {
+	for _, fast := range []bool{true, false} {
+		m := literalMatcher("needle", fast)
+		s := newTestSearcher(m, DefaultBufferSize, Searcher{MaxCount: maxCountPtr(2)})
+		sink := newRecordingSink()
+		content := "needle one\nfiller\nneedle two\nneedle three\nfiller\nneedle four\n"
+		if err := s.Search("f", bytes.NewReader([]byte(content)), sink); err != nil {
+			t.Fatal(err)
+		}
+		want := []string{"needle one\n", "needle two\n"}
+		if got := sink.matchLines(); !equalStrings(got, want) {
+			t.Fatalf("fast=%v: matches = %q, want %q", fast, got, want)
+		}
+		if sink.finishStats == nil || sink.finishStats.MatchCount != 2 {
+			t.Fatalf("fast=%v: finishStats.MatchCount = %v, want 2", fast, sink.finishStats)
+		}
+		if !sink.finishStats.Matched {
+			t.Fatalf("fast=%v: finishStats.Matched = false, want true", fast)
+		}
+	}
+}
+
+// TestSearchMaxCountZero covers rg's real (verified against the binary)
+// -m 0 semantics: search nothing, report no match at all -- not "search
+// normally but suppress output."
+func TestSearchMaxCountZero(t *testing.T) {
+	for _, fast := range []bool{true, false} {
+		m := literalMatcher("needle", fast)
+		s := newTestSearcher(m, DefaultBufferSize, Searcher{MaxCount: maxCountPtr(0)})
+		sink := newRecordingSink()
+		content := "needle one\nneedle two\n"
+		if err := s.Search("f", bytes.NewReader([]byte(content)), sink); err != nil {
+			t.Fatal(err)
+		}
+		if len(sink.events) != 0 {
+			t.Fatalf("fast=%v: events = %+v, want none", fast, sink.events)
+		}
+		if sink.finishStats == nil || sink.finishStats.Matched {
+			t.Fatalf("fast=%v: finishStats.Matched = %v, want false", fast, sink.finishStats)
+		}
+	}
+}
+
+// TestSearchMaxCountTrailingContextStillPrints covers the round-31
+// requirement that trailing -A/-C context after the FINAL counted match
+// still prints, even though no further match is ever found once the
+// limit is reached.
+func TestSearchMaxCountTrailingContextStillPrints(t *testing.T) {
+	for _, fast := range []bool{true, false} {
+		m := literalMatcher("needle", fast)
+		s := newTestSearcher(m, DefaultBufferSize, Searcher{
+			MaxCount: maxCountPtr(1), AfterContext: 2,
+		})
+		sink := newRecordingSink()
+		content := "needle one\nctx1\nctx2\nneedle two\nctx3\n"
+		if err := s.Search("f", bytes.NewReader([]byte(content)), sink); err != nil {
+			t.Fatal(err)
+		}
+		wantKinds := []string{"match", "after", "after"}
+		wantLines := []string{"needle one\n", "ctx1\n", "ctx2\n"}
+		if len(sink.events) != len(wantKinds) {
+			t.Fatalf("fast=%v: events = %+v, want kinds %v", fast, sink.events, wantKinds)
+		}
+		for i, e := range sink.events {
+			if e.kind != wantKinds[i] || e.line != wantLines[i] {
+				t.Fatalf("fast=%v: event[%d] = %+v, want kind=%s line=%q", fast, i, e, wantKinds[i], wantLines[i])
+			}
+		}
+	}
+}
+
+// TestSearchMaxCountInvert covers -m combined with -v: the limit caps
+// the number of INVERTED (non-matching) lines reported, since those are
+// what "matched" means under -v.
+func TestSearchMaxCountInvert(t *testing.T) {
+	for _, fast := range []bool{true, false} {
+		m := literalMatcher("skip", fast)
+		s := newTestSearcher(m, DefaultBufferSize, Searcher{
+			Invert: true, MaxCount: maxCountPtr(2),
+		})
+		sink := newRecordingSink()
+		content := "keep1\nskip\nkeep2\nkeep3\nskip\nkeep4\n"
+		if err := s.Search("f", bytes.NewReader([]byte(content)), sink); err != nil {
+			t.Fatal(err)
+		}
+		want := []string{"keep1\n", "keep2\n"}
+		if got := sink.matchLines(); !equalStrings(got, want) {
+			t.Fatalf("fast=%v: matches = %q, want %q", fast, got, want)
+		}
+	}
+}
+
 func TestSearchBeginSkip(t *testing.T) {
 	m := literalMatcher("x", true)
 	s := newTestSearcher(m, DefaultBufferSize, Searcher{})

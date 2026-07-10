@@ -98,6 +98,12 @@ type Config struct {
 	LineNumbers   bool
 	BeforeContext int
 	AfterContext  int
+	// MaxCount is -m/--max-count, passed straight through to
+	// search.Searcher.MaxCount (see its doc): nil means unlimited; a
+	// non-nil 0 is a legitimate "match nothing" limit, which is why this
+	// isn't a plain int with the 0-means-unlimited convention
+	// BeforeContext/AfterContext use above.
+	MaxCount *int
 }
 
 // defaultParallelWorkers is the intra-file parallel-search worker count

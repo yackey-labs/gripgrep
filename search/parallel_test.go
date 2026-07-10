@@ -217,7 +217,82 @@ func TestSearchBytesParallelEarlyStopMatchesSerial(t *testing.T) {
 			if serialSink.matchCount() != 3 {
 				t.Fatalf("test setup: expected serial to stop after 3 matches, got %d", serialSink.matchCount())
 			}
+			// Round-31 fix: matchCount/hasMatched used to be derived from
+			// the RAW per-chunk totals (every match any child ever
+			// recorded, regardless of where replay actually stopped),
+			// which diverged from serial's own Stats here (serial's
+			// matchCount only ever counts up to wherever Matched last
+			// returned more=true) -- this was a real, previously
+			// untested latent inconsistency between the two paths.
+			if *serialSink.finishStats != *parallelSink.finishStats {
+				t.Fatalf("workers=%d: Stats mismatch:\nserial:   %+v\nparallel: %+v", w, *serialSink.finishStats, *parallelSink.finishStats)
+			}
 		})
+	}
+}
+
+// TestSearchBytesParallelMaxCountMatchesSerial is round 31's extension of
+// the serial-vs-parallel correctness gate to cover -m/--max-count: the
+// cap is applied entirely at REPLAY time (every child searches its own
+// chunk to completion, unbounded -- see searchBytesParallel's doc), so
+// this specifically exercises that replay-time cutoff against the
+// serial path's matchLimitReached machinery, including event streams
+// AND final Stats (MatchCount/Matched must reflect the CAPPED count,
+// not the raw per-chunk total).
+func TestSearchBytesParallelMaxCountMatchesSerial(t *testing.T) {
+	var b strings.Builder
+	for i := 0; i < 2000; i++ {
+		if i%3 == 0 {
+			fmt.Fprintf(&b, "needle line %d\n", i)
+		} else {
+			fmt.Fprintf(&b, "filler %d\n", i)
+		}
+	}
+	data := []byte(b.String())
+
+	for _, maxCount := range []int{0, 1, 5, 50, 1_000_000} {
+		for _, w := range []int{2, 4, 8} {
+			t.Run(fmt.Sprintf("m=%d/workers=%d", maxCount, w), func(t *testing.T) {
+				mc := maxCount
+				serial := New(Searcher{
+					Matcher:     literalMatcher("needle", true),
+					LineNumbers: true,
+					MaxCount:    &mc,
+				})
+				serialSink := newRecordingSink()
+				if err := serial.SearchBytes("f", data, serialSink); err != nil {
+					t.Fatal(err)
+				}
+
+				parallel := New(Searcher{
+					Matcher:          literalMatcher("needle", true),
+					LineNumbers:      true,
+					MaxCount:         &mc,
+					ParallelWorkers:  w,
+					ParallelMinBytes: 1,
+				})
+				parallelSink := newRecordingSink()
+				if err := parallel.SearchBytes("f", data, parallelSink); err != nil {
+					t.Fatal(err)
+				}
+
+				if len(serialSink.events) != len(parallelSink.events) {
+					t.Fatalf("event count mismatch: serial=%d parallel=%d\nserial: %+v\nparallel: %+v",
+						len(serialSink.events), len(parallelSink.events), serialSink.events, parallelSink.events)
+				}
+				for i := range serialSink.events {
+					if serialSink.events[i] != parallelSink.events[i] {
+						t.Fatalf("event %d mismatch:\nserial:   %+v\nparallel: %+v", i, serialSink.events[i], parallelSink.events[i])
+					}
+				}
+				if got, want := serialSink.matchCount(), min(maxCount, 667); got != want {
+					t.Fatalf("test setup: serial matchCount = %d, want %d", got, want)
+				}
+				if *serialSink.finishStats != *parallelSink.finishStats {
+					t.Fatalf("workers=%d: Stats mismatch:\nserial:   %+v\nparallel: %+v", w, *serialSink.finishStats, *parallelSink.finishStats)
+				}
+			})
+		}
 	}
 }
 

@@ -536,6 +536,40 @@ func TestInvertMatch(t *testing.T) {
 	}
 }
 
+// TestMaxCountFlag covers -m/--max-count's parsing: repeatable
+// (last-wins, a plain overwrite of the same field), and 0 is a legal,
+// distinct-from-unset value (verified against the real rg 15.1.0
+// binary: `rg -m 0 pat file` searches nothing and exits 1) -- hence
+// Config.MaxCount is *int, not plain int.
+func TestMaxCountFlag(t *testing.T) {
+	if cfg := mustParse(t, "pat"); cfg.MaxCount != nil {
+		t.Errorf("default MaxCount = %v, want nil (unset/unlimited)", *cfg.MaxCount)
+	}
+	if cfg := mustParse(t, "-m", "5", "pat"); cfg.MaxCount == nil || *cfg.MaxCount != 5 {
+		t.Errorf("-m 5: MaxCount = %v, want 5", cfg.MaxCount)
+	}
+	if cfg := mustParse(t, "--max-count", "5", "pat"); cfg.MaxCount == nil || *cfg.MaxCount != 5 {
+		t.Errorf("--max-count 5: MaxCount = %v, want 5", cfg.MaxCount)
+	}
+	if cfg := mustParse(t, "--max-count=5", "pat"); cfg.MaxCount == nil || *cfg.MaxCount != 5 {
+		t.Errorf("--max-count=5: MaxCount = %v, want 5", cfg.MaxCount)
+	}
+	if cfg := mustParse(t, "-m5", "pat"); cfg.MaxCount == nil || *cfg.MaxCount != 5 {
+		t.Errorf("-m5: MaxCount = %v, want 5", cfg.MaxCount)
+	}
+	if cfg := mustParse(t, "-m", "0", "pat"); cfg.MaxCount == nil || *cfg.MaxCount != 0 {
+		t.Errorf("-m 0: MaxCount = %v, want a non-nil 0, not unset", cfg.MaxCount)
+	}
+	if cfg := mustParse(t, "-m", "1", "-m", "2", "pat"); cfg.MaxCount == nil || *cfg.MaxCount != 2 {
+		t.Errorf("-m 1 -m 2: MaxCount = %v, want 2 (last wins)", cfg.MaxCount)
+	}
+	// Verified against the real rg binary: a negative NUM fails with
+	// "value is not a valid number: invalid digit found in string"
+	// (parses directly into an unsigned type, same as -A/-B/-C).
+	wantErr(t, "-m", "-1", "pat")
+	wantErr(t, "-m", "notanumber", "pat")
+}
+
 // --- Perf flags ---
 
 func TestThreads(t *testing.T) {

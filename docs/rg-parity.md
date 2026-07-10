@@ -15,9 +15,9 @@ document is regenerated).
 |---|---|---|
 | ripgrep flag authority | master `3a570990c4cf` (2026-07-09, version 15.1.0), `crates/core/flags/defs.rs` | source of the flag inventory below |
 | ripgrep binary (golden suite + CI benchmarks) | **rg 15.1.0** (single pin: `internal/bench/rg-version.txt`, enforced by the suite itself) | every implemented flag is byte-diff-verified against this binary (17-case e2e suite + full-tree diffs) |
-| gripgrep | `a73ea4f` / **v0.2.0** | the status column below |
+| gripgrep | `269e5f8` / pending release | the status column below |
 
-**Score: 27 of 104 rg flags implemented.** The gap is
+**Score: 30 of 104 rg flags implemented.** The gap is
 dominated by a few feature clusters (see the notes after the table):
 the file-type system, PCRE2/multiline, encodings, output decoration,
 and replacement.
@@ -52,7 +52,7 @@ unknown-flag error, exit 2)
 | `--ignore-case` | `-i` | ✅ | Case insensitive search |
 | `--invert-match` (+`--no-invert-match`) | `-v` | ✅ | Invert matching |
 | `--line-regexp` | `-x` | ✅ | Show matches surrounded by line boundaries |
-| `--max-count` | `-m` | ❌ | Limit the number of matching lines |
+| `--max-count` | `-m` | ✅ | Limit the number of matching lines |
 | `--mmap` (+`--no-mmap`) |  | ✅ | Search with memory maps when possible |
 | `--multiline` | `-U` | ⚠️ | Enable searching across multiple lines |
 | `--multiline-dotall` |  | ⚠️ | Make '.' match line terminators |
@@ -210,10 +210,9 @@ Not implemented (the honest list, matching the table above):
   hyperlinks, `--stats`.
 - **Config file** (`RIPGREP_CONFIG_PATH`): gg reads no config;
   flags only.
-- Assorted small filters/limits (`-m/--max-count`, `-x/--line-regexp`,
-  `-d/--max-depth`, `-L/--follow`, `--one-file-system`, ...):
-  individually cheap; several are queued as the "compat tier" roadmap
-  item.
+- Assorted small filters/limits (`-d/--max-depth`, `-L/--follow`,
+  `--one-file-system`, ...): individually cheap; several are queued as
+  the "compat tier" roadmap item.
 
 ## Regenerating this document
 

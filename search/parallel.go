@@ -266,18 +266,36 @@ func (s *Searcher) searchBytesParallel(data []byte, sink Sink) error {
 		}
 	}
 
-	s.hasMatched = false
-	s.matchCount = 0
-	for _, rec := range recs {
-		if rec.matched {
-			s.hasMatched = true
-		}
-		s.matchCount += rec.matchCount
+	// -m/--max-count is applied HERE, at replay, not per-chunk: every
+	// child above (constructed without MaxCount, deliberately) searched
+	// its own chunk to completion, unbounded, and recorded every match
+	// via chunkRecorder. parallelEligible already requires BeforeContext
+	// == AfterContext == 0 and !Invert, so -- unlike the serial
+	// matchByLineFast/Slow's matchLimitReached machinery, which must
+	// keep draining trailing after-context once the limit is hit --
+	// there is no context to drain here: once the Nth match has been
+	// replayed, nothing later in the recorded stream can ever be
+	// relevant, so replay just stops outright. hasMatched/matchCount are
+	// derived from what was ACTUALLY replayed (not the raw per-chunk
+	// totals): a match a cap or an early sink stop (more=false, e.g.
+	// -l's abort-after-first-match) prevented from ever reaching sink
+	// must not count, mirroring the serial path's own matchCount, which
+	// likewise only ever counts up to wherever sinkMatched last returned
+	// more=true.
+	limit := int64(-1)
+	if s.MaxCount != nil {
+		limit = int64(*s.MaxCount)
 	}
 
+	var replayed int64
 	for i, rec := range recs {
 		offset := lineBases[i] - 1
 		for _, ev := range rec.events {
+			if ev.kind == recordedMatch && limit >= 0 && replayed >= limit {
+				s.hasMatched = replayed > 0
+				s.matchCount = replayed
+				return nil
+			}
 			if ev.hasLineNumber {
 				ev.lineNumber += offset
 			}
@@ -285,11 +303,18 @@ func (s *Searcher) searchBytesParallel(data []byte, sink Sink) error {
 			if err != nil {
 				return err
 			}
+			if ev.kind == recordedMatch {
+				replayed++
+			}
 			if !more {
+				s.hasMatched = replayed > 0
+				s.matchCount = replayed
 				return nil
 			}
 		}
 	}
+	s.hasMatched = replayed > 0
+	s.matchCount = replayed
 	return nil
 }
 

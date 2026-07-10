@@ -118,6 +118,18 @@ type Searcher struct {
 	BeforeContext int
 	AfterContext  int
 
+	// MaxCount is -m/--max-count: the maximum number of matched LINES
+	// (never context lines, never total match occurrences within a
+	// line) sunk per file. nil means unlimited. A non-nil value of 0 is
+	// a legitimate, real limit (rg parity, verified against the real
+	// binary: `rg -m 0 pat file` searches nothing and reports no
+	// match) -- this is why the field is a pointer rather than plain
+	// int with a 0-means-unlimited convention like BeforeContext/
+	// AfterContext above. Trailing after-context for the final counted
+	// match still prints once the limit is hit; no FURTHER match is
+	// ever found or sunk afterward (see core.go's matchLimitReached).
+	MaxCount *int
+
 	// ParallelWorkers, when > 1, lets SearchBytes split an eligible input
 	// into line-aligned chunks searched concurrently, then replayed
 	// through sink in file order (M3 task #18 -- see searchBytesParallel's
@@ -154,6 +166,15 @@ type Searcher struct {
 	afterContextLeft int
 	hasMatched       bool
 	matchCount       int64
+	// matchLimitReached is MaxCount's per-call scan state: once true, no
+	// FURTHER match is found or sunk for the rest of this file, though
+	// trailing after-context already owed to the last counted match
+	// still drains normally (see core.go's matchByLineFast/Slow). Reset
+	// by resetRun/runChunk at the start of every top-level scan --
+	// initialized to true immediately when MaxCount points at 0, since
+	// in that case the limit is already reached before any match can
+	// ever be found.
+	matchLimitReached bool
 	// hasBinaryOffset/binaryOffset mirror the eventual Stats.Binary/
 	// BinaryOffset values, but are kept live (updated as detection
 	// happens, not just at Finish) so HasBinaryOffset/BinaryOffset can be
@@ -368,6 +389,7 @@ func (s *Searcher) runChunk(data []byte, sink Sink, base, lineBase int64) error 
 	s.afterContextLeft = 0
 	s.hasMatched = false
 	s.matchCount = 0
+	s.matchLimitReached = s.MaxCount != nil && *s.MaxCount <= 0
 	if len(data) == 0 {
 		return nil
 	}
