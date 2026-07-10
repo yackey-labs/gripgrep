@@ -1,26 +1,13 @@
 package main
 
-import (
-	"io"
-	"syscall"
-	"unsafe"
-)
+import "io"
 
-// isTerminal reports whether fd refers to a terminal, via the same
-// TCGETS ioctl probe every isatty(3) implementation uses on Linux: it
-// succeeds iff the fd supports terminal control operations. This drives
-// gg's --color=auto and default heading/line-number behavior (rg: both
-// auto-detect from isatty(stdout), matching PLAN.md's "CLI startup"
-// row's "nothing heavy at init" -- one syscall, no dependency pulled in
-// just for this).
-//
-// linux-only: this module has no other-OS build target yet (see
-// PLAN.md's module scope), so no build-tag fallback is provided.
-func isTerminal(fd uintptr) bool {
-	var termios syscall.Termios
-	_, _, errno := syscall.Syscall6(syscall.SYS_IOCTL, fd, uintptr(syscall.TCGETS), uintptr(unsafe.Pointer(&termios)), 0, 0, 0)
-	return errno == 0
-}
+// isTerminal (per-OS: tty_linux.go, tty_darwin.go, tty_windows.go)
+// reports whether fd refers to a terminal. This drives gg's --color=auto
+// and default heading/line-number behavior (rg: both auto-detect from
+// isatty(stdout), matching PLAN.md's "CLI startup" row's "nothing heavy
+// at init" -- one syscall per platform, no dependency pulled in just for
+// this).
 
 // isTerminalWriter reports whether w is connected to a terminal. Most
 // writers (including any bytes.Buffer used by in-process tests) don't
