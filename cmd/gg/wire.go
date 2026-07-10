@@ -124,7 +124,7 @@ func execute(cfg *Config, stdout, stderr io.Writer) int {
 func toEngineConfig(cfg *Config) engine.Config {
 	return engine.Config{
 		Patterns:      cfg.Patterns,
-		Case:          convertCaseMode2(cfg.Case),
+		Case:          convertCaseMode(cfg.Case),
 		Fixed:         cfg.Fixed,
 		Word:          cfg.Word,
 		Paths:         cfg.Paths,
@@ -141,7 +141,7 @@ func toEngineConfig(cfg *Config) engine.Config {
 	}
 }
 
-func convertCaseMode2(c CaseMode) engine.CaseMode {
+func convertCaseMode(c CaseMode) engine.CaseMode {
 	switch c {
 	case CaseInsensitive:
 		return engine.CaseInsensitive
