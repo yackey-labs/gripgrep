@@ -8,10 +8,11 @@ It ships as both a CLI (`gg`, a drop-in `rg` workalike for the flags it
 supports) and a set of reusable library packages (`glob`, `walk`, `match`,
 `search`, `printer`) you can embed in your own tools.
 
-**Status: working, correct, and closing the gap with ripgrep.** Intra-file
-parallelism just flipped the flagship single-file benchmark from "slower"
-to a genuine win. This is a live work-in-progress and the numbers below
-are the real ones.
+**Status: working, correct, and winning some rounds.** gg now beats rg
+outright on large single files (both literal and multi-literal queries)
+and matches it on pure directory traversal; rg still wins many-small-files
+tree search by ~1.4×. This is a live work-in-progress and the numbers
+below are the real ones.
 
 ## Where we stand vs ripgrep
 
@@ -24,13 +25,17 @@ Every layer also has a differential oracle: `glob` is fuzzed against real
 against Go's stdlib regexp, `search` against a naive oracle.
 
 Speed, measured with hyperfine (warm cache, same box, same corpus — only
-the gg:rg ratio is meaningful):
+the gg:rg ratio is meaningful). Reference conditions for the numbers
+below: i7-6820HQ (4C/8T, Skylake), Fedora Linux, otherwise-idle machine
+(1-min load < 0.35), hyperfine `--warmup 3 -m 15 -N`, rg 14.1.1, gg
+built with `make build` (PGO active), 2026-07-10:
 
 | Benchmark | gg vs rg | Trend |
 |---|---|---|
-| Linux kernel tree (built, ~104k files), literal, gitignore-aware | **~1.3-1.5× slower** | was 2.48× (3.74× originally); an evaluation-count census on real .gitignore patterns found gitignore glob matching (`glob.Set.Match`) at ~50% of tree CPU, nearly all in a handful of regex patterns (`cscope.*`, `*.o.*`, `#*#`, ...) evaluated on almost every file — added three new O(1)/linear fast classes (prefix, contains, prefix+suffix) that these shapes actually need, cutting glob's cumulative CPU share roughly in half |
-| OpenSubtitles corpus (~830MB, 28M lines), literal (`Sherlock Holmes`), default settings | **1.64× FASTER** | was 1.18× slower; intra-file parallelism (rg searches one file on one core — a lever rg doesn't have) — the first row gg wins outright |
-| Same file, `Sherlock\|Watson` (multi-literal), default settings | **~parity** (0.92×-1.08× depending on run) | was 3.25× slower; #22's rare-byte-scanner fix (2.34×) plus intra-file parallelism together close nearly all of the remaining gap |
+| Linux kernel tree (built, ~104k files), literal, gitignore-aware | **1.41× slower** (766ms vs 543ms) | was 3.74× originally, 2.48× mid-M3; an evaluation-count census on real .gitignore patterns found gitignore glob matching (`glob.Set.Match`) at ~50% of tree CPU, nearly all in a handful of regex patterns (`cscope.*`, `*.o.*`, `#*#`, ...) evaluated on almost every file — added three new O(1)/linear fast classes (prefix, contains, prefix+suffix) that these shapes actually need, cutting glob's cumulative CPU share roughly in half |
+| Same tree, `--files` (pure walk + gitignore, no search) | **~parity** (1.08× slower, 190ms vs 177ms, within σ) | was 3.07× slower when first measured; the glob fast classes plus walker fixes (cond-var parking, eliminating ~10k blind ignore-file probes) brought the walk itself to rg's level |
+| OpenSubtitles corpus (~830MB, 28M lines), literal (`Sherlock Holmes`), default settings | **1.65× FASTER** (110ms vs 181ms) | was 1.61× slower at first measurement; mmap + intra-file parallelism (rg searches one file on one core — a lever rg doesn't have) — the first row gg won outright |
+| Same file, `Sherlock\|Watson` (multi-literal), default settings | **1.10× FASTER** (266ms vs 293ms) | was 3.25× slower; the rare-byte scanner fix took it to 2.34×, intra-file parallelism to ~parity, and PGO tipped it into a win — all without a Teddy port |
 
 Micro-level, the core engine is already in ripgrep's class: the literal
 prefilter scans at **9.8 GB/s** (0 allocs/op), and the searcher's fast
@@ -48,10 +53,12 @@ intra-file parallelism only covers the no-context, non-invert case
 support is designed but not yet landed. Walker syscall/scheduling
 overhead (blind ignore-file probes, nanosleep-based idle spin) has since
 been fixed (M3 #24: real cond-var parking, ~10k blind openat probes
-eliminated) and PGO has landed (M3 #26); what's left on the linux-tree
-row is a residual couple of genuinely hard-to-fast-class glob patterns
-and full Teddy-class SIMD multi-literal matching, which remains the path
-to complete parity on the regex row.
+eliminated) and PGO has landed (M3 #26). With the walk itself now at
+parity (`--files` row) and both single-file rows won outright, the
+remaining tree-row gap is per-file search overhead (open/read/setup cost
+across ~79k small files) — the current optimization frontier. The tree
+gap has closed from 3.74× to 1.41× through profile-driven work, and every
+number above is reproducible from this repo.
 
 The optimization log lives in the commit history (`git log --grep "M3
 perf"`); dead ends are documented alongside wins.
