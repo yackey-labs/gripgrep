@@ -15,9 +15,9 @@ document is regenerated).
 |---|---|---|
 | ripgrep flag authority | master `3a570990c4cf` (2026-07-09, version 15.1.0), `crates/core/flags/defs.rs` | source of the flag inventory below |
 | ripgrep binary (golden suite + CI benchmarks) | **rg 15.1.0** (single pin: `internal/bench/rg-version.txt`, enforced by the suite itself) | every implemented flag is byte-diff-verified against this binary (17-case e2e suite + full-tree diffs) |
-| gripgrep | `c1be553` / pending release | the status column below |
+| gripgrep | `7140f09` / pending release | the status column below |
 
-**Score: 30 of 104 rg flags implemented.** The gap is
+**Score: 36 of 104 rg flags implemented.** The gap is
 dominated by a few feature clusters (see the notes after the table):
 the file-type system, PCRE2/multiline, encodings, output decoration,
 and replacement.
@@ -74,12 +74,12 @@ unknown-flag error, exit 2)
 | `--binary` |  | ⚠️ | Search binary files |
 | `--follow` | `-L` | ⚠️ | Follow symbolic links |
 | `--glob` | `-g` | ✅ | Include or exclude file paths |
-| `--glob-case-insensitive` |  | ❌ | Process all glob patterns case insensitively |
+| `--glob-case-insensitive` (+`--no-glob-case-insensitive`) |  | ✅ | Process all glob patterns case insensitively |
 | `--hidden` (+`--no-hidden`) | `-.` | ✅ | Search hidden files and directories |
-| `--iglob` |  | ❌ | Include/exclude paths case insensitively |
+| `--iglob` |  | ✅ | Include/exclude paths case insensitively |
 | `--ignore-file` |  | ❌ | Specify additional ignore files |
 | `--ignore-file-case-insensitive` |  | ❌ | Process ignore files case insensitively |
-| `--max-depth` | `-d` | ❌ | Descend at most NUM directories |
+| `--max-depth` | `-d` | ✅ | Descend at most NUM directories |
 | `--max-filesize` |  | ✅ | Ignore files larger than NUM in size |
 | `--no-ignore` (+`--ignore`) |  | ✅ | Don't use ignore files |
 | `--no-ignore-dot` |  | ❌ | Don't use .ignore or .rgignore files |
@@ -111,7 +111,7 @@ unknown-flag error, exit 2)
 | `--context-separator` |  | ❌ | Set the separator for contextual chunks |
 | `--field-context-separator` |  | ❌ | Set the field context separator |
 | `--field-match-separator` |  | ❌ | Set the field match separator |
-| `--heading` |  | ❌ | Print matches grouped by each file |
+| `--heading` (+`--no-heading`) |  | ✅ | Print matches grouped by each file |
 | `--help` | `-h` | ✅ | Show help output |
 | `--hostname-bin` |  | ❌ | Run a program to get this system's hostname |
 | `--hyperlink-format` |  | ❌ | Set the format of hyperlinks |
@@ -120,7 +120,7 @@ unknown-flag error, exit 2)
 | `--line-number` | `-n` | ✅ | Show line numbers |
 | `--max-columns` | `-M` | ❌ | Omit lines longer than this limit |
 | `--max-columns-preview` |  | ❌ | Show preview for lines exceeding the limit |
-| `--no-filename` | `-I` | ❌ | Never print the path with each matching line |
+| `--no-filename` | `-I` | ✅ | Never print the path with each matching line |
 | `--no-line-number` | `-N` | ✅ | Suppress line numbers |
 | `--null` | `-0` | ❌ | Print a NUL byte after file paths |
 | `--only-matching` | `-o` | ⚠️ | Print only matched parts of a line |
@@ -134,7 +134,7 @@ unknown-flag error, exit 2)
 | `--sortr` |  | ⚠️ | Sort results in descending order |
 | `--trim` |  | ❌ | Trim prefix whitespace from matches |
 | `--vimgrep` |  | ❌ | Print results in a vim compatible format |
-| `--with-filename` | `-H` | ❌ | Print the file path with each matching line |
+| `--with-filename` | `-H` | ✅ | Print the file path with each matching line |
 
 ### Output modes
 
@@ -205,13 +205,13 @@ Not implemented (the honest list, matching the table above):
 - **Replacement** (`-r/--replace`), **JSON output** (`--json`),
   **sorting** (`--sort/--sortr`), **preprocessors** (`--pre`),
   **compressed search** (`-z`).
-- **Output decoration**: `--heading`, `--column`, `--vimgrep`,
+- **Output decoration**: `--column`, `--vimgrep`,
   `-o/--only-matching`, `--passthru`, separators/`--field-*` knobs,
   hyperlinks, `--stats`.
 - **Config file** (`RIPGREP_CONFIG_PATH`): gg reads no config;
   flags only.
-- Assorted small filters/limits (`-d/--max-depth`, `-L/--follow`,
-  `--one-file-system`, ...): individually cheap; several are queued as
+- Assorted small filters/limits (`-L/--follow`, `--one-file-system`,
+  `--ignore-file`, ...): individually cheap; several are queued as
   the "compat tier" roadmap item.
 
 ## Regenerating this document
