@@ -3,6 +3,7 @@ package gripgrep
 import (
 	"bufio"
 	"bytes"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"

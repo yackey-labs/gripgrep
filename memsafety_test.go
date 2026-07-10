@@ -1,6 +1,7 @@
 package gripgrep
 
 import (
+	"os"
 	"sort"
 	"strings"
 	"testing"
