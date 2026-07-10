@@ -134,7 +134,7 @@ func Walk(roots []string, opts Options, visit Visitor) error {
 		queues[i%n].push(t)
 	}
 
-	coord := &coordinator{}
+	coord := newCoordinator()
 	coord.active.Store(int64(n))
 
 	var wg sync.WaitGroup

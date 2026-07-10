@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 // clone copies s's bytes into a fresh allocation. Entry.Path (and any
@@ -244,6 +245,64 @@ func TestDeepAndWideTree(t *testing.T) {
 	}
 	if len(files) != fileN {
 		t.Errorf("visited %d files, want %d", len(files), fileN)
+	}
+}
+
+// TestParkWithManyWorkers is M3 #24's regression test for the
+// cond-var-based park/notify mechanism (replacing a 1ms-nanosleep
+// spin-poll loop): a thread count well above the tree's real fan-out
+// forces most workers idle (and parking) most of the time, exactly the
+// shape that made the old spin-poll loop's syscall count balloon with
+// worker count (measured: 9 sleeps at the default thread count on this
+// box's tree, 495 at -j8, vs the new mechanism's 9 and 28 respectively).
+// Run repeatedly under -race by the Makefile's test target; a lost
+// wakeup in notifyWork/requestQuit would show up here as a hang (the
+// walk never returning) rather than a wrong result, so this is run with
+// its own timeout via t.Deadline-independent select, not just checked
+// for correctness.
+func TestParkWithManyWorkers(t *testing.T) {
+	spec := map[string]string{}
+	const width, depth = 3, 3
+	var buildPath func(prefix string, d int)
+	fileN := 0
+	buildPath = func(prefix string, d int) {
+		if d == 0 {
+			return
+		}
+		for i := 0; i < width; i++ {
+			sub := fmt.Sprintf("%s/n%d", prefix, i)
+			spec[sub+fmt.Sprintf("/leaf%d.txt", fileN)] = "x"
+			fileN++
+			buildPath(sub, d-1)
+		}
+	}
+	buildPath("top", depth)
+	root := buildTree(t, spec)
+
+	done := make(chan error, 1)
+	go func() {
+		var mu sync.Mutex
+		files := map[string]bool{}
+		err := Walk([]string{root}, Options{NoIgnore: true, Threads: 16}, func(e *Entry) WalkState {
+			if e.Type == TypeFile {
+				mu.Lock()
+				files[clone(e.Path)] = true
+				mu.Unlock()
+			}
+			return Continue
+		})
+		if err == nil && len(files) != fileN {
+			err = fmt.Errorf("visited %d files, want %d", len(files), fileN)
+		}
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Walk did not return within 10s -- likely a lost wakeup in the park/notify mechanism")
 	}
 }
 

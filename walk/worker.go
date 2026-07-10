@@ -3,20 +3,64 @@ package walk
 import (
 	"io/fs"
 	"os"
+	"sync"
 	"sync/atomic"
-	"time"
 	"unsafe"
 
 	"github.com/yackey-labs/gripgrep/glob"
 )
 
 // coordinator holds the state shared by every worker in one Walk call:
-// the active-worker count that drives quiescence detection, and a quit
-// flag that gives Quit-from-Visitor immediate (best-effort, ~1ms-latency)
-// effect across every worker.
+// the active-worker count that drives quiescence detection, a quit flag
+// that gives Quit-from-Visitor immediate effect across every worker, and
+// the condition variable an idle worker parks on instead of polling.
+//
+// active/quit stay plain atomics for their hot-path reads (every
+// iteration of every worker's loop checks quit.Load(), and active.Add is
+// the per-transition fast path) — only pushGen and the writes to quit
+// that matter for parking go through mu, exactly the state park's
+// check-then-Wait loop depends on. See notifyWork/requestQuit's docs for
+// why both must hold mu across the mutation: sync.Cond only wakes
+// goroutines already parked in Wait when Broadcast is called, so any
+// state change a parked worker's wake condition depends on must happen
+// while excluding a waiter from concurrently deciding to park in the
+// first place, or the wakeup is silently lost.
 type coordinator struct {
 	active atomic.Int64
 	quit   atomic.Bool
+
+	mu      sync.Mutex
+	cond    *sync.Cond
+	pushGen int64 // bumped under mu by notifyWork every time work is pushed
+}
+
+func newCoordinator() *coordinator {
+	c := &coordinator{}
+	c.cond = sync.NewCond(&c.mu)
+	return c
+}
+
+// notifyWork wakes any parked worker to recheck for work, called after
+// every push to any queue (a new subdirectory enqueued, or the walk's
+// initial seeding). Broadcast (not Signal) because any parked worker
+// might be the one able to steal the new task, not just one in
+// particular.
+func (c *coordinator) notifyWork() {
+	c.mu.Lock()
+	c.pushGen++
+	c.mu.Unlock()
+	c.cond.Broadcast()
+}
+
+// requestQuit signals every worker to stop and wakes any currently
+// parked one immediately, rather than leaving it blocked until some
+// unrelated notifyWork happens to fire (which, at true quiescence, never
+// will).
+func (c *coordinator) requestQuit() {
+	c.mu.Lock()
+	c.quit.Store(true)
+	c.mu.Unlock()
+	c.cond.Broadcast()
 }
 
 // worker owns one queue slot and runs a pop/steal/process loop until
@@ -70,32 +114,59 @@ func (w *worker) run() {
 				// Every worker was simultaneously between its own
 				// decrement and re-increment, i.e. every queue was
 				// empty at once with nobody mid-processing: done.
-				w.coord.quit.Store(true)
+				w.coord.requestQuit()
 				return
 			}
-			for {
-				if w.coord.quit.Load() {
-					return
-				}
-				time.Sleep(time.Millisecond)
-				t, ok = q.pop()
-				if !ok {
-					t, ok = w.steal()
-				}
-				if ok {
-					// Reactivate before processing so no other
-					// worker's decrement can observe a false 0 while
-					// we're about to produce more work.
-					w.coord.active.Add(1)
-					break
-				}
+			t, ok = w.park()
+			if !ok {
+				return
 			}
 		}
 		if w.processDir(t) {
-			w.coord.quit.Store(true)
+			w.coord.requestQuit()
 			return
 		}
 	}
+}
+
+// park blocks the calling (already-decremented-active) worker until
+// either work becomes available to try again or the walk is ending, and
+// reports which. It loops through spurious wakeups and lost races
+// (another worker grabbing the same task first) exactly as the spin-poll
+// loop this replaced did, but via a real condition variable instead of a
+// fixed 1ms nanosleep -- rg parks via futex and only ever blocks/wakes a
+// couple dozen times per run; the polling version this replaced measured
+// in the tens of thousands of nanosleep calls on the linux kernel tree
+// (M3 #24), almost all of them pure waste once the walk's tail is down
+// to a handful of long-running directories and everyone else is idle.
+//
+// Reactivates (bumping active back up) before returning true, exactly
+// like the loop it replaced, so no other worker's decrement can observe
+// a false zero while this worker is about to produce more work.
+func (w *worker) park() (t *dirTask, ok bool) {
+	c := w.coord
+	q := w.queues[w.idx]
+	for {
+		c.mu.Lock()
+		myGen := c.pushGen
+		for !c.quit.Load() && c.pushGen == myGen {
+			c.cond.Wait()
+		}
+		c.mu.Unlock()
+		if c.quit.Load() {
+			return nil, false
+		}
+		if t, ok = q.pop(); ok {
+			break
+		}
+		if t, ok = w.steal(); ok {
+			break
+		}
+		// Woken (a push happened somewhere), but this worker lost the
+		// race for it -- park again.
+	}
+	c.active.Add(1)
+	return t, true
 }
 
 // steal tries every other worker's queue, starting at idx+1 and
@@ -147,14 +218,23 @@ func (w *worker) processDir(t *dirTask) bool {
 
 	var node *ignoreNode
 	if !w.opts.NoIgnore {
-		hasGit := false
+		// Single pass over the directory listing already in hand (from
+		// f.ReadDir(-1) above) checks membership for all three ignore-
+		// related names at once, instead of buildNode blindly attempting
+		// to open .ignore/.gitignore and discarding the ENOENT most
+		// directories produce (M3 #24).
+		var hasGit, hasIgnore, hasGitignore bool
 		for _, d := range entries {
-			if d.Name() == ".git" {
+			switch d.Name() {
+			case ".git":
 				hasGit = true
-				break
+			case ".ignore":
+				hasIgnore = true
+			case ".gitignore":
+				hasGitignore = true
 			}
 		}
-		node = buildNode(t.ignore, t.abs, hasGit)
+		node = buildNode(t.ignore, t.abs, hasGit, hasIgnore, hasGitignore)
 	}
 
 	var symAnc *symNode
@@ -227,6 +307,14 @@ func (w *worker) processDir(t *dirTask) bool {
 			}
 		}
 	}
+	// Wake any parked worker so it can steal whatever this directory just
+	// enqueued (directly, or via followSymlink). Unconditional rather than
+	// tracked-per-push: a Broadcast with no current waiters is a cheap
+	// userspace check, not a syscall, so this costs nothing on the (far
+	// more common) case where nobody happens to be parked right now --
+	// see coordinator's doc for why the Quit-returning paths above don't
+	// need their own call (requestQuit, from the caller, broadcasts too).
+	w.coord.notifyWork()
 	return false
 }
 

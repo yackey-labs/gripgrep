@@ -89,17 +89,26 @@ func (n *ignoreNode) matched(absPath []byte, isDir bool) glob.MatchResult {
 }
 
 // buildNode compiles a new ignoreNode for dir (absolute path), chaining
-// to parent. hasGit is whether dir itself directly contains a .git
-// entry; the caller supplies it because during a normal descent it can
-// be read for free off the directory listing already in hand, avoiding
-// an extra stat.
-func buildNode(parent *ignoreNode, dir string, hasGit bool) *ignoreNode {
+// to parent. hasGit/hasIgnore/hasGitignore are whether dir itself
+// directly contains a .git/.ignore/.gitignore entry; the caller supplies
+// them because during a normal descent they can all be read for free off
+// the directory listing already in hand (processDir's own
+// entries, from the one f.ReadDir(-1) call it already made), rather than
+// blindly attempting to open .ignore/.gitignore and discarding the
+// ENOENT most directories produce (M3 #24: this was measured at roughly
+// 10k wasted open+ENOENT syscalls walking the linux kernel tree, since
+// only a small fraction of its ~10k directories carry either file).
+func buildNode(parent *ignoreNode, dir string, hasGit, hasIgnore, hasGitignore bool) *ignoreNode {
 	n := &ignoreNode{
 		parent:        parent,
 		dir:           dir,
-		ignoreSet:     loadGlobSet(filepath.Join(dir, ".ignore")),
-		gitignoreSet:  loadGlobSet(filepath.Join(dir, ".gitignore")),
 		insideGitRepo: hasGit || (parent != nil && parent.insideGitRepo),
+	}
+	if hasIgnore {
+		n.ignoreSet = loadGlobSet(filepath.Join(dir, ".ignore"))
+	}
+	if hasGitignore {
+		n.gitignoreSet = loadGlobSet(filepath.Join(dir, ".gitignore"))
 	}
 	if hasGit {
 		n.excludeSet = loadGitExclude(dir)
@@ -162,7 +171,12 @@ func buildParentChain(absRoot string) *ignoreNode {
 	}
 	var node *ignoreNode
 	for _, d := range dirs {
-		node = buildNode(node, d, hasGitMarker(d))
+		// Unlike processDir's per-directory descent, there's no
+		// already-read directory listing here to check membership
+		// against (this climbs a handful of ancestors once per walk, not
+		// a hot path) -- attempt both unconditionally, exactly as before
+		// this optimization existed.
+		node = buildNode(node, d, hasGitMarker(d), true, true)
 	}
 	return node
 }
