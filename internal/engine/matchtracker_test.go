@@ -141,7 +141,7 @@ func TestStripUTF8BOM_SplitAcrossShortReads(t *testing.T) {
 // and requireMatch must be true iff at least one plain pattern was
 // given.
 func TestBuildGlobs_PolarityFlip(t *testing.T) {
-	set, requireMatch, err := buildGlobs([]string{"*.go"})
+	set, requireMatch, err := buildGlobs([]string{"*.go"}, nil, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -157,7 +157,7 @@ func TestBuildGlobs_PolarityFlip(t *testing.T) {
 }
 
 func TestBuildGlobs_NegatedIsPlainExclude(t *testing.T) {
-	set, requireMatch, err := buildGlobs([]string{"!*.md"})
+	set, requireMatch, err := buildGlobs([]string{"!*.md"}, nil, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -170,7 +170,7 @@ func TestBuildGlobs_NegatedIsPlainExclude(t *testing.T) {
 }
 
 func TestBuildGlobs_MixedRequiresMatchTrue(t *testing.T) {
-	_, requireMatch, err := buildGlobs([]string{"!*.md", "*.go"})
+	_, requireMatch, err := buildGlobs([]string{"!*.md", "*.go"}, nil, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -180,20 +180,88 @@ func TestBuildGlobs_MixedRequiresMatchTrue(t *testing.T) {
 }
 
 func TestBuildGlobs_Empty(t *testing.T) {
-	set, requireMatch, err := buildGlobs(nil)
+	set, requireMatch, err := buildGlobs(nil, nil, false)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if set != nil || requireMatch {
-		t.Errorf("buildGlobs(nil) = (%v, %v), want (nil, false)", set, requireMatch)
+		t.Errorf("buildGlobs(nil, nil, false) = (%v, %v), want (nil, false)", set, requireMatch)
 	}
 }
 
 func TestBuildGlobs_InvalidPatternErrors(t *testing.T) {
 	// An unclosed alternate group ("{" without "}") is one of the few
 	// inputs glob.Builder rejects at Build time.
-	if _, _, err := buildGlobs([]string{"a{"}); err == nil {
+	if _, _, err := buildGlobs([]string{"a{"}, nil, false); err == nil {
 		t.Error("expected an error for a malformed glob pattern")
+	}
+}
+
+// TestBuildGlobs_IGlobAlwaysCaseInsensitive covers round #32's --iglob:
+// an iglob pattern must match a differently-cased path even when
+// GlobCaseInsensitive (--glob-case-insensitive) was never given.
+func TestBuildGlobs_IGlobAlwaysCaseInsensitive(t *testing.T) {
+	set, requireMatch, err := buildGlobs(nil, []string{"*.txt"}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !requireMatch {
+		t.Error("requireMatch = false, want true (a plain --iglob pattern was given)")
+	}
+	if got := set.Match([]byte("UPPER.TXT"), false); got != glob.Whitelisted {
+		t.Errorf("plain --iglob pattern: got %v, want Whitelisted", got)
+	}
+}
+
+// TestBuildGlobs_GlobCaseInsensitiveAppliesToGlobsOnly covers --glob-
+// case-insensitive: it folds -g patterns (not just --iglob) but has no
+// bearing on whether an --iglob pattern is case-insensitive (that's
+// unconditional -- see the case above).
+func TestBuildGlobs_GlobCaseInsensitiveAppliesToGlobsOnly(t *testing.T) {
+	set, _, err := buildGlobs([]string{"*.go"}, nil, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := set.Match([]byte("MAIN.GO"), false); got != glob.Whitelisted {
+		t.Errorf("-g pattern under --glob-case-insensitive: got %v, want Whitelisted", got)
+	}
+}
+
+// TestBuildGlobs_NegatedIGlobAloneIsNotRequireMatch mirrors
+// TestBuildGlobs_NegatedIsPlainExclude for --iglob: a lone negated iglob
+// pattern, with no plain pattern anywhere (globs or iglobs), must not
+// turn on GlobsRequireMatch's "exclude anything that doesn't match"
+// semantics -- verified against the real rg binary (see round #32's
+// handoff: `--iglob '!pat'` alone keeps non-matching files, doesn't
+// filter down to only pat).
+func TestBuildGlobs_NegatedIGlobAloneIsNotRequireMatch(t *testing.T) {
+	set, requireMatch, err := buildGlobs(nil, []string{"!*.md"}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if requireMatch {
+		t.Error("requireMatch = true, want false (only a negated --iglob pattern was given)")
+	}
+	if got := set.Match([]byte("README.MD"), false); got != glob.Ignored {
+		t.Errorf("negated --iglob pattern: got %v, want Ignored", got)
+	}
+}
+
+// TestBuildGlobs_IGlobOverridesGlobRegardlessOfOrder covers the ordering
+// rule Config.IGlobs' doc describes: --iglob patterns are always applied
+// AFTER -g patterns for last-match-wins precedence, even when passed to
+// buildGlobs in the other order here -- since buildGlobs itself (not its
+// caller) is what enforces globs-then-iglobs, this only needs one
+// argument order to prove the guarantee holds regardless of caller
+// intent. Verified against the real rg binary (both CLI orders produce
+// the identical file set -- see round #32's handoff).
+func TestBuildGlobs_IGlobOverridesGlobRegardlessOfOrder(t *testing.T) {
+	set, _, err := buildGlobs([]string{"!*.TXT"}, []string{"*.txt"}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := set.Match([]byte("UPPER.TXT"), false); got != glob.Whitelisted {
+		t.Errorf("iglob '*.txt' should win over -g '!*.TXT': got %v, want Whitelisted", got)
 	}
 }
 

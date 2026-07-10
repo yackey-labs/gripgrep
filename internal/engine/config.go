@@ -83,7 +83,28 @@ type Config struct {
 	Hidden      bool     // --hidden
 	NoIgnore    bool     // --no-ignore
 	Globs       []string // -g/--glob, verbatim (leading '!' is glob polarity, see buildGlobs)
-	MaxFilesize int64    // 0 = unlimited
+	// IGlobs are --iglob GLOB, verbatim (same '!' polarity as Globs).
+	// Always matched case-insensitively, regardless of
+	// GlobCaseInsensitive (rg parity: verified against the real rg
+	// binary -- an --iglob pattern is case-insensitive even when
+	// --glob-case-insensitive was never given). Combined with Globs by
+	// buildGlobs into one ordered pattern list with Globs always FIRST
+	// and IGlobs always LAST for last-match-wins precedence, regardless
+	// of the two flags' actual relative order on the command line --
+	// verified against the real rg binary (crates/core/flags/hiargs.rs's
+	// globs(): every -g pattern is added to the override builder before
+	// any --iglob pattern, unconditionally).
+	IGlobs []string
+	// GlobCaseInsensitive is --glob-case-insensitive: makes every Globs
+	// pattern (not IGlobs, which is already always case-insensitive)
+	// match case-insensitively, equivalent to typing each -g pattern as
+	// --iglob instead (rg's own doc for this flag says exactly that).
+	GlobCaseInsensitive bool
+	MaxFilesize         int64 // 0 = unlimited
+	// MaxDepth is -d/--max-depth: nil = unlimited, passed straight
+	// through to walk.Options.MaxDepth (see its doc for the pointer
+	// rationale, identical to MaxCount below).
+	MaxDepth *int
 
 	Threads int        // -j/--threads; 0 = auto
 	Binary  BinaryMode // resolved binary-detection policy

@@ -130,6 +130,26 @@ func TestGoldenVsRipgrep(t *testing.T) {
 		{"unicode_content", []string{"-n", "Привет", corpus}},
 		{"long_line_over_64kb", []string{"-n", "needle", filepath.Join(corpus, "longline.txt")}},
 		{"crlf_line_endings", []string{"-n", "needle", filepath.Join(corpus, "crlf.txt")}},
+		// Round #32: -d/--max-depth, -H/--with-filename, -I/--no-filename,
+		// --heading/--no-heading. "hello" appears at depth 0 (crlf.txt,
+		// unicode.txt) and depth 2 (a/b/foo.txt) in corpus -- -d 1 must
+		// exclude the depth-2 match while keeping the depth-0 ones.
+		{"max_depth_1", []string{"-n", "-d", "1", "hello", corpus}},
+		{"max_depth_2_with_hidden_noignore", []string{"-n", "-d", "2", "--hidden", "--no-ignore", "hello", corpus}},
+		{"max_depth_0_dir_root", []string{"-n", "-d", "0", "hello", corpus}},
+		{"max_depth_0_explicit_file_root", []string{"-n", "-d", "0", "hello", filepath.Join(corpus, "a", "b", "foo.txt")}},
+		{"max_depth_files_mode", []string{"-d", "1", "--files", corpus}},
+		{"with_filename_forced_single_file", []string{"-n", "-H", "hello", filepath.Join(corpus, "crlf.txt")}},
+		{"with_filename_forced_single_file_count", []string{"-H", "-c", "hello", filepath.Join(corpus, "crlf.txt")}},
+		{"no_filename_dir", []string{"-n", "-I", "hello", corpus}},
+		{"no_filename_dir_count", []string{"-I", "-c", "hello", corpus}},
+		{"with_filename_last_wins", []string{"-n", "-I", "-H", "hello", filepath.Join(corpus, "crlf.txt")}},
+		{"no_filename_last_wins", []string{"-n", "-H", "-I", "hello", corpus}},
+		{"heading_explicit", []string{"-n", "--heading", "hello", corpus}},
+		{"no_heading_explicit", []string{"-n", "--no-heading", "hello", corpus}},
+		{"heading_with_count_mode_ignored", []string{"--heading", "-c", "hello", corpus}},
+		{"heading_with_no_filename", []string{"-n", "--heading", "-I", "hello", corpus}},
+		{"heading_last_wins", []string{"-n", "--heading", "--no-heading", "hello", corpus}},
 	}
 
 	for _, tc := range cases {
@@ -444,6 +464,123 @@ func TestGoldenVsRipgrep_MaxCountContextOrdering(t *testing.T) {
 	}
 	if !bytes.Equal(rgOut, ggOut) {
 		t.Errorf("raw (unsorted, -j1, single-file) stdout mismatch:\n--- rg stdout ---\n%s\n--- gg stdout ---\n%s", rgOut, ggOut)
+	}
+}
+
+// TestGoldenVsRipgrep_HeadingGrouping closes the sort-normalization blind
+// spot for round #32's --heading: TestGoldenVsRipgrep's heading cases
+// only prove the same *set* of lines came out, not that blank-line group
+// separators land between (and only between) file groups, in the right
+// place, with no trailing blank after the last group.
+//
+// Deliberately a FLAT directory with no subdirectories at all, and the
+// directory itself passed as the one PATH argument (never individual
+// files enumerated on the command line): raw readdir(3) order is a
+// filesystem property both gg (worker.go's File.ReadDir(-1)) and rg read
+// unsorted and verbatim, so for a single flat directory that order is
+// identical for both tools. TestGoldenVsRipgrep_ContextOrdering's doc
+// warns that this does NOT hold once directories are nested (each tool's
+// own recursion/steal order can interleave files and subdirectories
+// differently) -- this test avoids that entirely by having no
+// subdirectories to interleave, unlike that test's single-file target
+// (heading grouping needs 2+ files to exercise the between-group
+// separator at all, so single-file isn't an option here).
+func TestGoldenVsRipgrep_HeadingGrouping(t *testing.T) {
+	dir := t.TempDir()
+	files := map[string]string{
+		"a_match.txt":   "hello first\nfiller\n",
+		"b_nomatch.txt": "nothing here\n",
+		"c_match.txt":   "hello second\n",
+	}
+	for name, content := range files {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	_, thisFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("could not determine test file location")
+	}
+	ggBin := buildGG(t, filepath.Dir(thisFile))
+
+	cases := []struct {
+		name string
+		args []string
+	}{
+		{"heading", []string{"-j1", "-n", "--heading", "hello", dir}},
+		{"heading_no_filename", []string{"-j1", "-n", "--heading", "-I", "hello", dir}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rgOut, rgErr, rgCode := run(t, "rg", tc.args)
+			ggOut, ggErr, ggCode := run(t, ggBin, tc.args)
+			if rgCode != ggCode {
+				t.Errorf("exit code mismatch: rg=%d gg=%d\nrg stderr: %s\ngg stderr: %s", rgCode, ggCode, rgErr, ggErr)
+			}
+			if !bytes.Equal(rgOut, ggOut) {
+				t.Errorf("raw (unsorted, -j1, flat-dir) stdout mismatch:\n--- rg stdout ---\n%s\n--- gg stdout ---\n%s", rgOut, ggOut)
+			}
+		})
+	}
+}
+
+// TestGoldenVsRipgrep_GlobCaseInsensitive covers round #32's --iglob and
+// --glob-case-insensitive on a dedicated fixture tree with a nested
+// upper-case .TXT file (a case-insensitive match target that a
+// case-SENSITIVE -g '*.txt' must miss) -- kept out of testdata/corpus
+// deliberately, since adding a .TXT file there could perturb other
+// implementers' corpus-based expectations. Sort-normalized: these cases
+// don't depend on inter-file ordering, only on which files matched.
+func TestGoldenVsRipgrep_GlobCaseInsensitive(t *testing.T) {
+	dir := t.TempDir()
+	files := map[string]string{
+		"root.txt":         "needle here\n",
+		"nested/a.txt":     "needle a\n",
+		"nested/UPPER.TXT": "needle upper\n",
+		"nested/b.md":      "needle md\n",
+	}
+	for name, content := range files {
+		full := filepath.Join(dir, name)
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	_, thisFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("could not determine test file location")
+	}
+	ggBin := buildGG(t, filepath.Dir(thisFile))
+
+	cases := []struct {
+		name string
+		args []string
+	}{
+		{"iglob_matches_upper", []string{"--files", "--iglob", "*.txt", dir}},
+		{"glob_case_sensitive_misses_upper", []string{"--files", "-g", "*.txt", dir}},
+		{"glob_case_insensitive_matches_upper", []string{"--files", "--glob-case-insensitive", "-g", "*.txt", dir}},
+		{"iglob_negation", []string{"--files", "--iglob", "!*.txt", dir}},
+		{"iglob_overrides_glob_regardless_of_cli_order", []string{"--files", "--iglob", "*.txt", "-g", "!*.TXT", dir}},
+		{"glob_then_iglob_reversed_cli_order_same_result", []string{"--files", "-g", "!*.TXT", "--iglob", "*.txt", dir}},
+		{"iglob_search_mode", []string{"-n", "--iglob", "*.txt", "needle", dir}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rgOut, rgErr, rgCode := run(t, "rg", tc.args)
+			ggOut, ggErr, ggCode := run(t, ggBin, tc.args)
+			if rgCode != ggCode {
+				t.Errorf("exit code mismatch: rg=%d gg=%d\nrg stderr: %s\ngg stderr: %s", rgCode, ggCode, rgErr, ggErr)
+			}
+			rgLines := sortedLines(rgOut)
+			ggLines := sortedLines(ggOut)
+			if diff := diffLines(rgLines, ggLines); diff != "" {
+				t.Errorf("sort-normalized stdout mismatch:\n%s\n--- raw rg stdout ---\n%s\n--- raw gg stdout ---\n%s", diff, rgOut, ggOut)
+			}
+		})
 	}
 }
 

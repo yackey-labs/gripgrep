@@ -349,3 +349,60 @@ func TestStandard_MultiFileSequential(t *testing.T) {
 		t.Errorf("second.txt block: got %q, want %q (a leading \"--\" here would mean gap-tracking state leaked across Begin)", got, wantSecond)
 	}
 }
+
+// TestStandard_HeadingShowPathFalse mirrors round #32's `rg --heading -I`
+// (gg's -I clears ShowPath, --heading sets Heading): the per-file path
+// header line must be dropped, but the blank-line separator BETWEEN file
+// groups must still appear -- interFileSeparator only reads p.Heading,
+// never p.ShowPath (see its doc). Verified against the real rg 15.1.0
+// binary (round #32's handoff differential sweep).
+func TestStandard_HeadingShowPathFalse(t *testing.T) {
+	rw := &recordingWriter{}
+	dest := NewDest(rw)
+	p := NewStandard(dest)
+	p.Heading = true
+	p.ShowPath = false
+
+	p.Begin("first.txt")
+	p.Matched(&search.Match{Line: []byte("alpha"), LineNumber: 1, HasLineNumber: true})
+	p.Finish("first.txt", &search.Stats{Matched: true})
+
+	p.Begin("second.txt")
+	p.Matched(&search.Match{Line: []byte("beta"), LineNumber: 1, HasLineNumber: true})
+	p.Finish("second.txt", &search.Stats{Matched: true})
+
+	if len(rw.chunks) != 3 {
+		t.Fatalf("got %d Write calls, want 3 (first.txt block, blank-line separator, second.txt block); chunks: %q", len(rw.chunks), rw.chunks)
+	}
+	wantFirst := "1:alpha\n"
+	wantSep := "\n"
+	wantSecond := "1:beta\n"
+	if got := string(rw.chunks[0]); got != wantFirst {
+		t.Errorf("first.txt block: got %q, want %q (no path header -- ShowPath is false)", got, wantFirst)
+	}
+	if got := string(rw.chunks[1]); got != wantSep {
+		t.Errorf("inter-file separator: got %q, want %q (heading mode's blank line must survive -I)", got, wantSep)
+	}
+	if got := string(rw.chunks[2]); got != wantSecond {
+		t.Errorf("second.txt block: got %q, want %q", got, wantSecond)
+	}
+}
+
+// TestStandard_HeadingNoTrailingSeparatorAfterLastGroup confirms Dest's
+// hasPrinted-gated separator never appears after the LAST heading group
+// (only BETWEEN groups) -- a single Begin/Finish must produce no
+// trailing blank line at all.
+func TestStandard_HeadingNoTrailingSeparatorAfterLastGroup(t *testing.T) {
+	dest, out := newTestDest()
+	p := NewStandard(dest)
+	p.Heading = true
+
+	p.Begin("only.txt")
+	p.Matched(&search.Match{Line: []byte("alpha"), LineNumber: 1, HasLineNumber: true})
+	p.Finish("only.txt", &search.Stats{Matched: true})
+
+	want := "only.txt\n1:alpha\n"
+	if got := out.String(); got != want {
+		t.Errorf("got %q, want %q (no leading/trailing blank line for a single group)", got, want)
+	}
+}

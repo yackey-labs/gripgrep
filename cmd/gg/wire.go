@@ -61,6 +61,9 @@ func execute(cfg *Config, stdin io.Reader, stdout, stderr io.Writer) int {
 	isTTY := isTerminalWriter(stdout)
 	color := cfg.Color == ColorAlways || cfg.Color == ColorAnsi || (cfg.Color == ColorAuto && isTTY)
 	heading := isTTY
+	if cfg.Heading != nil {
+		heading = *cfg.Heading
+	}
 	lineNumbers := isTTY
 	if cfg.LineNumbers != nil {
 		lineNumbers = *cfg.LineNumbers
@@ -69,6 +72,9 @@ func execute(cfg *Config, stdin io.Reader, stdout, stderr io.Writer) int {
 
 	statPaths, _ := engine.ResolvePaths(cfg.Paths)
 	showPath := computeShowPath(statPaths)
+	if cfg.WithFilename != nil {
+		showPath = *cfg.WithFilename
+	}
 	contextEnabled := cfg.ContextBefore > 0 || cfg.ContextAfter > 0
 
 	dest := printer.NewDest(stdout)
@@ -141,23 +147,26 @@ func execute(cfg *Config, stdin io.Reader, stdout, stderr io.Writer) int {
 // neither of which this helper has reason to take.
 func toEngineConfig(cfg *Config) engine.Config {
 	return engine.Config{
-		Patterns:      cfg.Patterns,
-		Case:          convertCaseMode(cfg.Case),
-		Fixed:         cfg.Fixed,
-		Word:          cfg.Word,
-		LineRegexp:    cfg.LineRegexp,
-		Paths:         cfg.Paths,
-		Hidden:        cfg.Hidden,
-		NoIgnore:      cfg.NoIgnore,
-		Globs:         cfg.Globs,
-		MaxFilesize:   cfg.MaxFilesize,
-		Threads:       cfg.Threads,
-		Binary:        convertBinaryMode(cfg.Binary),
-		Mmap:          convertMmapMode(cfg.Mmap),
-		Invert:        cfg.Invert,
-		BeforeContext: cfg.ContextBefore,
-		AfterContext:  cfg.ContextAfter,
-		MaxCount:      cfg.MaxCount,
+		Patterns:            cfg.Patterns,
+		Case:                convertCaseMode(cfg.Case),
+		Fixed:               cfg.Fixed,
+		Word:                cfg.Word,
+		LineRegexp:          cfg.LineRegexp,
+		Paths:               cfg.Paths,
+		Hidden:              cfg.Hidden,
+		NoIgnore:            cfg.NoIgnore,
+		Globs:               cfg.Globs,
+		IGlobs:              cfg.IGlobs,
+		GlobCaseInsensitive: cfg.GlobCaseInsensitive,
+		MaxFilesize:         cfg.MaxFilesize,
+		MaxDepth:            cfg.MaxDepth,
+		Threads:             cfg.Threads,
+		Binary:              convertBinaryMode(cfg.Binary),
+		Mmap:                convertMmapMode(cfg.Mmap),
+		Invert:              cfg.Invert,
+		BeforeContext:       cfg.ContextBefore,
+		AfterContext:        cfg.ContextAfter,
+		MaxCount:            cfg.MaxCount,
 	}
 }
 

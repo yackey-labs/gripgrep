@@ -136,14 +136,41 @@ type Config struct {
 	Hidden       bool     // --hidden
 	NoIgnore     bool     // --no-ignore (collapses rg's 5 no-ignore-* sub-flags into one, matching walk.Options.NoIgnore)
 	Globs        []string // -g/--glob, in the order given verbatim (leading '!' negation is glob syntax, handled by package glob, not here)
-	Unrestricted int      // 0-3: the -u/-uu/-uuu level actually given, kept for diagnostics even though NoIgnore/Hidden/Binary already reflect its effect
-	MaxFilesize  int64    // 0 = unlimited (rg's None)
+	// IGlobs are --iglob GLOB, repeatable, same verbatim/negation
+	// convention as Globs but always matched case-insensitively -- see
+	// internal/engine.Config.IGlobs' doc for the combined-ordering rule
+	// (Globs always precede IGlobs regardless of CLI order).
+	IGlobs []string
+	// GlobCaseInsensitive is --glob-case-insensitive/--no-glob-case-
+	// insensitive: makes every Globs (not IGlobs, already always
+	// case-insensitive) pattern match case-insensitively.
+	GlobCaseInsensitive bool
+	Unrestricted        int   // 0-3: the -u/-uu/-uuu level actually given, kept for diagnostics even though NoIgnore/Hidden/Binary already reflect its effect
+	MaxFilesize         int64 // 0 = unlimited (rg's None)
+	// MaxDepth is -d/--max-depth: nil = unset/unlimited. A non-nil 0 is a
+	// real, legal value (rg parity, verified against the real rg binary:
+	// `rg --max-depth 0 dir/` searches nothing) -- NOT the same as
+	// unset, mirroring MaxCount's pointer rationale below.
+	MaxDepth *int
 
 	// LineNumbers is nil when neither -n nor -N was given: rg decides
 	// the default from isatty(stdout) at runtime, which is an M2/cmd
 	// concern, not this parser's.
 	LineNumbers *bool
-	Mode        SearchMode
+	// WithFilename is nil when neither -H nor -I was given: like
+	// LineNumbers, rg decides the default (single-explicit-file vs.
+	// everything else) at runtime, an M2/cmd concern -- see wire.go's
+	// computeShowPath. -H and -I are TWO SEPARATE rg flags (each its own
+	// struct in defs.rs, same shape as -n/-N), not one flag with a
+	// negated spelling, so whichever was given LAST simply overwrites
+	// this field -- verified against the real rg binary: `rg -I -H`
+	// behaves as plain -H, `rg -H -I` behaves as plain -I.
+	WithFilename *bool
+	// Heading is nil when neither --heading nor --no-heading was given:
+	// rg's own default is isatty(stdout), which wire.go already computes
+	// (heading := isTTY) before this field can override it.
+	Heading *bool
+	Mode    SearchMode
 	Quiet       bool // -q/--quiet; independent of Mode, matches rg (quiet suppresses output regardless of search mode)
 	Color       ColorMode
 	// ContextBefore/ContextAfter are already resolved from rg's
@@ -198,6 +225,11 @@ type flagSpec struct {
 	short   byte   // 0 = no short form
 	negated string // "" = no negation
 	kind    flagKind
+	// aliases are additional long spellings rg accepts for this flag
+	// (defs.rs's Flag::aliases()), e.g. "maxdepth" for --max-depth. Each
+	// resolves to this spec exactly like long does (never negated -- no
+	// flag using aliases in gg's v1 scope has a negation to alias too).
+	aliases []string
 
 	// exactly one of these is set, matching kind
 	applySwitch func(cfg *Config, ps *parseState, on bool) error
@@ -324,6 +356,38 @@ func buildV1Flags() []*flagSpec {
 			},
 		},
 		{
+			// --iglob has no short form and no negation of its own in rg
+			// (defs.rs's IGlob never sets name_short/name_negated); '!'
+			// negation is glob syntax handled downstream, same as -g.
+			long: "iglob", kind: kindValue,
+			applyValue: func(cfg *Config, _ *parseState, val string) error {
+				cfg.IGlobs = append(cfg.IGlobs, val)
+				return nil
+			},
+		},
+		{
+			long: "glob-case-insensitive", negated: "no-glob-case-insensitive", kind: kindSwitch,
+			applySwitch: func(cfg *Config, _ *parseState, on bool) error {
+				cfg.GlobCaseInsensitive = on
+				return nil
+			},
+		},
+		{
+			// -d/--max-depth NUM: no negation in rg (defs.rs's MaxDepth
+			// never sets name_negated). rg also accepts the alias
+			// "--maxdepth" (defs.rs's aliases()); registered separately
+			// below via this spec's aliases field.
+			long: "max-depth", short: 'd', kind: kindValue, aliases: []string{"maxdepth"},
+			applyValue: func(cfg *Config, _ *parseState, val string) error {
+				n, err := parseNonNegInt(val)
+				if err != nil {
+					return err
+				}
+				cfg.MaxDepth = &n
+				return nil
+			},
+		},
+		{
 			long: "unrestricted", short: 'u', kind: kindSwitch,
 			applySwitch: func(cfg *Config, ps *parseState, _ bool) error {
 				ps.uLevel++
@@ -373,6 +437,33 @@ func buildV1Flags() []*flagSpec {
 			applySwitch: func(cfg *Config, _ *parseState, _ bool) error {
 				b := false
 				cfg.LineNumbers = &b
+				return nil
+			},
+		},
+		{
+			// -H/--with-filename and -I/--no-filename are TWO SEPARATE rg
+			// flags (each asserts "has no defined negation" in its own
+			// update fn), same shape as -n/-N above: last one given wins
+			// by plain overwrite. See Config.WithFilename's doc.
+			long: "with-filename", short: 'H', kind: kindSwitch,
+			applySwitch: func(cfg *Config, _ *parseState, _ bool) error {
+				b := true
+				cfg.WithFilename = &b
+				return nil
+			},
+		},
+		{
+			long: "no-filename", short: 'I', kind: kindSwitch,
+			applySwitch: func(cfg *Config, _ *parseState, _ bool) error {
+				b := false
+				cfg.WithFilename = &b
+				return nil
+			},
+		},
+		{
+			long: "heading", negated: "no-heading", kind: kindSwitch,
+			applySwitch: func(cfg *Config, _ *parseState, on bool) error {
+				cfg.Heading = &on
 				return nil
 			},
 		},
@@ -595,6 +686,9 @@ func buildLongIndex() map[string]longEntry {
 		m[s.long] = longEntry{spec: s, negate: false}
 		if s.negated != "" {
 			m[s.negated] = longEntry{spec: s, negate: true}
+		}
+		for _, alias := range s.aliases {
+			m[alias] = longEntry{spec: s, negate: false}
 		}
 	}
 	return m

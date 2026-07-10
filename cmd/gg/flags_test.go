@@ -345,6 +345,66 @@ func TestMaxFilesize(t *testing.T) {
 	wantErr(t, "--max-filesize", "1k", "pat") // lowercase suffix is rejected, unlike uppercase
 }
 
+func TestMaxDepthFlag(t *testing.T) {
+	if cfg := mustParse(t, "pat"); cfg.MaxDepth != nil {
+		t.Errorf("default MaxDepth = %v, want nil (unset/unlimited)", *cfg.MaxDepth)
+	}
+	if cfg := mustParse(t, "-d", "1", "pat"); cfg.MaxDepth == nil || *cfg.MaxDepth != 1 {
+		t.Errorf("-d 1: MaxDepth = %v, want 1", cfg.MaxDepth)
+	}
+	if cfg := mustParse(t, "--max-depth", "0", "pat"); cfg.MaxDepth == nil || *cfg.MaxDepth != 0 {
+		t.Errorf("--max-depth 0: MaxDepth = %v, want a non-nil 0, not unset", cfg.MaxDepth)
+	}
+	if cfg := mustParse(t, "--max-depth=5", "pat"); cfg.MaxDepth == nil || *cfg.MaxDepth != 5 {
+		t.Errorf("--max-depth=5: MaxDepth = %v, want 5", cfg.MaxDepth)
+	}
+	// rg's --maxdepth alias (defs.rs's Flag::aliases()).
+	if cfg := mustParse(t, "--maxdepth", "3", "pat"); cfg.MaxDepth == nil || *cfg.MaxDepth != 3 {
+		t.Errorf("--maxdepth 3 (alias): MaxDepth = %v, want 3", cfg.MaxDepth)
+	}
+	if cfg := mustParse(t, "-d", "1", "-d", "2", "pat"); cfg.MaxDepth == nil || *cfg.MaxDepth != 2 {
+		t.Errorf("-d 1 -d 2: MaxDepth = %v, want 2 (last wins)", cfg.MaxDepth)
+	}
+	// Verified against the real rg binary: `rg -d x` fails with
+	// "value is not a valid number: invalid digit found in string",
+	// same message/exit-2 plumbing as -m (parseNonNegInt).
+	wantErr(t, "-d", "x", "pat")
+	wantErr(t, "-d", "-1", "pat")
+}
+
+func TestIGlobRepeatableAndOrdered(t *testing.T) {
+	cfg := mustParse(t, "--iglob", "*.txt", "--iglob", "!ctx.txt", "pat")
+	want := []string{"*.txt", "!ctx.txt"}
+	if !reflect.DeepEqual(cfg.IGlobs, want) {
+		t.Errorf("IGlobs = %v, want %v", cfg.IGlobs, want)
+	}
+	// -g and --iglob are independent lists; giving both must not merge or
+	// clobber either (buildGlobs, not the parser, is what orders them
+	// together later -- see its doc).
+	cfg = mustParse(t, "-g", "*.go", "--iglob", "*.txt", "pat")
+	if got, want := cfg.Globs, []string{"*.go"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("Globs = %v, want %v", got, want)
+	}
+	if got, want := cfg.IGlobs, []string{"*.txt"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("IGlobs = %v, want %v", got, want)
+	}
+}
+
+func TestGlobCaseInsensitiveFlag(t *testing.T) {
+	if cfg := mustParse(t, "pat"); cfg.GlobCaseInsensitive {
+		t.Error("default GlobCaseInsensitive = true, want false")
+	}
+	if cfg := mustParse(t, "--glob-case-insensitive", "pat"); !cfg.GlobCaseInsensitive {
+		t.Error("--glob-case-insensitive: GlobCaseInsensitive = false, want true")
+	}
+	if cfg := mustParse(t, "--glob-case-insensitive", "--no-glob-case-insensitive", "pat"); cfg.GlobCaseInsensitive {
+		t.Error("--glob-case-insensitive --no-glob-case-insensitive: GlobCaseInsensitive = true, want false")
+	}
+	if cfg := mustParse(t, "--no-glob-case-insensitive", "--glob-case-insensitive", "pat"); !cfg.GlobCaseInsensitive {
+		t.Error("--no-glob-case-insensitive --glob-case-insensitive: GlobCaseInsensitive = false, want true")
+	}
+}
+
 // --- Output flags ---
 
 func TestLineNumberLastWins(t *testing.T) {
@@ -369,6 +429,53 @@ func TestLineNumberLastWins(t *testing.T) {
 	cfg = mustParse(t, "-n", "-N", "pat")
 	if cfg.LineNumbers == nil || *cfg.LineNumbers {
 		t.Errorf("-n -N: LineNumbers = %v, want false (last flag wins)", cfg.LineNumbers)
+	}
+}
+
+func TestWithFilenameLastWins(t *testing.T) {
+	// Verified against the real rg binary:
+	//   rg -I -H alpha f.txt  -> path shown    (last flag: -H)
+	//   rg -H -I alpha f.txt  -> path suppressed (last flag: -I)
+	if cfg := mustParse(t, "pat"); cfg.WithFilename != nil {
+		t.Errorf("default WithFilename = %v, want nil (unset)", cfg.WithFilename)
+	}
+	cfg := mustParse(t, "-H", "pat")
+	if cfg.WithFilename == nil || !*cfg.WithFilename {
+		t.Errorf("-H: WithFilename = %v, want true", cfg.WithFilename)
+	}
+	cfg = mustParse(t, "--no-filename", "pat")
+	if cfg.WithFilename == nil || *cfg.WithFilename {
+		t.Errorf("--no-filename: WithFilename = %v, want false", cfg.WithFilename)
+	}
+	cfg = mustParse(t, "-I", "-H", "pat")
+	if cfg.WithFilename == nil || !*cfg.WithFilename {
+		t.Errorf("-I -H: WithFilename = %v, want true (last flag wins)", cfg.WithFilename)
+	}
+	cfg = mustParse(t, "-H", "-I", "pat")
+	if cfg.WithFilename == nil || *cfg.WithFilename {
+		t.Errorf("-H -I: WithFilename = %v, want false (last flag wins)", cfg.WithFilename)
+	}
+}
+
+func TestHeadingFlag(t *testing.T) {
+	if cfg := mustParse(t, "pat"); cfg.Heading != nil {
+		t.Errorf("default Heading = %v, want nil (unset)", cfg.Heading)
+	}
+	cfg := mustParse(t, "--heading", "pat")
+	if cfg.Heading == nil || !*cfg.Heading {
+		t.Errorf("--heading: Heading = %v, want true", cfg.Heading)
+	}
+	cfg = mustParse(t, "--no-heading", "pat")
+	if cfg.Heading == nil || *cfg.Heading {
+		t.Errorf("--no-heading: Heading = %v, want false", cfg.Heading)
+	}
+	cfg = mustParse(t, "--heading", "--no-heading", "pat")
+	if cfg.Heading == nil || *cfg.Heading {
+		t.Errorf("--heading --no-heading: Heading = %v, want false (last wins)", cfg.Heading)
+	}
+	cfg = mustParse(t, "--no-heading", "--heading", "pat")
+	if cfg.Heading == nil || !*cfg.Heading {
+		t.Errorf("--no-heading --heading: Heading = %v, want true (last wins)", cfg.Heading)
 	}
 }
 

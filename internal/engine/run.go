@@ -103,7 +103,7 @@ type Result struct {
 // stop func backed by the same flag its sinks set when the caller's
 // early-stop callback returns false.
 func Run(cfg Config, newWorker NewWorkerFunc, quiet QuitSink, stop func() bool, bm BinaryMessaging, stderr io.Writer) (Result, error) {
-	globSet, globsRequireMatch, err := buildGlobs(cfg.Globs)
+	globSet, globsRequireMatch, err := buildGlobs(cfg.Globs, cfg.IGlobs, cfg.GlobCaseInsensitive)
 	if err != nil {
 		return Result{}, err
 	}
@@ -119,6 +119,7 @@ func Run(cfg Config, newWorker NewWorkerFunc, quiet QuitSink, stop func() bool, 
 		Hidden:            cfg.Hidden,
 		NoIgnore:          cfg.NoIgnore,
 		MaxFileSize:       cfg.MaxFilesize,
+		MaxDepth:          cfg.MaxDepth,
 		Threads:           cfg.Threads,
 		Globs:             globSet,
 		GlobsRequireMatch: globsRequireMatch,
@@ -247,7 +248,7 @@ type FilesVisit func(path string)
 // walk.Options construction; it never touches mmap, the matcher, or any
 // other search-specific concern, since there is nothing to search.
 func Files(cfg Config, visit FilesVisit, stderr io.Writer) (Result, error) {
-	globSet, globsRequireMatch, err := buildGlobs(cfg.Globs)
+	globSet, globsRequireMatch, err := buildGlobs(cfg.Globs, cfg.IGlobs, cfg.GlobCaseInsensitive)
 	if err != nil {
 		return Result{}, err
 	}
@@ -262,6 +263,7 @@ func Files(cfg Config, visit FilesVisit, stderr io.Writer) (Result, error) {
 		Hidden:            cfg.Hidden,
 		NoIgnore:          cfg.NoIgnore,
 		MaxFileSize:       cfg.MaxFilesize,
+		MaxDepth:          cfg.MaxDepth,
 		Threads:           cfg.Threads,
 		Globs:             globSet,
 		GlobsRequireMatch: globsRequireMatch,

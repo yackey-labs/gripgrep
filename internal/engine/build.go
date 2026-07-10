@@ -50,29 +50,55 @@ func NewSearcher(cfg Config, matcher match.Matcher) *search.Searcher {
 	})
 }
 
-// buildGlobs compiles -g/--glob patterns into a walk.Options.Globs
-// override set, flipping polarity per walk.Options.GlobsRequireMatch's
-// doc: a plain -g pattern is really an *include* filter in rg (only
-// search files matching some -g), so it becomes a '!'-prefixed
-// (whitelist) entry in the underlying gitignore-style glob.Set; a
-// '!'-prefixed -g pattern is an ordinary exclude, so its leading '!' is
-// stripped to become a plain (ignore) entry. requireMatch is true iff at
-// least one plain -g pattern was given, which is exactly when the
-// "anything matching none of the -g patterns is excluded" semantics
-// apply (see walk.Options.GlobsRequireMatch's doc).
-func buildGlobs(patterns []string) (*glob.Set, bool, error) {
-	if len(patterns) == 0 {
+// buildGlobs compiles -g/--glob and --iglob patterns into a single
+// walk.Options.Globs override set, flipping polarity per
+// walk.Options.GlobsRequireMatch's doc: a plain pattern is really an
+// *include* filter in rg (only search files matching some -g/--iglob),
+// so it becomes a '!'-prefixed (whitelist) entry in the underlying
+// gitignore-style glob.Set; a '!'-prefixed pattern is an ordinary
+// exclude, so its leading '!' is stripped to become a plain (ignore)
+// entry. requireMatch is true iff at least one plain pattern was given
+// across EITHER globs or iglobs, which is exactly when the "anything
+// matching none of them is excluded" semantics apply (see
+// walk.Options.GlobsRequireMatch's doc) -- verified against the real rg
+// binary: a lone `--iglob '!pat'` with no positive pattern anywhere does
+// NOT turn into an include filter, but `-g 'pat'` (positive) followed by
+// `--iglob '!other'` does, and the iglob exclusion still applies on top.
+//
+// globs are added to the Builder before iglobs, always, regardless of
+// their actual relative order on the command line -- see Config.IGlobs'
+// doc for why (matches rg's own hiargs.rs::globs() unconditionally). Every
+// glob pattern is added case-sensitively unless ci is set (--glob-case-
+// insensitive); every iglob pattern is always added via Builder.AddCI.
+func buildGlobs(globs, iglobs []string, ci bool) (*glob.Set, bool, error) {
+	if len(globs) == 0 && len(iglobs) == 0 {
 		return nil, false, nil
 	}
 	var b glob.Builder
 	requireMatch := false
-	for _, p := range patterns {
-		if strings.HasPrefix(p, "!") {
-			b.Add(p[1:])
-		} else {
-			requireMatch = true
-			b.Add("!" + p)
+	addOne := func(p string, caseInsensitive bool) {
+		stripped, negated := strings.CutPrefix(p, "!")
+		add := b.Add
+		if caseInsensitive {
+			add = b.AddCI
 		}
+		if negated {
+			// rg's "-g '!x'" is an ordinary exclude: strip the leading
+			// '!' to become a plain (ignore) entry in gitignore terms.
+			add(stripped)
+		} else {
+			// rg's "-g 'x'" (no leading '!') is really an *include*
+			// filter: give it gitignore's OWN '!' (whitelist) so it
+			// participates in GlobsRequireMatch's exclusion below.
+			requireMatch = true
+			add("!" + p)
+		}
+	}
+	for _, p := range globs {
+		addOne(p, ci)
+	}
+	for _, p := range iglobs {
+		addOne(p, true)
 	}
 	set, err := b.Build()
 	if err != nil {
