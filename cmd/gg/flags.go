@@ -107,9 +107,18 @@ const (
 // dependency on any gripgrep library package.
 type Config struct {
 	// Patterns are OR'd together: either the single first positional
-	// (when -e/--regexp was never given) or every -e/--regexp value (in
-	// which case ALL positionals become Paths -- see ParseArgs).
+	// (when neither -e/--regexp nor -f/--file was ever given) or every
+	// -e/--regexp value plus every line read from every -f/--file
+	// PATTERNFILE (in which case ALL positionals become Paths -- see
+	// ParseArgs). ParseArgs itself only ever populates Patterns from -e;
+	// PatternFiles' contents are read later (I/O, see resolvePatternFiles
+	// in wire.go) and appended to Patterns before the matcher is built --
+	// this file has no dependency on any other gripgrep package, and no
+	// I/O of its own, per its top doc comment.
 	Patterns []string
+	// PatternFiles are -f/--file PATTERNFILE arguments, in the order
+	// given (repeatable); "-" means read from stdin. See Patterns' doc.
+	PatternFiles []string
 	// Paths are the files/directories to search.
 	Paths []string
 
@@ -260,6 +269,24 @@ func buildV1Flags() []*flagSpec {
 			long: "regexp", short: 'e', kind: kindValue,
 			applyValue: func(cfg *Config, ps *parseState, val string) error {
 				cfg.Patterns = append(cfg.Patterns, val)
+				ps.sawPattern = true
+				return nil
+			},
+		},
+		{
+			// -f/--file PATTERNFILE: repeatable, combines with -e. Per rg
+			// (File's doc comment: "When --file or --regexp is used, then
+			// ripgrep treats all positional arguments as files or
+			// directories to search"), -f sets sawPattern exactly like -e
+			// does, so ParseArgs's positional-resolution step already
+			// routes every positional to Paths -- no separate handling
+			// needed here. This parser only records the raw file path
+			// (or "-" for stdin); actually reading and line-splitting the
+			// file happens later, in wire.go's resolvePatternFiles, since
+			// this file does no I/O of its own (see the top doc comment).
+			long: "file", short: 'f', kind: kindValue,
+			applyValue: func(cfg *Config, ps *parseState, val string) error {
+				cfg.PatternFiles = append(cfg.PatternFiles, val)
 				ps.sawPattern = true
 				return nil
 			},
@@ -523,7 +550,6 @@ var notImplementedFlags = []notImplementedFlag{
 	{long: "only-matching", short: 'o', label: "-o/--only-matching"},
 	{long: "binary", label: "--binary"},
 	{long: "follow", short: 'L', label: "-L/--follow"},
-	{long: "file", short: 'f', label: "-f/--file"},
 }
 
 // byLongName indexes v1Flags by every long spelling that should resolve

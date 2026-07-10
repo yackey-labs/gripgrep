@@ -32,7 +32,7 @@ unknown-flag error, exit 2)
 
 | Flag | Short | gg | Summary |
 |---|---|---|---|
-| `--file` | `-f` | ⚠️ | Search for patterns from the given file |
+| `--file` | `-f` | ✅ | Search for patterns from the given file |
 | `--pre` |  | ❌ | Search output of COMMAND for each PATH |
 | `--pre-glob` |  | ❌ | Include or exclude files from a preprocessor |
 | `--regexp` | `-e` | ✅ | A pattern to search for |

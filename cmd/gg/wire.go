@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"fmt"
 	"io"
 	"os"
@@ -24,12 +25,29 @@ import (
 // which keeps walking and only reflects match/no-match in its exit status
 // (verified: a permission-denied subdirectory alongside a real match
 // still exits 0).
-func execute(cfg *Config, stdout, stderr io.Writer) int {
+func execute(cfg *Config, stdin io.Reader, stdout, stderr io.Writer) int {
 	if cfg.Mode == ModeFiles {
 		// --files skips the matcher/searcher pipeline entirely (see
 		// executeFiles's doc) -- dispatched before buildMatcher runs
-		// since --files needs no pattern at all.
+		// since --files needs no pattern at all. -f/--file is irrelevant
+		// here too (--files takes no PATTERN of any kind), so
+		// resolvePatternFiles is never called on this path.
 		return executeFiles(cfg, stdout, stderr)
+	}
+
+	if err := resolvePatternFiles(cfg, stdin); err != nil {
+		fmt.Fprintf(stderr, "gg: %s\n", err)
+		return 2
+	}
+	if len(cfg.Patterns) == 0 {
+		// -f/--file was given but every PATTERNFILE turned out empty (and
+		// no -e/positional pattern existed either): rg's own behavior
+		// here (verified against the real binary: `rg -f empty.txt
+		// file` exits 1 with no output and no error) is NOT an error --
+		// the pattern set is known, in advance, to match nothing, so the
+		// search completes immediately rather than erroring out of
+		// match.New's normal "at least one pattern" requirement.
+		return 1
 	}
 
 	econf := toEngineConfig(cfg)
@@ -243,4 +261,73 @@ func buildCLISink(cfg *Config, dest *printer.Dest, matcher match.Matcher, color,
 		s.ContextEnabled = cfg.ContextBefore > 0 || cfg.ContextAfter > 0
 		return s, true
 	}
+}
+
+// resolvePatternFiles implements -f/--file's actual I/O: ParseArgs only
+// ever records the raw PATTERNFILE path(s) in cfg.PatternFiles (see
+// Config.Patterns's doc for why -- flags.go has no I/O of its own), so
+// this reads each one, in order, and appends every line as a pattern.
+// Every behavior below is verified against the real rg 15.1.0 binary
+// (see the round-31 differential sweep):
+//
+//   - One pattern per line; a trailing '\r' (CRLF pattern files) is
+//     stripped by bufio.Scanner's default split func, matching rg's own
+//     line splitting.
+//   - An EMPTY line becomes an empty-string pattern (matches every line,
+//     same as an empty -e value) -- never skipped.
+//   - "-" reads patterns from stdin. Unlike a PATH positional of "-"
+//     (which gg does not special-case as "search stdin" -- no v1 flag
+//     reaches that path), this never collides with searching stdin:
+//     rg's own resolution (verified) is that -f - consumes stdin ONLY
+//     for patterns, and a bare invocation with no PATH argument falls
+//     back to searching the current directory exactly as it would
+//     without -f, never stdin.
+//   - A PATTERNFILE that can't be opened is a fatal setup error, handled
+//     by execute's existing "gg: %s\n" + exit 2 path, matching rg's own
+//     "<path>: No such file or directory" + exit 2.
+//   - An entirely empty (zero-line) pattern file contributes zero
+//     patterns -- not an error on its own; execute's caller checks
+//     whether the FINAL combined pattern set ends up empty.
+func resolvePatternFiles(cfg *Config, stdin io.Reader) error {
+	for _, path := range cfg.PatternFiles {
+		r, closer, err := openPatternFile(path, stdin)
+		if err != nil {
+			return err
+		}
+		if r == nil {
+			// "-" with a nil stdin (e.g. a test harness that doesn't wire
+			// one up): treat as contributing zero patterns rather than
+			// panicking on a nil Reader.
+			continue
+		}
+		sc := bufio.NewScanner(r)
+		sc.Buffer(make([]byte, 64*1024), 1<<20)
+		for sc.Scan() {
+			cfg.Patterns = append(cfg.Patterns, sc.Text())
+		}
+		serr := sc.Err()
+		if closer != nil {
+			closer.Close()
+		}
+		if serr != nil {
+			return fmt.Errorf("%s: %w", path, serr)
+		}
+	}
+	return nil
+}
+
+// openPatternFile resolves one -f/--file PATTERNFILE argument to a
+// Reader: "-" is stdin (closer is nil -- stdin is never closed here),
+// anything else is opened from disk (closer is the same *os.File,
+// returned separately from r so callers can defer-free error handling
+// without an io.Reader-to-io.Closer type assertion).
+func openPatternFile(path string, stdin io.Reader) (r io.Reader, closer io.Closer, err error) {
+	if path == "-" {
+		return stdin, nil, nil
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, nil, err
+	}
+	return f, f, nil
 }

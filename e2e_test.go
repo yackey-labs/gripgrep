@@ -82,11 +82,26 @@ func TestGoldenVsRipgrep(t *testing.T) {
 
 	ggBin := buildGG(t, root)
 
+	// Pattern files for -f/--file cases (real files on disk; -f's own I/O
+	// reads them at gg's execute time, same as rg's).
+	patDir := t.TempDir()
+	multiPats := filepath.Join(patDir, "multi.txt")
+	if err := os.WriteFile(multiPats, []byte("hello\nneedle\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	blankLinePats := filepath.Join(patDir, "blank.txt")
+	if err := os.WriteFile(blankLinePats, []byte("nomatchatall_zzz\n\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
 	cases := []struct {
 		name string
 		args []string
 	}{
 		{"literal", []string{"-n", "hello", corpus}},
+		{"file_flag_multi_pattern", []string{"-n", "-f", multiPats, corpus}},
+		{"file_flag_empty_line_matches_everything", []string{"-n", "-f", blankLinePats, corpus}},
+		{"file_flag_combined_with_regexp", []string{"-n", "-f", multiPats, "-e", "secret", corpus}},
 		{"case_insensitive", []string{"-n", "-i", "HELLO", corpus}},
 		{"regex_alternation", []string{"-n", "hello|needle", corpus}},
 		{"word_boundary", []string{"-n", "-w", "cat", corpus}},

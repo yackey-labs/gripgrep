@@ -160,6 +160,33 @@ func TestMatcherLiterals(t *testing.T) {
 	checkMatrix(t, cfgs, haystacks)
 }
 
+// TestMatcherEmptyPatternAmongLiterals covers a real bug found in round
+// 31 (-f/--file's "empty pattern-file line matches every input line"
+// requirement, verified against the real rg binary): an empty literal
+// combined with OTHER literals in one alternation used to be silently
+// dropped by the multi-literal fast paths (rareByteMultiScanner's
+// nextAnchor and the Aho-Corasick scanner both have no representation
+// for a zero-length pattern), even though a LONE empty pattern already
+// matched correctly via the single-literal scanner. newLiteralScanner
+// now special-cases "any literal in the set is empty" up front -- see
+// multilit.go's doc. A lone empty pattern is deliberately also included
+// below (len(lits)==1, exercising the pre-existing/already-correct path
+// this fix must not regress).
+func TestMatcherEmptyPatternAmongLiterals(t *testing.T) {
+	cfgs := []Config{
+		cs("apple", "", "banana"), // >1 literal (rareByteMultiScanner route pre-fix)
+		cs(""),                    // lone empty literal (already-correct path)
+		cs("a", "b", "c", "d", "e", "", "g", "h", "i"), // >8 literals (Aho-Corasick route)
+		ci("apple", "", "banana"),
+		fixed(cs("apple", "", "banana")),
+		fixed(ci("apple", "", "banana")),
+	}
+	checkMatrix(t, cfgs, haystacks)
+	// Direct differential-sweep regression: any line at all must match
+	// when an empty pattern is combined with unrelated literals.
+	checkLine(t, cs("apple", "", "banana"), "this line contains neither literal")
+}
+
 func TestMatcherCaseInsensitiveUnicode(t *testing.T) {
 	cfgs := []Config{
 		ci("δελτα"),

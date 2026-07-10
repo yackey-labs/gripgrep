@@ -318,6 +318,27 @@ func (s *ahoCorasickScanner) find(buf []byte, start int) (int, int, bool) {
 // out to be rareByteMultiScanner.find's monotonic-sweep rewrite (see its
 // doc): no threshold or routing change needed here at all.
 func newLiteralScanner(lits [][]byte, asciiCaseInsensitive bool) literalScanner {
+	for _, l := range lits {
+		if len(l) == 0 {
+			// An empty literal -- alone or alongside others (rg parity:
+			// an empty -e/-f pattern OR'd with anything still matches
+			// EVERY line, since one alternative trivially matches at
+			// every position) -- makes the whole alternation match
+			// everywhere, so the rest of the set is redundant for
+			// existence purposes. singleLiteralScanner's find already
+			// implements exactly that for a lone empty literal (its
+			// n==0 branch); reuse it here rather than adding a second
+			// "always matches" type. Without this early return, an
+			// empty literal reaching rareByteMultiScanner/
+			// ahoCorasickScanner below would be silently dropped
+			// (nextAnchor's len(l)==0 case returns "not found", and the
+			// aho-corasick library has no concept of a zero-length
+			// pattern either) -- verified against the real rg binary: a
+			// -f pattern file with one blank line among others must
+			// still match every line, not just the non-empty ones'.
+			return newSingleLiteralScanner(nil)
+		}
+	}
 	if len(lits) == 1 {
 		if asciiCaseInsensitive {
 			return newSingleLiteralCIScanner(lits[0])

@@ -170,6 +170,59 @@ func TestRegexpFlag(t *testing.T) {
 	}
 }
 
+// TestFileFlag covers -f/--file at the ParseArgs level: this parser only
+// records the raw PATTERNFILE argument(s) (repeatable) and, like -e,
+// routes every positional to Paths -- actually reading/line-splitting
+// pattern files is wire.go's resolvePatternFiles, exercised separately
+// (this file does no I/O -- see its top doc comment).
+//
+// Verified against the real rg 15.1.0 binary:
+//
+//	$ rg -f pats.txt f.txt        -> f.txt is a PATH, pats.txt supplies the pattern(s)
+//	$ rg -f pats.txt -e alpha f.txt -> both -f and -e patterns are searched (OR)
+func TestFileFlag(t *testing.T) {
+	cfg := mustParse(t, "-f", "pats.txt", "f.txt")
+	if got, want := cfg.PatternFiles, []string{"pats.txt"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("PatternFiles = %v, want %v", got, want)
+	}
+	if got, want := cfg.Paths, []string{"f.txt"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("Paths = %v, want %v (f.txt must remain a path, not become part of the pattern)", got, want)
+	}
+	if len(cfg.Patterns) != 0 {
+		t.Errorf("Patterns = %v, want empty (nothing read from disk by ParseArgs)", cfg.Patterns)
+	}
+
+	cfg = mustParse(t, "-f", "a.txt", "-f", "b.txt", "f.txt")
+	if got, want := cfg.PatternFiles, []string{"a.txt", "b.txt"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("repeated -f: PatternFiles = %v, want %v", got, want)
+	}
+
+	cfg = mustParse(t, "-f", "pats.txt", "-e", "alpha", "f.txt")
+	if got, want := cfg.PatternFiles, []string{"pats.txt"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("-f + -e: PatternFiles = %v, want %v", got, want)
+	}
+	if got, want := cfg.Patterns, []string{"alpha"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("-f + -e: Patterns = %v, want %v", got, want)
+	}
+
+	cfg = mustParse(t, "--file=pats.txt", "f.txt")
+	if got, want := cfg.PatternFiles, []string{"pats.txt"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("--file=pats.txt: PatternFiles = %v, want %v", got, want)
+	}
+
+	cfg = mustParse(t, "-fpats.txt", "f.txt")
+	if got, want := cfg.PatternFiles, []string{"pats.txt"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("-fpats.txt: PatternFiles = %v, want %v", got, want)
+	}
+
+	// -f - is just an ordinary PatternFiles entry at the parse level;
+	// stdin handling lives in resolvePatternFiles.
+	cfg = mustParse(t, "-f", "-", "f.txt")
+	if got, want := cfg.PatternFiles, []string{"-"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("-f -: PatternFiles = %v, want %v", got, want)
+	}
+}
+
 func TestBarePatternPositional(t *testing.T) {
 	// Without -e, the first positional is the pattern and the rest are paths.
 	cfg := mustParse(t, "pat", "path1", "path2")
@@ -631,7 +684,6 @@ func TestNotYetImplementedFlags(t *testing.T) {
 		{"--replace", "x", "pat"},
 		{"-z", "pat"},
 		{"-L", "pat"},
-		{"-f", "patfile", "pat"},
 		{"--binary", "pat"},
 	} {
 		t.Run(args[0], func(t *testing.T) {
@@ -703,7 +755,7 @@ func TestAbbreviatedLongFlagRejected(t *testing.T) {
 // coverage numbers for main.go's wiring, not just ParseArgs.
 func TestRunBadFlag(t *testing.T) {
 	var stdout, stderr bytes.Buffer
-	code := run([]string{"--bogus-flag", "pat"}, &stdout, &stderr)
+	code := run([]string{"--bogus-flag", "pat"}, nil, &stdout, &stderr)
 	if code != 2 {
 		t.Errorf("exit code = %d, want 2", code)
 	}
@@ -730,7 +782,7 @@ func TestRunSearchMatch(t *testing.T) {
 	}
 
 	var stdout, stderr bytes.Buffer
-	code := run([]string{"-n", "hello", dir}, &stdout, &stderr)
+	code := run([]string{"-n", "hello", dir}, nil, &stdout, &stderr)
 	if code != 0 {
 		t.Errorf("exit code = %d, want 0 (match found); stderr=%q", code, stderr.String())
 	}
@@ -752,7 +804,7 @@ func TestRunSearchStripsUTF8BOM(t *testing.T) {
 	}
 
 	var stdout, stderr bytes.Buffer
-	code := run([]string{"-n", "hello", dir}, &stdout, &stderr)
+	code := run([]string{"-n", "hello", dir}, nil, &stdout, &stderr)
 	if code != 0 {
 		t.Errorf("exit code = %d, want 0; stderr=%q", code, stderr.String())
 	}
@@ -769,7 +821,7 @@ func TestRunSearchNoMatch(t *testing.T) {
 	}
 
 	var stdout, stderr bytes.Buffer
-	code := run([]string{"-n", "zzz_no_such_pattern", dir}, &stdout, &stderr)
+	code := run([]string{"-n", "zzz_no_such_pattern", dir}, nil, &stdout, &stderr)
 	if code != 1 {
 		t.Errorf("exit code = %d, want 1 (no match); stderr=%q", code, stderr.String())
 	}
@@ -786,7 +838,7 @@ func TestRunRealisticFlagsDoesNotErrorOnParse(t *testing.T) {
 	dir := t.TempDir()
 
 	var stdout, stderr bytes.Buffer
-	code := run([]string{"-nA3", "-i", "PM_RESUME", dir}, &stdout, &stderr)
+	code := run([]string{"-nA3", "-i", "PM_RESUME", dir}, nil, &stdout, &stderr)
 	if code != 0 && code != 1 {
 		t.Errorf("exit code = %d, want 0 or 1 (a valid parse must reach a real search, not exit 2); stderr=%q", code, stderr.String())
 	}
@@ -823,7 +875,7 @@ func TestRunExitCodePrecedence_ErrorOverridesMatch(t *testing.T) {
 	defer os.Chmod(noaccess, 0o755)
 
 	var stdout, stderr bytes.Buffer
-	code := run([]string{"-n", "hello", dir}, &stdout, &stderr)
+	code := run([]string{"-n", "hello", dir}, nil, &stdout, &stderr)
 	if code != 2 {
 		t.Errorf("exit code = %d, want 2 (a per-path error overrides a real match); stdout=%q stderr=%q", code, stdout.String(), stderr.String())
 	}
@@ -860,7 +912,7 @@ func TestRunExitCodePrecedence_QuietMatchOverridesError(t *testing.T) {
 	defer os.Chmod(noaccess, 0o755)
 
 	var stdout, stderr bytes.Buffer
-	code := run([]string{"-q", "hello", dir}, &stdout, &stderr)
+	code := run([]string{"-q", "hello", dir}, nil, &stdout, &stderr)
 	if code != 0 {
 		t.Errorf("exit code = %d, want 0 (-q locks in a found match regardless of errors elsewhere); stderr=%q", code, stderr.String())
 	}
@@ -887,7 +939,7 @@ func TestRunExitCodePrecedence_QuietErrorNoMatch(t *testing.T) {
 	defer os.Chmod(noaccess, 0o755)
 
 	var stdout, stderr bytes.Buffer
-	code := run([]string{"-q", "zzz_wontmatch", dir}, &stdout, &stderr)
+	code := run([]string{"-q", "zzz_wontmatch", dir}, nil, &stdout, &stderr)
 	if code != 2 {
 		t.Errorf("exit code = %d, want 2; stderr=%q", code, stderr.String())
 	}
@@ -895,7 +947,7 @@ func TestRunExitCodePrecedence_QuietErrorNoMatch(t *testing.T) {
 
 func TestRunHelp(t *testing.T) {
 	var stdout, stderr bytes.Buffer
-	code := run([]string{"--help"}, &stdout, &stderr)
+	code := run([]string{"--help"}, nil, &stdout, &stderr)
 	if code != 0 {
 		t.Errorf("exit code = %d, want 0", code)
 	}
@@ -909,7 +961,7 @@ func TestRunHelp(t *testing.T) {
 
 func TestRunVersion(t *testing.T) {
 	var stdout, stderr bytes.Buffer
-	code := run([]string{"-V"}, &stdout, &stderr)
+	code := run([]string{"-V"}, nil, &stdout, &stderr)
 	if code != 0 {
 		t.Errorf("exit code = %d, want 0", code)
 	}

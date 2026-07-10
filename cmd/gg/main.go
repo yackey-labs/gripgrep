@@ -70,8 +70,10 @@ var versionText = "gg " + version + " (gripgrep)"
 // addition to the black-box subprocess tests that build and run the
 // real binary. It writes results to stdout, diagnostics to stderr, and
 // returns the process exit code; main just wires it to
-// os.Args/os.Stdout/os.Stderr/os.Exit.
-func run(args []string, stdout, stderr io.Writer) int {
+// os.Stdin/os.Args/os.Stdout/os.Stderr/os.Exit. stdin is only ever read
+// from for -f/--file's "-" (read patterns from stdin) form; a nil stdin
+// is fine for callers that never exercise that (see resolvePatternFiles).
+func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	cfg, err := ParseArgs(args)
 	if err != nil {
 		fmt.Fprintf(stderr, "gg: %s\n%s\n", err, usageLine)
@@ -97,7 +99,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		debug.SetMemoryLimit(1 << 30) // 1GiB backstop
 	}
 
-	return execute(cfg, stdout, stderr)
+	return execute(cfg, stdin, stdout, stderr)
 }
 
 // maybeStartCPUProfile is a hidden, env-var-gated profiling hook for the
@@ -130,7 +132,7 @@ func maybeStartCPUProfile() (stop func()) {
 
 func main() {
 	stop := maybeStartCPUProfile()
-	code := run(os.Args[1:], os.Stdout, os.Stderr)
+	code := run(os.Args[1:], os.Stdin, os.Stdout, os.Stderr)
 	stop()
 	os.Exit(code)
 }
