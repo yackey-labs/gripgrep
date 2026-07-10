@@ -264,6 +264,7 @@ portable baseline.
 ## Docs
 
 - [PLAN.md](PLAN.md) — architecture, binding performance decisions, test mandates, milestones
+- [docs/rg-parity.md](docs/rg-parity.md) — every rg flag and feature vs gg's status, with the exact rg versions compared
 - [docs/research/ripgrep-internals.md](docs/research/ripgrep-internals.md) — how rg actually gets its speed
 - [docs/research/go-performance.md](docs/research/go-performance.md) — the Go-specific playbook
 - [docs/research/benchmarking.md](docs/research/benchmarking.md) — methodology, corpora, pitfalls
