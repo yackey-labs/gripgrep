@@ -1,6 +1,6 @@
 //go:build unix
 
-package main
+package engine
 
 // normalizeSeparators is a no-op on unix: '/' is the only separator, so
 // user-supplied paths are already in the normalized form the walker and
