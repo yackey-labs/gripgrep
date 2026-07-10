@@ -174,8 +174,8 @@ func execute(cfg *Config, stdout, stderr io.Writer) int {
 			// stats it but doesn't check IsRegular) -- process
 			// substitution and FIFOs reach here this way, and rg reads
 			// them to completion, so the short-read-implies-EOF hint
-			// (see rawfile.go's doc) must stay off. See disableEOFHint's
-			// doc.
+			// (see rawfile_unix.go's doc) must stay off. See
+			// disableEOFHint's doc.
 			f.disableEOFHint()
 		}
 

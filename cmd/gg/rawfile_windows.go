@@ -21,3 +21,11 @@ func openRaw(path string) (*rawFile, error) {
 	}
 	return &rawFile{f}, nil
 }
+
+// disableEOFHint is a no-op: the short-read-implies-EOF hint (M3 #28,
+// see rawfile_unix.go) is a unix-rawFile optimization justified by
+// Linux's uninterruptible regular-file read(2) semantics. os.File.Read
+// never skips a confirm read, so this rawFile permanently behaves as if
+// the hint were disabled -- which is exactly what wire.go's explicit-arg
+// opt-out asks for.
+func (f *rawFile) disableEOFHint() {}
