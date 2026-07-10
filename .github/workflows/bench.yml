@@ -1,0 +1,142 @@
+name: benchmarks
+
+# Headline gg-vs-rg benchmarks (the README "Where we stand" rows), run on
+# demand. Each platform gets TWO fresh runners — one benches gg, one
+# benches rg — so neither tool's cache/thermal state taints the other;
+# the report job pairs them and renders a comparison table on the run
+# summary. gg is Linux-only today: the macos/windows gg legs soft-report
+# "not ported" instead of failing the run, while a Linux failure is a
+# real regression and fails hard.
+
+on:
+  workflow_dispatch:
+    inputs:
+      linux:
+        description: "Bench on Linux"
+        type: boolean
+        default: true
+      macos:
+        description: "Bench on macOS"
+        type: boolean
+        default: true
+      windows:
+        description: "Bench on Windows"
+        type: boolean
+        default: true
+
+env:
+  RG_VERSION: "14.1.1"
+  HYPERFINE_VERSION: "1.19.0"
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.mk.outputs.matrix }}
+    steps:
+      - id: mk
+        shell: bash
+        run: |
+          legs=()
+          add() { for tool in gg rg; do legs+=("{\"platform\":\"$1\",\"runner\":\"$2\",\"tool\":\"$tool\",\"ported\":$3}"); done; }
+          [ "${{ inputs.linux }}"   = "true" ] && add linux   ubuntu-latest  true
+          [ "${{ inputs.macos }}"   = "true" ] && add macos   macos-latest   false
+          [ "${{ inputs.windows }}" = "true" ] && add windows windows-latest false
+          printf 'matrix={"include":[%s]}\n' "$(IFS=,; echo "${legs[*]}")" >> "$GITHUB_OUTPUT"
+
+  bench:
+    needs: plan
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    runs-on: ${{ matrix.runner }}
+    name: bench ${{ matrix.tool }} on ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache corpus
+        uses: actions/cache@v4
+        with:
+          path: bench-corpus
+          key: bench-corpus-v1-${{ matrix.platform }}
+
+      - name: Build corpus
+        shell: bash
+        run: bash internal/bench/ci-corpus.sh bench-corpus
+
+      - name: Set up Go
+        if: matrix.tool == 'gg'
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build gg
+        if: matrix.tool == 'gg'
+        id: build
+        shell: bash
+        continue-on-error: ${{ !matrix.ported }}
+        run: go build -pgo=cmd/gg/default.pgo -o bin/ ./cmd/gg
+
+      - name: Install rg ${{ env.RG_VERSION }}
+        if: matrix.tool == 'rg'
+        shell: bash
+        run: |
+          mkdir -p bin && cd bin
+          case "${{ matrix.platform }}" in
+            linux)   asset="ripgrep-${RG_VERSION}-x86_64-unknown-linux-musl"; ext=tar.gz ;;
+            macos)   asset="ripgrep-${RG_VERSION}-aarch64-apple-darwin";     ext=tar.gz ;;
+            windows) asset="ripgrep-${RG_VERSION}-x86_64-pc-windows-msvc";   ext=zip ;;
+          esac
+          url="https://github.com/BurntSushi/ripgrep/releases/download/${RG_VERSION}/${asset}.${ext}"
+          curl -fsSLO "$url"
+          if [ "$ext" = zip ]; then unzip -q "${asset}.zip"; else tar xzf "${asset}.tar.gz"; fi
+          mv "${asset}"/rg* .
+
+      - name: Install hyperfine ${{ env.HYPERFINE_VERSION }}
+        shell: bash
+        run: |
+          mkdir -p bin && cd bin
+          case "${{ matrix.platform }}" in
+            linux)   asset="hyperfine-v${HYPERFINE_VERSION}-x86_64-unknown-linux-musl"; ext=tar.gz ;;
+            macos)   asset="hyperfine-v${HYPERFINE_VERSION}-aarch64-apple-darwin";      ext=tar.gz ;;
+            windows) asset="hyperfine-v${HYPERFINE_VERSION}-x86_64-pc-windows-msvc";    ext=zip ;;
+          esac
+          url="https://github.com/sharkdp/hyperfine/releases/download/v${HYPERFINE_VERSION}/${asset}.${ext}"
+          curl -fsSLO "$url"
+          if [ "$ext" = zip ]; then unzip -q "${asset}.zip"; else tar xzf "${asset}.tar.gz"; fi
+          mv "${asset}"/hyperfine* .
+          echo "$PWD" >> "$GITHUB_PATH"
+
+      - name: Run benchmark rows
+        if: matrix.tool == 'rg' || steps.build.outcome == 'success'
+        shell: bash
+        run: |
+          if [ "${{ matrix.tool }}" = gg ]; then BIN=$(ls bin/gg*); else BIN=$(ls bin/rg*); fi
+          bash internal/bench/ci-run.sh "$BIN" bench-corpus "results/bench-${{ matrix.platform }}-${{ matrix.tool }}"
+
+      - name: Note unported platform
+        if: matrix.tool == 'gg' && steps.build.outcome != 'success'
+        shell: bash
+        run: |
+          mkdir -p "results/bench-${{ matrix.platform }}-${{ matrix.tool }}"
+          echo "gg does not build on ${{ matrix.platform }} yet" \
+            > "results/bench-${{ matrix.platform }}-${{ matrix.tool }}/UNPORTED.txt"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bench-${{ matrix.platform }}-${{ matrix.tool }}
+          path: results/bench-${{ matrix.platform }}-${{ matrix.tool }}
+          if-no-files-found: warn
+
+  report:
+    needs: bench
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Render summary
+        shell: bash
+        run: python3 internal/bench/ci-report.py artifacts | tee -a "$GITHUB_STEP_SUMMARY"
