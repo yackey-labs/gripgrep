@@ -5,6 +5,8 @@ import (
 	"math/rand"
 	"strings"
 	"testing"
+
+	"github.com/yackey-labs/gripgrep/match"
 )
 
 // TestSplitChunksInvariants checks splitChunks's structural contract
@@ -240,6 +242,86 @@ func FuzzSearchBytesParallelMatchesSerial(f *testing.F) {
 			parallelInvariance(t, data, pattern, w)
 		}
 	})
+}
+
+// TestSearchBytesParallelRealMultiLiteralMatcherIsRaceSafe exercises the
+// production match.Matcher implementations (not the search-package-local
+// literalMatcher fake) through the parallel path under -race, at both the
+// small (rareByteMultiScanner) and large (ahoCorasickScanner) multi-literal
+// thresholds. This is the specific check requested when reviewing
+// searchBytesParallel's design: every chunk's private child Searcher
+// shares the SAME outer Matcher instance (see searchBytesParallel's
+// `Matcher: s.Matcher`), so if either scanner kept any of its scan state
+// as a struct field (rather than call-local, as both actually do --
+// rareByteMultiScanner.find's monotonic-sweep `next` array is a local
+// variable, and ahoCorasickScanner wraps a third-party AhoCorasick value
+// whose IterByte has a value receiver and allocates a fresh iterator per
+// call), concurrent chunks calling FindCandidate/Verify on the one shared
+// Matcher would race and could corrupt results. -race is the right tool
+// to confirm this empirically, not just by reading the source.
+func TestSearchBytesParallelRealMultiLiteralMatcherIsRaceSafe(t *testing.T) {
+	mkText := func(words []string, lines int) []byte {
+		var b strings.Builder
+		for i := 0; i < lines; i++ {
+			fmt.Fprintf(&b, "line %d: %s filler filler filler\n", i, words[i%len(words)])
+		}
+		return []byte(b.String())
+	}
+
+	cases := []struct {
+		name     string
+		patterns []string
+		words    []string
+	}{
+		// <=8 literals: routes through rareByteMultiScanner.
+		{"small_set", []string{"Sherlock", "Watson"}, []string{"Sherlock Holmes", "Doctor Watson", "neither name here", "just filler text"}},
+		// >8 literals: routes through ahoCorasickScanner.
+		{"large_set", []string{"aa", "bb", "cc", "dd", "ee", "ff", "gg", "hh", "ii", "jj"},
+			[]string{"has an aa in it", "has a bb here", "cc and dd both", "no match at all", "ee ff gg hh ii jj all here"}},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			data := mkText(c.words, 4000)
+
+			m, err := match.New(match.Config{Patterns: c.patterns, Fixed: true})
+			if err != nil {
+				t.Fatalf("match.New: %v", err)
+			}
+
+			// Same Matcher instance used to build BOTH the serial and
+			// parallel Searchers, mirroring production exactly
+			// (searchBytesParallel shares s.Matcher across every child).
+			serial := New(Searcher{Matcher: m, LineNumbers: true})
+			serialSink := newRecordingSink()
+			if err := serial.SearchBytes("f", data, serialSink); err != nil {
+				t.Fatalf("serial: %v", err)
+			}
+
+			parallel := New(Searcher{
+				Matcher:          m,
+				LineNumbers:      true,
+				ParallelWorkers:  8,
+				ParallelMinBytes: 1,
+			})
+			parallelSink := newRecordingSink()
+			if err := parallel.SearchBytes("f", data, parallelSink); err != nil {
+				t.Fatalf("parallel: %v", err)
+			}
+
+			if len(serialSink.events) != len(parallelSink.events) {
+				t.Fatalf("event count mismatch: serial=%d parallel=%d", len(serialSink.events), len(parallelSink.events))
+			}
+			for i := range serialSink.events {
+				if serialSink.events[i] != parallelSink.events[i] {
+					t.Fatalf("event %d mismatch:\nserial:   %+v\nparallel: %+v", i, serialSink.events[i], parallelSink.events[i])
+				}
+			}
+			if serialSink.matchCount() == 0 {
+				t.Fatal("test setup: expected at least one match")
+			}
+		})
+	}
 }
 
 // TestSearchBytesParallelRandomizedShapes complements the fuzz target
