@@ -77,15 +77,19 @@ than authoritative:
 
 | Benchmark | Linux (x64) | macOS (arm64) | Windows (x64) |
 |---|---|---|---|
-| Linux kernel tree, literal, gitignore-aware | ~parity (1.1× slower–1.1× faster) | 1.6–4× **slower** | **~1.1× faster** |
-| Same tree, `--files` (pure walk, no search) | **1.6–2.1× faster** | **1.1–1.4× faster** | **~3.4× faster** |
-| OpenSubtitles ~830MB, literal | **1.3–2× faster** | **1.5–2.2× faster** | **~1.9× faster** |
-| Same file, `Sherlock\|Watson` | 1.0–1.3× **slower** | **1.1–1.3× faster** | **~1.5× faster** |
+| Linux kernel tree, literal, gitignore-aware | ~parity (1.1× slower–1.1× faster) | noisy: 1.4× faster–1.7× slower | **~1.1× faster** |
+| Same tree, `--files` (pure walk, no search) | **1.6–2.1× faster** | **1.1–3× faster** | **~3.4× faster** |
+| OpenSubtitles ~830MB, literal | **1.3–2× faster** | **1.3–2.8× faster** | **~1.9× faster** |
+| Same file, `Sherlock\|Watson` | 1.0–1.3× **slower** | 1.1× slower–1.6× faster | **~1.5× faster** |
 
-Windows sweeps all four rows. Two honest reds: macOS tree search — the
-per-file open path's poller-bypass trick (`rawfile_unix.go`) was
-profiled and tuned on Linux, and the win doesn't transfer; that row
-hasn't had a single optimization pass on macOS yet — and hosted-Linux
+Windows sweeps all four rows. The macOS legs quiet Spotlight before
+building the corpus (mdworker indexing ~104k fresh files during the
+timed runs cost gg's tree row 20–36% and was measured at 3–5× locally),
+but even quieted, macOS runner hardware varies enough run-to-run that
+the tree ratio has landed on both sides of 1× — on a controlled M4 Pro
+that row is a steady ~1.1× slower, entirely syscall-bound (open(2)
+alone is ~66% of kernel time; gg issues fewer syscalls than rg but
+keeps fewer in flight). The one clear hosted-Linux red is
 multi-literal, which the controlled box wins (PGO tipped it there) but
 the cloud runners consistently don't, so that win doesn't yet
 generalize across x64 hardware.
