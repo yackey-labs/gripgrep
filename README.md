@@ -93,15 +93,16 @@ hosted runner, same hyperfine settings, identically-built corpora
 (Windows checks out the same frozen kernel fork via sparse-checkout,
 minus its 3 reserved-DOS-name files). Hosted hardware varies run to run
 — rg's leg can land on a faster or slower machine than gg's — so these
-are ranges across four benchmark runs on 2026-07-10, indicative rather
-than authoritative:
+are ranges across the 2026-07-10 benchmark runs (rg pinned at 14.1.1
+for the earlier runs, 15.1.0 from the current pin onward), indicative
+rather than authoritative:
 
 | Benchmark | Linux (x64) | macOS (arm64) | Windows (x64) |
 |---|---|---|---|
-| Linux kernel tree, literal, gitignore-aware | ~parity (1.1× slower–1.1× faster) | noisy: 1.4× faster–1.7× slower | **~1.1× faster** |
-| Same tree, `--files` (pure walk, no search) | **1.6–2.1× faster** | **1.1–3× faster** | **~3.4× faster** |
-| OpenSubtitles ~830MB, literal | **1.3–2× faster** | **1.3–2.8× faster** | **~1.9× faster** |
-| Same file, `Sherlock\|Watson` | 1.0–1.3× **slower** | 1.1× slower–1.6× faster | **~1.5× faster** |
+| Linux kernel tree, literal, gitignore-aware | ~parity (1.1× slower–1.1× faster) | noisy: 1.4× faster–1.7× slower | **1.1–1.7× faster** |
+| Same tree, `--files` (pure walk, no search) | **1.6–2.1× faster** | **1.1–3× faster** | **3.4–5× faster** |
+| OpenSubtitles ~830MB, literal | **1.3–2× faster** | **1.3–2.8× faster** | **1.9–2.2× faster** |
+| Same file, `Sherlock\|Watson` | 1.0–1.3× **slower** | 1.1× slower–1.7× faster | **1.5–2× faster** |
 
 Windows sweeps all four rows. The macOS legs quiet Spotlight before
 building the corpus (mdworker indexing ~104k fresh files during the
