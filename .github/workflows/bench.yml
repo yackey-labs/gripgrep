@@ -54,6 +54,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Spotlight taxes the bench: the corpus step writes ~104k files
+      # (fresh build or cache restore alike) and mdworker then indexes
+      # them DURING the timed runs — measured locally on an M4 Pro, an
+      # actively-indexing corpus benched 3–5× slower than a settled one,
+      # and it plausibly explains the 4× run-to-run swings in this
+      # workflow's macOS numbers (rg: 2.3s–9.0s across three runs).
+      # hyperfine's warmup can't outlast minutes of indexing; disabling
+      # it before any corpus files exist can. Runner VMs are throwaway,
+      # so -a (all volumes) is fine.
+      - name: Quiet Spotlight (macOS)
+        if: matrix.platform == 'macos'
+        shell: bash
+        run: sudo mdutil -a -i off
+
       - name: Cache corpus
         uses: actions/cache@v4
         with:
