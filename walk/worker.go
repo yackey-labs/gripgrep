@@ -267,6 +267,15 @@ func (w *worker) processDir(t *dirTask) bool {
 		if !whitelisted && name[0] == '.' && !w.opts.Hidden {
 			continue
 		}
+		if w.opts.MaxDepth != nil && t.depth+1 > *w.opts.MaxDepth {
+			// -d/--max-depth: this entry is one level too deep to visit or
+			// (for a directory) descend into. Applies uniformly to every
+			// entry type -- a pruned directory is never enqueued, so
+			// nothing beneath it is reached either. See Options.MaxDepth's
+			// doc for why a root itself (t.depth == 0, handled above this
+			// loop) is never subject to this check.
+			continue
+		}
 
 		switch ftype {
 		case TypeDir:

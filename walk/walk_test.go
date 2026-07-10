@@ -426,6 +426,71 @@ func TestMaxFileSize(t *testing.T) {
 	}
 }
 
+func TestMaxDepth(t *testing.T) {
+	root := buildTree(t, map[string]string{
+		"root.txt":        "0",
+		"a/one.txt":       "1",
+		"a/b/two.txt":     "2",
+		"a/b/c/three.txt": "3",
+	})
+
+	depthOf := func(md *int) map[string]bool {
+		got := map[string]bool{}
+		var mu sync.Mutex
+		err := Walk([]string{root}, Options{NoIgnore: true, MaxDepth: md}, func(e *Entry) WalkState {
+			if e.Type == TypeFile {
+				mu.Lock()
+				got[clone(filepath.Base(e.Path))] = true
+				mu.Unlock()
+			}
+			return Continue
+		})
+		if err != nil {
+			t.Fatalf("Walk: %v", err)
+		}
+		return got
+	}
+
+	zero := 0
+	if got := depthOf(&zero); len(got) != 0 {
+		t.Errorf("MaxDepth=0 on a dir root: want no files, got %v", got)
+	}
+
+	one := 1
+	if got := depthOf(&one); len(got) != 1 || !got["root.txt"] {
+		t.Errorf("MaxDepth=1: want only root.txt, got %v", got)
+	}
+
+	two := 2
+	if got := depthOf(&two); len(got) != 2 || !got["root.txt"] || !got["one.txt"] {
+		t.Errorf("MaxDepth=2: want root.txt+one.txt, got %v", got)
+	}
+
+	if got := depthOf(nil); len(got) != 4 {
+		t.Errorf("MaxDepth unset: want all 4 files, got %v", got)
+	}
+}
+
+func TestMaxDepthZeroStillSearchesExplicitFileRoot(t *testing.T) {
+	root := buildTree(t, map[string]string{"only.txt": "x"})
+	filePath := filepath.Join(root, "only.txt")
+
+	var visited []string
+	zero := 0
+	err := Walk([]string{filePath}, Options{NoIgnore: true, MaxDepth: &zero}, func(e *Entry) WalkState {
+		if e.Type == TypeFile {
+			visited = append(visited, clone(e.Path))
+		}
+		return Continue
+	})
+	if err != nil {
+		t.Fatalf("Walk: %v", err)
+	}
+	if len(visited) != 1 {
+		t.Errorf("MaxDepth=0 with an explicit file root: want the file itself visited, got %v", visited)
+	}
+}
+
 func TestSingleFileRoot(t *testing.T) {
 	root := buildTree(t, map[string]string{"only.txt": "x"})
 	filePath := filepath.Join(root, "only.txt")

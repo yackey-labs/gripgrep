@@ -66,6 +66,20 @@ type Options struct {
 	FollowSymlinks bool
 	// MaxFileSize skips files larger than this many bytes; 0 = unlimited.
 	MaxFileSize int64
+	// MaxDepth is -d/--max-depth: nil = unlimited. A non-nil 0 is a real,
+	// legal value (rg parity: `rg --max-depth 0 dir/` searches only the
+	// roots themselves, descending nowhere) -- NOT the same as unset,
+	// which is why this is a pointer rather than a plain int with a
+	// 0-means-unlimited convention (mirrors cmd/gg's Config.MaxCount).
+	// Depth is counted from each root independently: a root itself is
+	// depth 0 (see Entry.Depth's doc), so MaxDepth bounds how many
+	// directory levels below each root get visited/enqueued -- applied
+	// only to entries discovered WITHIN a directory listing (see
+	// worker.processDir), never to a root itself, which is always
+	// visited regardless (verified against the real rg binary: `rg
+	// --max-depth 0 pat file` still searches an explicitly named FILE
+	// root, since roots are depth 0).
+	MaxDepth *int
 	// Threads is the worker count; 0 selects the runtime default
 	// (min(runtime.GOMAXPROCS(0), 12), matching ripgrep's default cap).
 	Threads int
