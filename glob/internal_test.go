@@ -294,6 +294,162 @@ func TestSuffixOfTokens(t *testing.T) {
 	}
 }
 
+// TestPrefixOfTokens covers prefixOfTokens directly: found via M3 #23's
+// evaluation-count census (real linux kernel .gitignore patterns like
+// "cscope.*" were landing in the regex fallback and evaluated on nearly
+// every file in the tree).
+func TestPrefixOfTokens(t *testing.T) {
+	cases := []struct {
+		pattern string
+		want    string
+		ok      bool
+	}{
+		{"**/cscope.*", "cscope.", true},
+		{"**/patches-*", "patches-", true},
+		// No recursive prefix: parseGlob alone (unlike compileLine, which
+		// prepends "**/" to a no-slash pattern before calling parseGlob --
+		// the real shape these patterns actually arrive in from a
+		// .gitignore line) never adds one, so this is genuinely
+		// unprefixed and correctly left to the regex fallback.
+		{"cscope.*", "", false},
+		{"/cscope.*", "", false},
+		// A leading wildcard disqualifies this as a prefix pattern (it's
+		// containsOfTokens's shape instead).
+		{"**/*cscope.*", "", false},
+		// No trailing wildcard at all: not this shape (kindLiteral or
+		// kindBasename would already have claimed this earlier in
+		// classifyFast anyway).
+		{"**/cscope.", "", false},
+		// A '/' inside what would be the prefix isn't a basename-only
+		// pattern.
+		{"**/a/*", "", false},
+	}
+	for _, c := range cases {
+		t.Run(c.pattern, func(t *testing.T) {
+			toks, err := parseGlob(c.pattern)
+			if err != nil {
+				t.Fatalf("parseGlob(%q): %v", c.pattern, err)
+			}
+			got, ok := prefixOfTokens(toks)
+			if ok != c.ok || got != c.want {
+				t.Errorf("prefixOfTokens(%q) = (%q, %v), want (%q, %v)", c.pattern, got, ok, c.want, c.ok)
+			}
+		})
+	}
+}
+
+// TestContainsOfTokens covers containsOfTokens directly: found via the
+// same census as prefixOfTokens ("*.o.*" was the single most-evaluated
+// regex pattern on the linux tree).
+func TestContainsOfTokens(t *testing.T) {
+	cases := []struct {
+		pattern string
+		want    string
+		ok      bool
+	}{
+		{"**/*.o.*", ".o.", true},
+		// Only a leading wildcard (no trailing one): that's suffixOfTokens's
+		// shape, not this one.
+		{"**/*.o", "", false},
+		// Only a trailing wildcard (no leading one): that's
+		// prefixOfTokens's shape.
+		{"**/.o.*", "", false},
+		// No recursive prefix: parseGlob alone (unlike compileLine, which
+		// prepends "**/" to a no-slash pattern before calling parseGlob)
+		// never adds one, so this is genuinely unprefixed and correctly
+		// left to the regex fallback.
+		{"*.o.*", "", false},
+		{"/*.o.*", "", false},
+	}
+	for _, c := range cases {
+		t.Run(c.pattern, func(t *testing.T) {
+			toks, err := parseGlob(c.pattern)
+			if err != nil {
+				t.Fatalf("parseGlob(%q): %v", c.pattern, err)
+			}
+			got, ok := containsOfTokens(toks)
+			if ok != c.ok || got != c.want {
+				t.Errorf("containsOfTokens(%q) = (%q, %v), want (%q, %v)", c.pattern, got, ok, c.want, c.ok)
+			}
+		})
+	}
+}
+
+// TestBetweenOfTokens covers betweenOfTokens directly, including the
+// overlap edge case a first version of this class got wrong: a basename
+// shorter than prefix+suffix combined must not match, since the two
+// literal runs would have to overlap (e.g. "#*#" must NOT match the
+// single-character basename "#" -- HasPrefix("#","#") and
+// HasSuffix("#","#") are each trivially true on their own, but there's
+// only one "#" in the name, not the two the pattern requires).
+func TestBetweenOfTokens(t *testing.T) {
+	cases := []struct {
+		pattern    string
+		wantPrefix string
+		wantSuffix string
+		ok         bool
+	}{
+		{"**/#*#", "#", "#", true},
+		// No recursive prefix: parseGlob alone (unlike compileLine, which
+		// prepends "**/" for a no-slash pattern before calling parseGlob)
+		// never adds one, so this is genuinely unprefixed here.
+		{"#*#", "", "", false},
+		// Only one wildcard side present: that's prefixOfTokens's or
+		// containsOfTokens's shape, not this one.
+		{"**/prefix*", "", "", false},
+		{"**/*suffix", "", "", false},
+		// More than one wildcard: not this shape.
+		{"**/*mid*", "", "", false},
+		{"**/a*b*c", "", "", false},
+	}
+	for _, c := range cases {
+		t.Run(c.pattern, func(t *testing.T) {
+			toks, err := parseGlob(c.pattern)
+			if err != nil {
+				t.Fatalf("parseGlob(%q): %v", c.pattern, err)
+			}
+			gotPre, gotSuf, ok := betweenOfTokens(toks)
+			if ok != c.ok || gotPre != c.wantPrefix || gotSuf != c.wantSuffix {
+				t.Errorf("betweenOfTokens(%q) = (%q, %q, %v), want (%q, %q, %v)", c.pattern, gotPre, gotSuf, ok, c.wantPrefix, c.wantSuffix, c.ok)
+			}
+		})
+	}
+}
+
+// TestBetweenMatchRejectsOverlap is the Set.Match-level regression test
+// for the overlap bug found while implementing kindBetween: "#*#" must
+// match "a#b#c" (prefix "#"... wait, no -- basename must literally start
+// with "#" and end with "#") but must NOT match the single-character
+// name "#", where the required prefix and suffix would have to share the
+// same byte.
+func TestBetweenMatchRejectsOverlap(t *testing.T) {
+	var b Builder
+	// The real linux kernel .gitignore writes this escaped, as `\#*#` --
+	// a bare leading "#" is a gitignore comment (compileLine's very first
+	// check), so this pattern must be escaped to mean anything at all.
+	b.Add(`\#*#`)
+	s, err := b.Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		path string
+		want MatchResult
+	}{
+		{"#", NoMatch},   // too short: prefix and suffix would overlap
+		{"##", Ignored},  // exactly prefix+suffix, zero characters between
+		{"#x#", Ignored}, // one character between
+		{"x#x", NoMatch}, // doesn't start with "#"
+	}
+	for _, c := range cases {
+		t.Run(c.path, func(t *testing.T) {
+			if got := s.Match([]byte(c.path), false); got != c.want {
+				t.Errorf("Match(%q) = %v, want %v", c.path, got, c.want)
+			}
+		})
+	}
+}
+
 // TestExpandClasses covers expandClasses directly: which patterns it
 // declines to expand (negated, oversized, or no class at all), and that
 // eligible ones produce the exact expected cross product of literal
@@ -302,7 +458,7 @@ func TestSuffixOfTokens(t *testing.T) {
 func TestExpandClasses(t *testing.T) {
 	render := func(t *testing.T, toks []token) string {
 		t.Helper()
-		lit, _, ok := classifyFast(toks)
+		lit, _, _, ok := classifyFast(toks)
 		if !ok {
 			t.Fatalf("expanded variant %v didn't classify as fast", toks)
 		}

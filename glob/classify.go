@@ -190,20 +190,149 @@ func expandClasses(tokens []token) ([][]token, bool) {
 // compileLine uses for an ordinary pattern: whole-basename literal,
 // whole-path literal, extension, then literal suffix. It never touches
 // the regex fallback -- ok is false if tokens fit none of these.
-func classifyFast(tokens []token) (literal string, kind patternKind, ok bool) {
+func classifyFast(tokens []token) (literal, literal2 string, kind patternKind, ok bool) {
 	if lit, bok := basenameLiteralOf(tokens); bok {
-		return lit, kindBasename, true
+		return lit, "", kindBasename, true
 	}
 	if lit, lok := literalOf(tokens); lok {
-		return lit, kindLiteral, true
+		return lit, "", kindLiteral, true
 	}
 	if ext, eok := extOfTokens(tokens); eok {
-		return ext, kindExt, true
+		return ext, "", kindExt, true
 	}
 	if suf, sok := suffixOfTokens(tokens); sok {
-		return suf, kindSuffix, true
+		return suf, "", kindSuffix, true
 	}
-	return "", 0, false
+	if pre, pok := prefixOfTokens(tokens); pok {
+		return pre, "", kindPrefix, true
+	}
+	if sub, cok := containsOfTokens(tokens); cok {
+		return sub, "", kindContains, true
+	}
+	if pre, suf, wok := betweenOfTokens(tokens); wok {
+		return pre, suf, kindBetween, true
+	}
+	return "", "", 0, false
+}
+
+// prefixOfTokens returns (prefix, true) if the pattern is `**/{lit}*` for
+// a non-empty literal lit -- a run of literal characters followed by
+// exactly one trailing `*`, and nothing else. A path's basename matches
+// if and only if it starts with prefix (bytes.HasPrefix), regardless of
+// what comes after.
+//
+// Found via M3 #23's evaluation-count census on the linux tree: patterns
+// like "cscope.*", "ncscope.*", "patches-*", and the implicit-dotfile
+// pattern gitignore's own hidden-file handling produces (".*") were each
+// landing in the regex fallback and being evaluated on nearly every one
+// of the tree's ~104k files, since nothing upstream of the regex list
+// ever improved on them -- among the single largest contributors to the
+// ~50%-of-CPU regex cost this task exists to cut down.
+func prefixOfTokens(tokens []token) (string, bool) {
+	rest, ok := basenameTokens(tokens)
+	if !ok || len(rest) < 2 {
+		return "", false
+	}
+	last := rest[len(rest)-1]
+	if last.kind != tZeroOrMore {
+		return "", false
+	}
+	var sb strings.Builder
+	for _, t := range rest[:len(rest)-1] {
+		if t.kind != tLiteral {
+			return "", false
+		}
+		sb.WriteRune(t.lit)
+	}
+	if sb.Len() == 0 {
+		return "", false
+	}
+	return sb.String(), true
+}
+
+// containsOfTokens returns (lit, true) if the pattern is `**/*{lit}*` for
+// a non-empty literal lit -- a leading `*`, a run of literal characters,
+// and a trailing `*`, and nothing else. A path's basename matches if and
+// only if it contains lit anywhere (bytes.Contains).
+//
+// Found via the same M3 #23 census as prefixOfTokens: "*.o.*" (matching
+// any name with ".o." anywhere, not just as a suffix -- extOfTokens and
+// suffixOfTokens both require the literal to reach the end of the name)
+// was the single most-evaluated regex pattern on the linux tree, at
+// essentially one evaluation per file walked.
+func containsOfTokens(tokens []token) (string, bool) {
+	rest, ok := basenameTokens(tokens)
+	if !ok || len(rest) < 3 {
+		return "", false
+	}
+	if rest[0].kind != tZeroOrMore {
+		return "", false
+	}
+	last := rest[len(rest)-1]
+	if last.kind != tZeroOrMore {
+		return "", false
+	}
+	var sb strings.Builder
+	for _, t := range rest[1 : len(rest)-1] {
+		if t.kind != tLiteral {
+			return "", false
+		}
+		sb.WriteRune(t.lit)
+	}
+	if sb.Len() == 0 {
+		return "", false
+	}
+	return sb.String(), true
+}
+
+// betweenOfTokens returns (prefix, suffix, true) if the pattern is
+// `**/{prefix}*{suffix}` for non-empty literals prefix and suffix with
+// exactly one `*` strictly between them -- e.g. `#*#` (Emacs backup
+// files). A path's basename matches if and only if it starts with prefix
+// AND ends with suffix (bytes.HasPrefix + bytes.HasSuffix); unlike
+// containsOfTokens, the two literal runs are anchored to opposite ends
+// of the name, not free-floating, so this can't be folded into that
+// class without weakening the match (a "contains" check alone would
+// accept prefix and suffix appearing in the wrong order, or not at the
+// ends at all).
+//
+// Found via the same M3 #23 census as prefixOfTokens/containsOfTokens:
+// after those two landed, "#*#" was the single largest remaining
+// regex-evaluation contributor on the linux tree, at essentially one
+// evaluation per file walked.
+func betweenOfTokens(tokens []token) (prefix, suffix string, ok bool) {
+	rest, bok := basenameTokens(tokens)
+	if !bok || len(rest) < 3 {
+		return "", "", false
+	}
+	starIdx := -1
+	for i, t := range rest {
+		if t.kind == tZeroOrMore {
+			if starIdx != -1 {
+				return "", "", false // more than one wildcard
+			}
+			starIdx = i
+			continue
+		}
+		if t.kind != tLiteral {
+			return "", "", false
+		}
+	}
+	if starIdx <= 0 || starIdx >= len(rest)-1 {
+		// The wildcard must be strictly between a non-empty prefix and a
+		// non-empty suffix -- starIdx==0 or starIdx==len(rest)-1 means
+		// one side is empty, which prefixOfTokens/suffixOfTokens (or
+		// containsOfTokens, for a leading wildcard) already cover.
+		return "", "", false
+	}
+	var pre, suf strings.Builder
+	for _, t := range rest[:starIdx] {
+		pre.WriteRune(t.lit)
+	}
+	for _, t := range rest[starIdx+1:] {
+		suf.WriteRune(t.lit)
+	}
+	return pre.String(), suf.String(), true
 }
 
 // basenameTokens returns the sub-sequence of tokens that applies only to

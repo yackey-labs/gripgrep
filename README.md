@@ -28,7 +28,7 @@ the gg:rg ratio is meaningful):
 
 | Benchmark | gg vs rg | Trend |
 |---|---|---|
-| Linux kernel tree (built, ~104k files), literal, gitignore-aware | **2.48× slower** | was 3.74×; three profile-driven fixes so far |
+| Linux kernel tree (built, ~104k files), literal, gitignore-aware | **~1.3-1.5× slower** | was 2.48× (3.74× originally); an evaluation-count census on real .gitignore patterns found gitignore glob matching (`glob.Set.Match`) at ~50% of tree CPU, nearly all in a handful of regex patterns (`cscope.*`, `*.o.*`, `#*#`, ...) evaluated on almost every file — added three new O(1)/linear fast classes (prefix, contains, prefix+suffix) that these shapes actually need, cutting glob's cumulative CPU share roughly in half |
 | OpenSubtitles corpus (~830MB, 28M lines), literal (`Sherlock Holmes`), default settings | **1.64× FASTER** | was 1.18× slower; intra-file parallelism (rg searches one file on one core — a lever rg doesn't have) — the first row gg wins outright |
 | Same file, `Sherlock\|Watson` (multi-literal), default settings | **~parity** (0.92×-1.08× depending on run) | was 3.25× slower; #22's rare-byte-scanner fix (2.34×) plus intra-file parallelism together close nearly all of the remaining gap |
 
@@ -46,9 +46,10 @@ but partial contributor; the rest isn't fully isolated yet. v1 of
 intra-file parallelism only covers the no-context, non-invert case
 (`-A`/`-B`/`-C`/`-v` fall back to the existing serial path); context
 support is designed but not yet landed. What's left: the linux-tree gap
-is mostly gitignore glob dispatch (shrinking commit by commit), and full
-Teddy-class SIMD multi-literal matching remains the path to complete
-parity on the regex row.
+is now mostly walker syscall/scheduling overhead rather than glob
+matching (a residual couple of genuinely hard-to-fast-class regex
+patterns aside), and full Teddy-class SIMD multi-literal matching
+remains the path to complete parity on the regex row.
 
 The optimization log lives in the commit history (`git log --grep "M3
 perf"`); dead ends are documented alongside wins.

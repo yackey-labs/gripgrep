@@ -16,6 +16,9 @@ const (
 	kindBasename
 	kindExt
 	kindSuffix
+	kindPrefix
+	kindContains
+	kindBetween
 	kindRegex
 )
 
@@ -27,8 +30,10 @@ type compiledPattern struct {
 	isWhitelist bool
 	isOnlyDir   bool
 	kind        patternKind
-	literal     string         // valid for kindLiteral / kindBasename / kindExt / kindSuffix
-	re          *regexp.Regexp // valid for kindRegex
+	literal     string // valid for kindLiteral / kindBasename / kindExt / kindSuffix / kindPrefix / kindContains / kindBetween (prefix half)
+	literal2    string // valid for kindBetween only (suffix half)
+
+	re *regexp.Regexp // valid for kindRegex
 }
 
 // compileLine applies gitignore's line-level rewriting rules (comment and
@@ -120,13 +125,13 @@ func compileLine(index int, raw string) (cps []compiledPattern, err error) {
 		expanded := make([]compiledPattern, 0, len(variants))
 		allFast := true
 		for _, vtoks := range variants {
-			lit, kind, kok := classifyFast(vtoks)
+			lit, lit2, kind, kok := classifyFast(vtoks)
 			if !kok {
 				allFast = false
 				break
 			}
 			cp := base
-			cp.kind, cp.literal = kind, lit
+			cp.kind, cp.literal, cp.literal2 = kind, lit, lit2
 			expanded = append(expanded, cp)
 		}
 		if allFast {
@@ -139,9 +144,9 @@ func compileLine(index int, raw string) (cps []compiledPattern, err error) {
 		// compile the original, unexpanded pattern below instead.
 	}
 
-	if lit, kind, ok := classifyFast(toks); ok {
+	if lit, lit2, kind, ok := classifyFast(toks); ok {
 		cp := base
-		cp.kind, cp.literal = kind, lit
+		cp.kind, cp.literal, cp.literal2 = kind, lit, lit2
 		return []compiledPattern{cp}, nil
 	}
 
