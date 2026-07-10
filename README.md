@@ -237,6 +237,8 @@ map-key, or pass between goroutines. The lower-level packages (`glob`,
 want the zero-copy hot path and are willing to do their own wiring; see
 their godoc.
 
+Full guide: [docs/library.md](docs/library.md).
+
 ## Dev workflow
 
 ```

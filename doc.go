@@ -23,4 +23,21 @@
 // it trades the engine's zero-allocation hot path for a stupid-easy,
 // memory-safe API, which is exactly what a library caller (as opposed to
 // gg's own hot loop) wants.
+//
+// # Choosing a verb
+//
+//	I want...                              call                   CLI equivalent
+//	matches (line/path/lineno/context)     Search / SearchStream  gg PATTERN
+//	just the paths that matched            FilesWithMatch         gg -l PATTERN
+//	a match count per file                 CountMatches           gg -c PATTERN
+//	the walked file list, no matching      Files                  gg --files
+//
+// Every verb above has a package-level function (CLI defaults) and a
+// same-name Options method (CLI-flag-equivalent control), except Files,
+// which has no Options variant -- see its own doc comment for why.
+//
+// See docs/library.md in the module root for the full guide: an
+// Options-to-flags reference table, the Match struct's context/early-stop
+// semantics, the streaming concurrency contract, the error model, and
+// this package's versioning policy.
 package gripgrep

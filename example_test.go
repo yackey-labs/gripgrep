@@ -2,6 +2,7 @@ package gripgrep_test
 
 import (
 	"fmt"
+	"sort"
 
 	"github.com/yackey-labs/gripgrep"
 )
@@ -57,4 +58,109 @@ func ExampleSearchStream() {
 	// Output:
 	// the cat sat on the mat
 	// CATERPILLAR should not match a whole-word search for "cat"
+}
+
+// ExampleFilesWithMatch lists paths containing at least one match, like
+// gg -l. testdata/corpus/a has exactly one file matching "hello", so the
+// result is deterministic without needing to sort (unlike a directory
+// with multiple matching files -- see ExampleFiles below).
+func ExampleFilesWithMatch() {
+	files, err := gripgrep.FilesWithMatch("hello", "testdata/corpus/a")
+	if err != nil {
+		fmt.Println("error:", err)
+		return
+	}
+	for _, f := range files {
+		fmt.Println(f)
+	}
+	// Output:
+	// testdata/corpus/a/b/foo.txt
+}
+
+// ExampleCountMatches returns a map from path to match count, like gg -c.
+// testdata/corpus/a has exactly one file matching "hello", so the single
+// map entry prints deterministically.
+func ExampleCountMatches() {
+	counts, err := gripgrep.CountMatches("hello", "testdata/corpus/a")
+	if err != nil {
+		fmt.Println("error:", err)
+		return
+	}
+	for path, n := range counts {
+		fmt.Println(path, n)
+	}
+	// Output:
+	// testdata/corpus/a/b/foo.txt 1
+}
+
+// ExampleFiles lists every file that would be searched under a root,
+// like gg --files, without matching anything. Files walks in parallel
+// like every other verb in this package (see ExampleSearch's doc), so
+// its result order is nondeterministic across runs -- this example sorts
+// before printing to keep the Output block reproducible, which is the
+// pattern to follow for any multi-file FilesWithMatch/Files/CountMatches
+// use where order matters to the caller.
+func ExampleFiles() {
+	files, err := gripgrep.Files("testdata/facade/globs")
+	if err != nil {
+		fmt.Println("error:", err)
+		return
+	}
+	sort.Strings(files)
+	for _, f := range files {
+		fmt.Println(f)
+	}
+	// Output:
+	// testdata/facade/globs/File.TXT
+	// testdata/facade/globs/file.txt
+	// testdata/facade/globs/other.md
+}
+
+// ExampleOptions_Search_globs shows filtering the walked file set with
+// -g/--glob before matching: only notes.txt (not readme.md) is searched.
+func ExampleOptions_Search_globs() {
+	opts := gripgrep.Options{Globs: []string{"*.txt"}}
+	matches, err := opts.Search("needle", "testdata/facade/examples")
+	if err != nil {
+		fmt.Println("error:", err)
+		return
+	}
+	for _, m := range matches {
+		fmt.Println(m.Path, m.Line)
+	}
+	// Output:
+	// testdata/facade/examples/notes.txt needle in notes
+}
+
+// ExampleOptions_Search_maxCount shows -m/--max-count: only the first 2
+// of the fixture's 5 matching lines are returned.
+func ExampleOptions_Search_maxCount() {
+	opts := gripgrep.Options{MaxCount: 2}
+	matches, err := opts.Search("alpha", "testdata/facade/maxcount.txt")
+	if err != nil {
+		fmt.Println("error:", err)
+		return
+	}
+	for _, m := range matches {
+		fmt.Println(m.Line)
+	}
+	// Output:
+	// alpha one
+	// alpha two
+}
+
+// ExampleOptions_Search_lineRegexp shows -x/--line-regexp: only the line
+// that is exactly "cat" matches, not "cats", " cat", or "category".
+func ExampleOptions_Search_lineRegexp() {
+	opts := gripgrep.Options{LineRegexp: true}
+	matches, err := opts.Search("cat", "testdata/facade/lineregexp.txt")
+	if err != nil {
+		fmt.Println("error:", err)
+		return
+	}
+	for _, m := range matches {
+		fmt.Println(m.Line)
+	}
+	// Output:
+	// cat
 }
