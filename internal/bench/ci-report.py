@@ -43,6 +43,11 @@ def fmt_ms(sec, sig):
 
 def main():
     root = sys.argv[1]
+    if not os.path.isdir(root):
+        print("# gg vs rg — headline benchmarks\n\n"
+              "> ⚠️ No benchmark artifacts were produced — every leg failed "
+              "before uploading results; check the job logs.")
+        return
     platforms = sorted(
         {d[len("bench-"):].rsplit("-", 1)[0]
          for d in os.listdir(root)

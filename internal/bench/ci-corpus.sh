@@ -35,9 +35,14 @@ if [ ! -d linux ]; then
 fi
 
 echo "creating synthetic built-tree artifacts (25k NUL-bearing .o files)..."
-find linux -name '*.c' -type f | LC_ALL=C sort | head -25000 | while IFS= read -r f; do
+# Two steps, not one pipeline: head closing a find|sort|head pipe early
+# makes sort exit on SIGPIPE, which pipefail (CI's default shell opts)
+# turns into a hard failure.
+find linux -name '*.c' -type f | LC_ALL=C sort > .all-c-files.txt
+head -25000 .all-c-files.txt | while IFS= read -r f; do
   printf 'ELF\x00\x00synthetic object for gg bench\x00' > "${f%.c}.o"
 done
+rm -f .all-c-files.txt
 
 if [ ! -f en.sample.txt ]; then
   echo "downloading OpenSubtitles EN corpus (first ${SAMPLE_BYTES} bytes)..."
