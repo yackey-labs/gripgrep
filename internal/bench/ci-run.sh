@@ -24,8 +24,12 @@ run_row() {
     "$(printf '%q ' "$BIN" "$@")"
 }
 
-run_row tree_literal -n PM_RESUME "$CORPUS/linux"
-run_row files_walk --files "$CORPUS/linux"
+if [ -d "$CORPUS/linux" ]; then
+  run_row tree_literal -n PM_RESUME "$CORPUS/linux"
+  run_row files_walk --files "$CORPUS/linux"
+else
+  echo "no linux tree in corpus (Windows: kernel tree is not checkoutable on NTFS) -- skipping tree rows"
+fi
 run_row big_literal -n "Sherlock Holmes" "$CORPUS/en.sample.txt"
 run_row multi_literal -n "Sherlock|Watson" "$CORPUS/en.sample.txt"
 

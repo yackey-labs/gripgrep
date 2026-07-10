@@ -75,6 +75,9 @@ def main():
         out.append("|---|---|---|---|---|")
         for key, label in ROWS:
             g, r = gg.get(key), rg.get(key)
+            if (not g or "mean" not in g) and (not r or "mean" not in r):
+                out.append(f"| {label} | — | — | not available on this platform | ➖ |")
+                continue
             if not g or "mean" not in g or not r or "mean" not in r:
                 out.append(f"| {label} | — | — | missing data | ⚠️ |")
                 continue

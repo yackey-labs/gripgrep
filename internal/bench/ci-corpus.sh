@@ -29,11 +29,17 @@ if [ -f .corpus-complete ]; then
   exit 0
 fi
 
-if [ ! -d linux ]; then
+# The linux kernel tree cannot be checked out on NTFS at all (aux.c and
+# friends are reserved DOS device names; git checkout hard-fails), so on
+# Windows the corpus is subtitles-only and ci-run.sh skips the tree rows.
+case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) TREE=no ;; *) TREE=yes ;; esac
+
+if [ "$TREE" = yes ] && [ ! -d linux ]; then
   echo "cloning linux corpus (BurntSushi/linux, frozen fork, shallow)..."
   git clone --depth 1 --quiet https://github.com/BurntSushi/linux
 fi
 
+if [ "$TREE" = yes ]; then
 echo "creating synthetic built-tree artifacts (25k NUL-bearing .o files)..."
 # Two steps, not one pipeline: head closing a find|sort|head pipe early
 # makes sort exit on SIGPIPE, which pipefail (CI's default shell opts)
@@ -43,6 +49,7 @@ head -25000 .all-c-files.txt | while IFS= read -r f; do
   printf 'ELF\x00\x00synthetic object for gg bench\x00' > "${f%.c}.o"
 done
 rm -f .all-c-files.txt
+fi
 
 if [ ! -f en.sample.txt ]; then
   echo "downloading OpenSubtitles EN corpus (first ${SAMPLE_BYTES} bytes)..."
@@ -61,7 +68,7 @@ import os
 path = "en.sample.raw"
 size = os.path.getsize(path)
 with open(path, "rb") as f:
-    f.seek(max(0, size - 1 << 20))
+    f.seek(max(0, size - (1 << 20)))
     tail = f.read()
 cut = tail.rfind(b"\n")
 if cut < 0:
