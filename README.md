@@ -8,10 +8,11 @@ It ships as both a CLI (`gg`, a drop-in `rg` workalike for the flags it
 supports) and a set of reusable library packages (`glob`, `walk`, `match`,
 `search`, `printer`) you can embed in your own tools.
 
-**Status: working, correct, and winning some rounds.** gg now beats rg
+**Status: working, correct, and winning most rounds.** gg now beats rg
 outright on large single files (both literal and multi-literal queries)
-and matches it on pure directory traversal; rg still wins many-small-files
-tree search by ~1.4×. This is a live work-in-progress and the numbers
+and on pure directory traversal (~2× faster), and has pulled
+many-small-files tree search — historically its worst row — to
+statistical parity. This is a live work-in-progress and the numbers
 below are the real ones.
 
 ## Where we stand vs ripgrep
