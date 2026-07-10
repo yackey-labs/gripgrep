@@ -15,7 +15,7 @@ document is regenerated).
 |---|---|---|
 | ripgrep flag authority | master `3a570990c4cf` (2026-07-09, version 15.1.0), `crates/core/flags/defs.rs` | source of the flag inventory below |
 | ripgrep binary (golden suite + CI benchmarks) | **rg 15.1.0** (single pin: `internal/bench/rg-version.txt`, enforced by the suite itself) | every implemented flag is byte-diff-verified against this binary (17-case e2e suite + full-tree diffs) |
-| gripgrep | `269e5f8` / pending release | the status column below |
+| gripgrep | `c1be553` / pending release | the status column below |
 
 **Score: 30 of 104 rg flags implemented.** The gap is
 dominated by a few feature clusters (see the notes after the table):
