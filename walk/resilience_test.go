@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 	"runtime"
 	"sync"
-	"syscall"
 	"testing"
 	"time"
 )
@@ -17,6 +16,9 @@ import (
 // processDir) rather than crashing or aborting the whole walk; siblings
 // must still be visited.
 func TestPermissionDeniedDirectory(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("windows: Chmod 0o000 only clears the read-only attribute; it can't make a directory unreadable")
+	}
 	if os.Geteuid() == 0 {
 		t.Skip("running as root: permission bits don't block access")
 	}
@@ -57,39 +59,8 @@ func TestPermissionDeniedDirectory(t *testing.T) {
 	}
 }
 
-// TestFIFONeverOpened verifies a FIFO is classified (not TypeFile/TypeDir)
-// and visiting it completes promptly — walk must never call os.Open on a
-// non-directory entry, since opening a FIFO with no reader/writer on the
-// other end blocks forever.
-func TestFIFONeverOpened(t *testing.T) {
-	root := t.TempDir()
-	fifoPath := filepath.Join(root, "myfifo")
-	if err := syscall.Mkfifo(fifoPath, 0o644); err != nil {
-		t.Skipf("mkfifo unsupported: %v", err)
-	}
-	writeFile(t, filepath.Join(root, "a.txt"), "a")
-
-	done := make(chan FileType, 1)
-	go func() {
-		var fifoType FileType
-		Walk([]string{root}, Options{NoIgnore: true}, func(e *Entry) WalkState {
-			if e.Path == fifoPath {
-				fifoType = e.Type
-			}
-			return Continue
-		})
-		done <- fifoType
-	}()
-
-	select {
-	case ft := <-done:
-		if ft == TypeFile || ft == TypeDir {
-			t.Errorf("FIFO classified as %v; want anything but TypeFile/TypeDir (walk must not treat it as an openable regular file)", ft)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("Walk hung — a FIFO was probably opened, blocking with no reader/writer on the other end")
-	}
-}
+// TestFIFONeverOpened lives in resilience_unix_test.go (FIFOs are a
+// unix-only fixture: syscall.Mkfifo doesn't exist on Windows).
 
 // TestFileDeletedBetweenReaddirAndOpen simulates the classic TOCTOU: a
 // subdirectory is removed by the Visitor callback for its own directory
@@ -241,7 +212,17 @@ func TestNonUTF8Filename(t *testing.T) {
 // function-call recursion, so directory depth should never touch the Go
 // call stack in a way that could overflow it.
 func TestDeepNestingNoStackOverflow(t *testing.T) {
-	const depth = 1000
+	depth := 1000
+	if runtime.GOOS == "darwin" {
+		// darwin's PATH_MAX is 1024 and open(2)/mkdir(2) reject longer
+		// paths outright (Linux: 4096; Windows: the os package rewrites
+		// absolute paths to extended-length \\?\ form, limit ~32k), so
+		// neither the fixture nor any absolute-path walker can go
+		// deeper. 400 levels (~900 bytes with t.TempDir's prefix) stays
+		// under the limit while remaining far beyond comfortable
+		// native-recursion depth.
+		depth = 400
+	}
 	root := t.TempDir()
 	path := root
 	for i := 0; i < depth; i++ {

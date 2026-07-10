@@ -12,8 +12,10 @@ supports) and a set of reusable library packages (`glob`, `walk`, `match`,
 outright on large single files (both literal and multi-literal queries)
 and on pure directory traversal (~2× faster), and has pulled
 many-small-files tree search — historically its worst row — to
-statistical parity. This is a live work-in-progress and the numbers
-below are the real ones.
+statistical parity. As of 2026-07-10 it builds and runs on **Linux,
+macOS, and Windows** (per-OS build-tagged tty/mmap/rawfile/symlink
+layers; everything else was portable Go all along). This is a live
+work-in-progress and the numbers below are the real ones.
 
 ## Where we stand vs ripgrep
 
@@ -60,6 +62,29 @@ remaining tree-row gap is per-file search overhead (open/read/setup cost
 across ~79k small files) — the current optimization frontier. The tree
 gap has closed from 3.74× to 1.41× through profile-driven work, and every
 number above is reproducible from this repo.
+
+### macOS and Windows (hosted CI runners)
+
+The table above is the authoritative one, measured on a controlled Linux
+box. macOS and Windows numbers come from the on-demand benchmark
+workflow (`.github/workflows/bench.yml`) instead: each tool on its own
+fresh hosted runner, same hyperfine settings, identically-built corpora
+(Windows checks out the same frozen kernel fork via sparse-checkout,
+minus its 3 reserved-DOS-name files). Hosted hardware varies run to run,
+so these are ranges across benchmark runs on 2026-07-10, indicative
+rather than authoritative:
+
+| Benchmark | macOS (arm64) | Windows (x64) |
+|---|---|---|
+| Linux kernel tree, literal, gitignore-aware | 1.6–4× **slower** | **~1.1× faster** |
+| Same tree, `--files` (pure walk, no search) | **1.1–1.4× faster** | **~3.4× faster** |
+| OpenSubtitles ~830MB, literal | **1.5–2.2× faster** | **~1.9× faster** |
+| Same file, `Sherlock\|Watson` | **1.1–1.3× faster** | **~1.5× faster** |
+
+Windows sweeps all four rows. The one honest red is macOS tree search:
+the per-file open path's poller-bypass trick (`rawfile_unix.go`) was
+profiled and tuned on Linux, and the win doesn't transfer — that row
+hasn't had a single optimization pass on macOS yet.
 
 The optimization log lives in the commit history (`git log --grep "M3
 perf"`); dead ends are documented alongside wins.

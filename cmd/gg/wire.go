@@ -174,8 +174,8 @@ func execute(cfg *Config, stdout, stderr io.Writer) int {
 			// stats it but doesn't check IsRegular) -- process
 			// substitution and FIFOs reach here this way, and rg reads
 			// them to completion, so the short-read-implies-EOF hint
-			// (see rawfile.go's doc) must stay off. See disableEOFHint's
-			// doc.
+			// (see rawfile_unix.go's doc) must stay off. See
+			// disableEOFHint's doc.
 			f.disableEOFHint()
 		}
 
@@ -288,12 +288,15 @@ func resolveParallelWorkers(threads int) int {
 //     list can still tell them apart.
 //
 // When cfg.Paths is non-empty, both results are just cfg.Paths itself --
-// an explicit path is never substituted for anything.
+// an explicit path is never substituted for anything, only normalized to
+// the internal '/' separator form (a no-op everywhere but Windows; see
+// normalizeSeparators).
 func resolvePaths(cfgPaths []string) (statPaths, walkRoots []string) {
 	if len(cfgPaths) == 0 {
 		return []string{"."}, []string{""}
 	}
-	return cfgPaths, cfgPaths
+	norm := normalizeSeparators(cfgPaths)
+	return norm, norm
 }
 
 // computeShowPath implements rg's with-filename heuristic for gg's v1

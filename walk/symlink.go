@@ -2,7 +2,6 @@ package walk
 
 import (
 	"os"
-	"syscall"
 )
 
 // symNode is an immutable link in a chain of directory identities
@@ -14,17 +13,12 @@ type symNode struct {
 	dev, ino uint64
 }
 
-// devIno extracts the (device, inode) pair from a FileInfo, if the
-// platform exposes one via Sys(). Returns ok=false on platforms where it
-// doesn't (e.g. Windows) — callers degrade gracefully by skipping loop
-// detection rather than failing.
-func devIno(fi os.FileInfo) (dev, ino uint64, ok bool) {
-	st, ok := fi.Sys().(*syscall.Stat_t)
-	if !ok {
-		return 0, 0, false
-	}
-	return uint64(st.Dev), uint64(st.Ino), true
-}
+// devIno (per-OS: symlink_unix.go, symlink_windows.go) extracts the
+// (device, inode) pair from a FileInfo, if the platform exposes one via
+// Sys(). Returns ok=false on platforms where it doesn't (Windows) —
+// callers degrade gracefully by skipping loop detection rather than
+// failing (a followed loop still terminates: path construction fails
+// once the generated path exceeds the OS limit).
 
 // pushSymAncestor extends chain with dir's identity, for use as the
 // symAncestors of dir's children. Returns the input chain unchanged if

@@ -4,9 +4,9 @@ name: benchmarks
 # demand. Each platform gets TWO fresh runners — one benches gg, one
 # benches rg — so neither tool's cache/thermal state taints the other;
 # the report job pairs them and renders a comparison table on the run
-# summary. gg is Linux-only today: the macos/windows gg legs soft-report
-# "not ported" instead of failing the run, while a Linux failure is a
-# real regression and fails hard.
+# summary. gg builds on all three platforms (linux/darwin/windows via
+# per-OS build-tagged tty/mmap/rawfile/symlink files), so a gg build
+# failure on any leg fails the run hard.
 
 on:
   workflow_dispatch:
@@ -40,8 +40,8 @@ jobs:
           legs=()
           add() { for tool in gg rg; do legs+=("{\"platform\":\"$1\",\"runner\":\"$2\",\"tool\":\"$tool\",\"ported\":$3}"); done; }
           [ "${{ inputs.linux }}"   = "true" ] && add linux   ubuntu-latest  true
-          [ "${{ inputs.macos }}"   = "true" ] && add macos   macos-latest   false
-          [ "${{ inputs.windows }}" = "true" ] && add windows windows-latest false
+          [ "${{ inputs.macos }}"   = "true" ] && add macos   macos-latest   true
+          [ "${{ inputs.windows }}" = "true" ] && add windows windows-latest true
           printf 'matrix={"include":[%s]}\n' "$(IFS=,; echo "${legs[*]}")" >> "$GITHUB_OUTPUT"
 
   bench:
@@ -58,7 +58,11 @@ jobs:
         uses: actions/cache@v4
         with:
           path: bench-corpus
-          key: bench-corpus-v1-${{ matrix.platform }}
+          # v2: Windows corpus gained the kernel tree (sparse-checkout
+          # minus reserved-DOS-name files); v1's windows entry was
+          # subtitles-only and its .corpus-complete marker would skip
+          # the tree build forever.
+          key: bench-corpus-v2-${{ matrix.platform }}
 
       - name: Build corpus
         shell: bash

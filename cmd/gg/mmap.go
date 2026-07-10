@@ -2,7 +2,6 @@ package main
 
 import (
 	"os"
-	"syscall"
 )
 
 // mmapEligible reports whether the given --mmap/--no-mmap mode and path
@@ -49,59 +48,15 @@ func mmapEligible(mode MmapMode, paths []string) bool {
 	return true
 }
 
-// mmappedFile is a read-only memory-mapped view of a file's contents,
-// backed directly by syscall.Mmap over a bare file descriptor (no
-// os.File involved, consistent with rawfile.go's rationale for avoiding
-// os.File's runtime-poller overhead -- though here the bigger win is
-// skipping read(2) entirely).
-type mmappedFile struct {
-	data []byte
-	fd   int
-}
-
-// mmapOpen attempts to open and memory-map path for reading, mirroring
-// rg's own MmapChoice::open: any failure (open, fstat, a zero-length
-// file, or the mmap(2) call itself) is reported as ok=false with a nil
-// error, matching rg's silent-fallback-to-streaming behavior (rg logs
-// such failures at debug level only; gg has no equivalent facility, and
-// this is an internal performance choice invisible to correct output
-// either way, not a user-facing error). A real error is returned only
-// if it's useful to distinguish from "just fall back" -- in practice
-// this never happens on the success path callers care about, since
-// every failure mode above is folded into ok=false.
-func mmapOpen(path string) (mf *mmappedFile, ok bool) {
-	fd, err := syscall.Open(path, syscall.O_RDONLY, 0)
-	if err != nil {
-		return nil, false
-	}
-	var st syscall.Stat_t
-	if err := syscall.Fstat(fd, &st); err != nil {
-		syscall.Close(fd)
-		return nil, false
-	}
-	if st.Size <= 0 {
-		// mmap(2) of a zero-length region is either an error or
-		// meaningless; the streaming path already handles empty files
-		// correctly, so just decline.
-		syscall.Close(fd)
-		return nil, false
-	}
-	data, err := syscall.Mmap(fd, 0, int(st.Size), syscall.PROT_READ, syscall.MAP_SHARED)
-	if err != nil {
-		syscall.Close(fd)
-		return nil, false
-	}
-	return &mmappedFile{data: data, fd: fd}, true
-}
-
-// Close unmaps the memory region and closes the underlying descriptor.
-func (mf *mmappedFile) Close() error {
-	err := syscall.Munmap(mf.data)
-	if cerr := syscall.Close(mf.fd); err == nil {
-		err = cerr
-	}
-	return err
-}
+// mmappedFile (per-OS: mmap_unix.go, mmap_windows.go) is a read-only
+// memory-mapped view of a file's contents. mmapOpen attempts to open and
+// memory-map a path for reading, mirroring rg's own MmapChoice::open:
+// any failure (open, stat, a zero-length file, or the mapping call
+// itself) is reported as ok=false with a nil error, matching rg's
+// silent-fallback-to-streaming behavior (rg logs such failures at debug
+// level only; gg has no equivalent facility, and this is an internal
+// performance choice invisible to correct output either way, not a
+// user-facing error).
 
 // stripUTF8BOMSlice is stripUTF8BOM's equivalent for a mmap'd (or any
 // already-fully-in-memory) []byte: no reader state to preserve, so this
