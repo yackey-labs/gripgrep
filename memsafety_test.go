@@ -27,6 +27,11 @@ func TestSearch_MatchesOutliveCallbacks(t *testing.T) {
 	if testing.Short() {
 		t.Skip("walks the full benchmark-data/linux tree; skipped in -short")
 	}
+	if _, err := os.Stat("benchmark-data/linux"); err != nil {
+		// benchmark-data/ is gitignored and only exists on boxes
+		// provisioned for benchmarking; CI runners don't have it.
+		t.Skipf("corpus not present: %v", err)
+	}
 
 	parallel, err := Search("static", "benchmark-data/linux")
 	if err != nil {

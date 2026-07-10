@@ -120,6 +120,12 @@ func TestFacadeVsCLI(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			absPath := filepath.Join(root, tc.relPath)
+			if _, err := os.Stat(absPath); err != nil {
+				// benchmark-data/ is gitignored and only exists on boxes
+				// provisioned for benchmarking (internal/bench/setup.sh);
+				// CI runners and fresh clones don't have it.
+				t.Skipf("corpus %s not present: %v", tc.relPath, err)
+			}
 			args := []string{"-c", tc.pattern, tc.relPath}
 			opts := Options{}
 			if tc.name == "linux_pm_resume_ci" {
