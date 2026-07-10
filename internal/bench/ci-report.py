@@ -17,7 +17,9 @@ ROWS = [
     ("tree_literal", "Linux tree, literal (`-n PM_RESUME`)"),
     ("files_walk", "Linux tree, `--files` (walk only)"),
     ("big_literal", "830MB single file, literal"),
-    ("multi_literal", "830MB single file, `Sherlock|Watson`"),
+    # NB: the pipe must be escaped — GFM tables split cells on `|` even
+    # inside code spans, which shifts every column after it.
+    ("multi_literal", "830MB single file, `Sherlock\\|Watson`"),
 ]
 
 def load_leg(root, platform, tool):

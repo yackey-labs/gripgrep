@@ -29,27 +29,53 @@ if [ -f .corpus-complete ]; then
   exit 0
 fi
 
-# The linux kernel tree cannot be checked out on NTFS at all (aux.c and
-# friends are reserved DOS device names; git checkout hard-fails), so on
-# Windows the corpus is subtitles-only and ci-run.sh skips the tree rows.
-case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) TREE=no ;; *) TREE=yes ;; esac
+case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) WINDOWS=yes ;; *) WINDOWS=no ;; esac
 
-if [ "$TREE" = yes ] && [ ! -d linux ]; then
+if [ ! -d linux ]; then
   echo "cloning linux corpus (BurntSushi/linux, frozen fork, shallow)..."
-  git clone --depth 1 --quiet https://github.com/BurntSushi/linux
+  if [ "$WINDOWS" = yes ]; then
+    # Win32 can't create the tree's handful of reserved-DOS-device-name
+    # files (aux.c and friends), which makes a plain checkout hard-fail
+    # on NTFS. But that's ~7 files out of ~79k: clone without checkout,
+    # then sparse-checkout everything EXCEPT the reserved basenames
+    # (aux/con/nul/prn/com1-9/lpt1-9, any extension). Case-colliding
+    # paths (xt_CONNMARK.h vs xt_connmark.h etc.) merely warn on the
+    # case-insensitive filesystem and keep one of the pair. Both tools
+    # on this runner search the identical slightly-reduced tree, and
+    # the report only compares same-runner pairs, so absolute-count
+    # drift vs the unix corpora is fine (see header note).
+    git clone --depth 1 --quiet --no-checkout https://github.com/BurntSushi/linux
+    (
+      cd linux
+      git config core.longpaths true
+      { echo '/*'
+        git ls-tree -r --name-only HEAD \
+          | grep -iE '(^|/)(aux|con|nul|prn|com[0-9]|lpt[0-9])(\.[^/]*)?$' \
+          | sed 's|^|!/|'
+      } | git sparse-checkout set --no-cone --stdin
+      git checkout --quiet HEAD
+    )
+  else
+    git clone --depth 1 --quiet https://github.com/BurntSushi/linux
+  fi
 fi
 
-if [ "$TREE" = yes ]; then
 echo "creating synthetic built-tree artifacts (25k NUL-bearing .o files)..."
 # Two steps, not one pipeline: head closing a find|sort|head pipe early
 # makes sort exit on SIGPIPE, which pipefail (CI's default shell opts)
-# turns into a hard failure.
+# turns into a hard failure. The .o writes themselves go through one
+# python process, not a 25k-iteration shell loop: byte-identical output,
+# and per-file shell writes are painfully slow under msys on the Windows
+# runners (the loop predates the tree existing there at all).
 find linux -name '*.c' -type f | LC_ALL=C sort > .all-c-files.txt
-head -25000 .all-c-files.txt | while IFS= read -r f; do
-  printf 'ELF\x00\x00synthetic object for gg bench\x00' > "${f%.c}.o"
-done
+python3 - <<'EOF'
+with open(".all-c-files.txt", "rb") as fh:
+    files = fh.read().splitlines()
+for f in files[:25000]:
+    with open(f[:-2] + b".o", "wb") as out:
+        out.write(b"ELF\x00\x00synthetic object for gg bench\x00")
+EOF
 rm -f .all-c-files.txt
-fi
 
 if [ ! -f en.sample.txt ]; then
   echo "downloading OpenSubtitles EN corpus (first ${SAMPLE_BYTES} bytes)..."

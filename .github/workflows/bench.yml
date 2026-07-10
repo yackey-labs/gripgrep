@@ -58,7 +58,11 @@ jobs:
         uses: actions/cache@v4
         with:
           path: bench-corpus
-          key: bench-corpus-v1-${{ matrix.platform }}
+          # v2: Windows corpus gained the kernel tree (sparse-checkout
+          # minus reserved-DOS-name files); v1's windows entry was
+          # subtitles-only and its .corpus-complete marker would skip
+          # the tree build forever.
+          key: bench-corpus-v2-${{ matrix.platform }}
 
       - name: Build corpus
         shell: bash
