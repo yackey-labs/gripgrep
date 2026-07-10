@@ -8,8 +8,10 @@ It ships as both a CLI (`gg`, a drop-in `rg` workalike for the flags it
 supports) and a set of reusable library packages (`glob`, `walk`, `match`,
 `search`, `printer`) you can embed in your own tools.
 
-**Status: working, correct, and honestly not as fast as ripgrep yet.**
-This is a live work-in-progress and the numbers below are the real ones.
+**Status: working, correct, and closing the gap with ripgrep.** Intra-file
+parallelism just flipped the flagship single-file benchmark from "slower"
+to a genuine win. This is a live work-in-progress and the numbers below
+are the real ones.
 
 ## Where we stand vs ripgrep
 
@@ -27,18 +29,26 @@ the gg:rg ratio is meaningful):
 | Benchmark | gg vs rg | Trend |
 |---|---|---|
 | Linux kernel tree (built, ~104k files), literal, gitignore-aware | **2.48× slower** | was 3.74×; three profile-driven fixes so far |
-| OpenSubtitles corpus (~830MB, 28M lines), literal (`Sherlock Holmes`) | **1.18× slower** | was 1.61×; mmap wiring landed — effectively at parity |
-| OpenSubtitles corpus, multi-literal regex (`Sherlock\|Watson`) | **2.34× slower** | was 3.25×; the multi-literal scanner (`rareByteMultiScanner`) was re-scanning every literal's anchor from scratch on every merge step instead of advancing each one independently — fixed (2.11× single-threaded). (Routing to Aho-Corasick was tried first and measured to be worse at every literal count tested, not better — a real Teddy SIMD port remains the path to full parity here.) |
+| OpenSubtitles corpus (~830MB, 28M lines), literal (`Sherlock Holmes`), default settings | **1.64× FASTER** | was 1.18× slower; intra-file parallelism (rg searches one file on one core — a lever rg doesn't have) — the first row gg wins outright |
+| Same file, `Sherlock\|Watson` (multi-literal), default settings | **~parity** (0.92×-1.08× depending on run) | was 3.25× slower; #22's rare-byte-scanner fix (2.34×) plus intra-file parallelism together close nearly all of the remaining gap |
 
 Micro-level, the core engine is already in ripgrep's class: the literal
 prefilter scans at **9.8 GB/s** (0 allocs/op), and the searcher's fast
 path streams at 4.6 GB/s. mmap (explicitly-named files, matching rg's
 own `<=10 paths, all regular files` policy exactly) closed most of the
-single-file gap on literal queries. What's left: the linux-tree gap is
-mostly gitignore glob dispatch (shrinking commit by commit), the regex
-gap is the multi-literal prefilter above, and intra-file parallelism
-(rg searches each file on one core — a lever rg doesn't have) is still
-on the table.
+single-file gap on literal queries, and intra-file parallel search
+(splitting a large file into line-aligned chunks searched concurrently,
+replayed back in order) turned that into an outright win. Honest caveat:
+self-speedup at 4 workers on the benchmark box lands around 1.9-2.3x, not
+a naive 4x — isolating mmap from the picture (reading into a plain heap
+buffer instead) raises it to ~2.3x, so mmap page-fault handling is a real
+but partial contributor; the rest isn't fully isolated yet. v1 of
+intra-file parallelism only covers the no-context, non-invert case
+(`-A`/`-B`/`-C`/`-v` fall back to the existing serial path); context
+support is designed but not yet landed. What's left: the linux-tree gap
+is mostly gitignore glob dispatch (shrinking commit by commit), and full
+Teddy-class SIMD multi-literal matching remains the path to complete
+parity on the regex row.
 
 The optimization log lives in the commit history (`git log --grep "M3
 perf"`); dead ends are documented alongside wins.

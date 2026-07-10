@@ -118,6 +118,23 @@ type Searcher struct {
 	BeforeContext int
 	AfterContext  int
 
+	// ParallelWorkers, when > 1, lets SearchBytes split an eligible input
+	// into line-aligned chunks searched concurrently, then replayed
+	// through sink in file order (M3 task #18 -- see searchBytesParallel's
+	// doc for the eligibility rule and why context/invert aren't
+	// supported yet). 0 or 1 means always serial. Search's io.Reader path
+	// never parallelizes -- PLAN.md's intra-file chunking is defined over
+	// an in-memory slice, where chunk boundaries can be computed up
+	// front; a stream has no such fixed extent to divide.
+	ParallelWorkers int
+	// ParallelMinBytes is the minimum input length SearchBytes will
+	// consider parallelizing; below it, per-goroutine overhead likely
+	// costs more than it saves. Zero means defaultParallelMinBytes.
+	// Tests lower this (and pair it with a small ParallelWorkers count)
+	// to force parallel chunking on tiny fixtures, so the invariance
+	// harness can stress chunk boundaries without huge inputs.
+	ParallelMinBytes int64
+
 	// Pooled resources, amortized across Search/SearchBytes calls on this
 	// Searcher. Not part of the public config; New allocates them. Per the
 	// Match/Ctx docs, statsScratch is likewise reused: the *Stats handed to
@@ -243,10 +260,10 @@ func (s *Searcher) Search(path string, r io.Reader, sink Sink) error {
 
 // SearchBytes searches data directly, with no rolling buffer or read
 // syscalls: the same core line-scanning logic as Search (see core.go)
-// runs over the whole slice in one pass. Intended for the small number of
-// explicitly-named files that may be mmap'd, and for M3's intra-file
-// parallel chunking (each chunk becomes one SearchBytes-style call over a
-// sub-slice).
+// runs over the slice (in one pass, or split into concurrent chunks --
+// see parallelEligible/searchBytesParallel) rather than a stream read in
+// DefaultBufferSize increments. Intended for the small number of
+// explicitly-named files that may be mmap'd.
 //
 // data must remain valid and unmodified for the duration of the call, and
 // is never written to: unlike Search's owned rolling buffer, a
@@ -309,10 +326,12 @@ func (s *Searcher) SearchBytes(path string, data []byte, sink Sink) error {
 		}
 	}
 
-	if len(searchData) > 0 {
-		if _, err := s.matchByLine(searchData, sink); err != nil {
+	if s.parallelEligible(len(searchData)) {
+		if err := s.searchBytesParallel(searchData, sink); err != nil {
 			return err
 		}
+	} else if err := s.runChunk(searchData, sink, 0, 1); err != nil {
+		return err
 	}
 
 	s.statsScratch = Stats{
@@ -323,4 +342,35 @@ func (s *Searcher) SearchBytes(path string, data []byte, sink Sink) error {
 		BinaryOffset:  s.binaryOffset,
 	}
 	return sink.Finish(path, &s.statsScratch)
+}
+
+// runChunk drives matchByLine over data, treating base as the absolute
+// byte offset of data[0] and lineBase as the line number of data's first
+// line (only meaningful when LineNumbers is set) -- the shared primitive
+// behind SearchBytes's own whole-file scan (base=0, lineBase=1) and each
+// intra-file parallel chunk's scan (base/lineBase reflecting where that
+// chunk sits in the file). It does not call sink.Begin/Finish -- callers
+// own that -- and it does not touch binary-detection state: SearchBytes
+// already performs its one upfront bounded check before any chunking
+// decision, and per-chunk children (searchBytesParallel) are constructed
+// with BinaryMode=BinaryNone specifically so they never redo or interact
+// with it.
+func (s *Searcher) runChunk(data []byte, sink Sink, base, lineBase int64) error {
+	s.pos = 0
+	s.absOffsetBase = base
+	if s.LineNumbers {
+		s.lineNumber = lineBase
+	} else {
+		s.lineNumber = 0
+	}
+	s.lastLineCounted = 0
+	s.lastLineVisited = 0
+	s.afterContextLeft = 0
+	s.hasMatched = false
+	s.matchCount = 0
+	if len(data) == 0 {
+		return nil
+	}
+	_, err := s.matchByLine(data, sink)
+	return err
 }

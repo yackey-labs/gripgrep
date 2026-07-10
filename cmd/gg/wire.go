@@ -213,6 +213,50 @@ func execute(cfg *Config, stdout, stderr io.Writer) int {
 	return 1
 }
 
+// defaultParallelWorkers is the intra-file parallel-search worker count
+// used when -j/--threads was left at its auto default (cfg.Threads == 0).
+// Deliberately NOT derived from GOMAXPROCS/NumCPU the way walk's own
+// thread count is: an explicit 2/3/4/6/8-worker sweep on the benchmark
+// box (single 830MB file, mmap'd) found wall-clock time plateaus around
+// 3-4 workers, with 6-8 giving no further measurable gain -- so
+// defaulting to walk.defaultThreads()'s min(GOMAXPROCS,12) would spin up
+// workers well past the point they help.
+//
+// Why the plateau isn't fully explained yet, and shouldn't be
+// over-claimed: self-speedup at 4 workers landed at ~1.9x on the mmap'd
+// benchmark file, short of a naive 4x. Isolating the cause (same
+// SearchBytes call, same corpus, read into a plain heap []byte via
+// os.ReadFile instead of mmap'd) raised self-speedup to ~2.3x, which
+// shows mmap page-fault handling (concurrent workers first-touching
+// different pages of one shared mapping) is a real contributor -- but
+// doesn't fully close the gap to 4x on its own, so something else also
+// caps it (possibly still memory bandwidth, possibly this box's
+// scheduler/cache behavior; not conclusively isolated). MAP_POPULATE
+// (pre-faulting the whole mapping up front) was tried as the obvious
+// mitigation and made things WORSE, not better, on this box -- shifting
+// all the fault-in cost into one serial pass before any worker starts is
+// a net loss compared to letting workers fault their own chunks in
+// concurrently, even with contention. A real fix here (concurrent
+// madvise/prefetch, or per-worker sub-range mmaps) is a follow-up, not
+// something this change attempts.
+//
+// Bottom line this constant only needs: past ~3-4 workers, more doesn't
+// help on this box, whatever the exact mix of causes. Revisit the value
+// (and this doc) if a future prefetch attempt changes that.
+const defaultParallelWorkers = 4
+
+// resolveParallelWorkers maps -j/--threads onto search.Searcher's
+// ParallelWorkers: an explicit thread count is honored as-is (the user
+// asked for exactly that much parallelism), otherwise defaultParallelWorkers
+// applies -- see its doc for why that isn't just walk's own thread
+// default.
+func resolveParallelWorkers(threads int) int {
+	if threads > 0 {
+		return threads
+	}
+	return defaultParallelWorkers
+}
+
 // computeShowPath implements rg's with-filename heuristic for gg's v1
 // flag set (no -H/--with-filename/-I/--no-filename yet): the path is
 // suppressed only for the single-explicit-file case -- exactly one path
@@ -395,11 +439,12 @@ type workerUnit struct {
 
 func newWorkerUnit(cfg *Config, matcher match.Matcher, dest *printer.Dest, color, heading, showPath, lineNumbers bool) *workerUnit {
 	searcher := search.New(search.Searcher{
-		Matcher:       matcher,
-		Invert:        cfg.Invert,
-		LineNumbers:   lineNumbers,
-		BeforeContext: cfg.ContextBefore,
-		AfterContext:  cfg.ContextAfter,
+		Matcher:         matcher,
+		Invert:          cfg.Invert,
+		LineNumbers:     lineNumbers,
+		BeforeContext:   cfg.ContextBefore,
+		AfterContext:    cfg.ContextAfter,
+		ParallelWorkers: resolveParallelWorkers(cfg.Threads),
 	})
 
 	var sink search.Sink
