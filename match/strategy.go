@@ -277,6 +277,20 @@ func allASCII(lits [][]byte) bool {
 // uniformly as a post-match boundary check (see word.go) regardless of
 // which strategy compiled, since Go's regexp/syntax has no equivalent of
 // rg's asymmetric half-word-boundary look used for -w.
+//
+// LineRegexp (-x), unlike -w, IS baked directly into the compiled pattern
+// text as a real ^(?:...)$ anchor pair, using Go's (?m) multi-line mode so
+// ^/$ bind to LINE boundaries within a whole multi-line search buffer
+// (rather than (?)-default text boundaries, which would only ever match
+// at the very start/end of an entire file) -- see newRegexMatcher's doc.
+// Wrapping the pattern text itself, rather than post-filtering match
+// bounds the way -w does, is deliberate: it lets the ordinary regex
+// engine (or FindAllIndex's anchor-aware scan, already used for any
+// anchored pattern) enforce correctness even for patterns whose match
+// depends on trying multiple alternatives per start position (e.g.
+// `-x -e 'a|aa'` against "aa"), which a simple "restart at s+1 if the
+// bounds don't span the whole line" retry loop -- as word.go uses for -w
+// -- cannot get right in general.
 func New(cfg Config) (Matcher, error) {
 	if len(cfg.Patterns) == 0 {
 		return nil, errNoPatterns
@@ -296,7 +310,14 @@ func newFixedMatcher(cfg Config, caseInsensitive bool) (Matcher, error) {
 	}
 	nonMatchingLineTerm := !anyLiteralHasNewline(lits)
 
-	if !caseInsensitive || allASCII(lits) {
+	// Under -x, the plain literal-substring fast path is unsound (a
+	// literal occurring ANYWHERE in a line is not the same as the line
+	// EQUALING the literal -- PLAN.md's round-31 landmine), so -x always
+	// routes -F through the engine below with real ^(?:...)$ anchors,
+	// same as the Unicode-fold fallback already does. This forgoes the
+	// literal fast path under -x; acceptable per this round's brief
+	// ("perf is not the goal here; correctness is").
+	if !cfg.LineRegexp && (!caseInsensitive || allASCII(lits)) {
 		scan := newLiteralScanner(lits, caseInsensitive)
 		return &matcherImpl{
 			core:                &literalCore{scan: scan},
@@ -306,14 +327,24 @@ func newFixedMatcher(cfg Config, caseInsensitive bool) (Matcher, error) {
 	}
 
 	// A -F pattern needs Unicode-aware case folding beyond what the
-	// ASCII anchor scan can provide: fall back to the engine, escaping
-	// each literal so regex metacharacters in it are treated literally.
+	// ASCII anchor scan can provide (or -x forces the engine path
+	// regardless): fall back to the engine, escaping each literal so
+	// regex metacharacters in it are treated literally.
 	quoted := make([]string, len(cfg.Patterns))
 	for i, p := range cfg.Patterns {
 		quoted[i] = regexp.QuoteMeta(p)
 	}
-	pattern := "(?i:" + strings.Join(quoted, "|") + ")"
-	eng, err := compileEngine(pattern, false) // quoted literals never contain anchors
+	inner := strings.Join(quoted, "|")
+	if caseInsensitive {
+		inner = "(?i:" + inner + ")"
+	}
+	pattern := inner
+	hasAnchors := false
+	if cfg.LineRegexp {
+		pattern = "(?m)^(?:" + inner + ")$"
+		hasAnchors = true
+	}
+	eng, err := compileEngine(pattern, hasAnchors)
 	if err != nil {
 		return nil, err
 	}
@@ -330,6 +361,21 @@ func newRegexMatcher(cfg Config, caseInsensitive bool) (Matcher, error) {
 		parts[i] = "(?:" + p + ")"
 	}
 	combined := strings.Join(parts, "|")
+	if cfg.LineRegexp {
+		// (?m) makes ^/$ bind to LINE boundaries within the whole
+		// multi-line search buffer, not just start/end of the entire
+		// text (Go's default) -- see New's doc. Wrapping combined itself,
+		// before syntax.Parse, means every downstream step (the AST used
+		// for Strategy 1/2 selection, nonMatchingLineTerm, hasAnchors,
+		// and enginePattern below) sees the anchors consistently: in
+		// particular, extractPureLiteralAlternation's root-Op check
+		// naturally rejects Strategy 1 for an anchored pattern (its root
+		// becomes OpConcat, not OpLiteral/OpAlternate), so the
+		// Confirmed-without-verification literal shortcut is never taken
+		// under -x -- exactly PLAN.md's round-31 landmine requirement,
+		// achieved by construction rather than a special case.
+		combined = "(?m)^(?:" + combined + ")$"
+	}
 
 	baseFlags := syntax.Perl
 	if caseInsensitive {

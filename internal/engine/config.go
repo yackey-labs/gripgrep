@@ -70,7 +70,12 @@ type Config struct {
 	Patterns []string
 	Case     CaseMode
 	Fixed    bool // -F/--fixed-strings
-	Word     bool // -w/--word-regexp
+	// Word and LineRegexp mirror cmd/gg's own mutually-exclusive pair
+	// (rg's shared BoundaryMode field): a caller must never set both --
+	// cmd/gg's -w/-x flagSpecs guarantee this via last-flag-wins before
+	// translating into this struct.
+	Word       bool // -w/--word-regexp
+	LineRegexp bool // -x/--line-regexp
 
 	// Paths are the files/directories to search (or list, for Files);
 	// empty means "search/list the current directory" (see ResolvePaths).

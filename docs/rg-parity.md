@@ -51,7 +51,7 @@ unknown-flag error, exit 2)
 | `--fixed-strings` (+`--no-fixed-strings`) | `-F` | ✅ | Treat all patterns as literals |
 | `--ignore-case` | `-i` | ✅ | Case insensitive search |
 | `--invert-match` (+`--no-invert-match`) | `-v` | ✅ | Invert matching |
-| `--line-regexp` | `-x` | ⚠️ | Show matches surrounded by line boundaries |
+| `--line-regexp` | `-x` | ✅ | Show matches surrounded by line boundaries |
 | `--max-count` | `-m` | ❌ | Limit the number of matching lines |
 | `--mmap` (+`--no-mmap`) |  | ✅ | Search with memory maps when possible |
 | `--multiline` | `-U` | ⚠️ | Enable searching across multiple lines |

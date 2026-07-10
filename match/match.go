@@ -45,6 +45,13 @@ type Config struct {
 	Word bool
 	// Fixed treats Patterns as literal strings rather than regexes (-F).
 	Fixed bool
+	// LineRegexp anchors the combined pattern to whole lines (rg's -x):
+	// equivalent to wrapping it in ^(?:...)$ with per-line (not
+	// per-text) anchor semantics. Callers must never set both Word and
+	// LineRegexp -- they mirror rg's single shared BoundaryMode field,
+	// where the last of -w/-x given wins outright (see strategy.go's New
+	// doc for how this is implemented).
+	LineRegexp bool
 }
 
 // Matcher is a compiled pattern ready to search []byte haystacks. Every

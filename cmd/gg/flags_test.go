@@ -105,6 +105,33 @@ func TestWordRegexp(t *testing.T) {
 	}
 }
 
+// TestLineRegexp covers -x/--line-regexp, including its interaction with
+// -w: rg's own LineRegexp/WordRegexp both write ONE shared BoundaryMode
+// field (lowargs.rs), so whichever of -x/-w is given LAST wins outright.
+// Verified against the real rg 15.1.0 binary:
+//
+//	$ rg -x -w apple f.txt   -> behaves as plain -w (word-boundary matches,
+//	                            including "apple pie")
+//	$ rg -w -x apple f.txt   -> behaves as plain -x (whole-line matches only)
+func TestLineRegexp(t *testing.T) {
+	if cfg := mustParse(t, "pat", "path"); cfg.LineRegexp {
+		t.Errorf("default LineRegexp = true, want false")
+	}
+	if cfg := mustParse(t, "--line-regexp", "pat", "path"); !cfg.LineRegexp {
+		t.Errorf("--line-regexp: LineRegexp = false, want true")
+	}
+	if cfg := mustParse(t, "-x", "pat", "path"); !cfg.LineRegexp {
+		t.Errorf("-x: LineRegexp = false, want true")
+	}
+
+	if cfg := mustParse(t, "-x", "-w", "pat", "path"); cfg.LineRegexp || !cfg.Word {
+		t.Errorf("-x -w: LineRegexp=%v Word=%v, want LineRegexp=false Word=true (last flag wins)", cfg.LineRegexp, cfg.Word)
+	}
+	if cfg := mustParse(t, "-w", "-x", "pat", "path"); !cfg.LineRegexp || cfg.Word {
+		t.Errorf("-w -x: LineRegexp=%v Word=%v, want LineRegexp=true Word=false (last flag wins)", cfg.LineRegexp, cfg.Word)
+	}
+}
+
 func TestRegexpFlag(t *testing.T) {
 	// -e/--regexp is repeatable and OR's patterns; per rg, once -e is
 	// used, ALL positionals become paths (none become "the pattern").
@@ -603,7 +630,6 @@ func TestNotYetImplementedFlags(t *testing.T) {
 		{"-r", "x", "pat"},
 		{"--replace", "x", "pat"},
 		{"-z", "pat"},
-		{"-x", "pat"},
 		{"-L", "pat"},
 		{"-f", "patfile", "pat"},
 		{"--binary", "pat"},

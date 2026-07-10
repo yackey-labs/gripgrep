@@ -31,6 +31,26 @@ func oracleFind(t testing.TB, cfg Config, line []byte) (s, e int, ok bool) {
 	if caseInsensitive {
 		pattern = "(?i:" + pattern + ")"
 	}
+	if cfg.LineRegexp {
+		// -x: whole-line match, via the same (?m)^(?:...)$ technique
+		// strategy.go uses -- but compiled independently here with
+		// stdlib regexp rather than grafana/regexp, so this remains a
+		// genuine second implementation (it exercises the Matcher's
+		// FindCandidate/Verify/engine-anchor wiring, not a tautology of
+		// strategy.go's own compiled string). Whether (?m)^...$ is the
+		// right SEMANTIC choice for -x is verified separately against
+		// the real rg binary (see flags_test.go/e2e_test.go).
+		pattern = "(?m)^(?:" + pattern + ")$"
+		re, err := regexp.Compile(pattern)
+		if err != nil {
+			t.Fatalf("oracle compile %q: %v", pattern, err)
+		}
+		loc := re.FindIndex(line)
+		if loc == nil {
+			return 0, 0, false
+		}
+		return loc[0], loc[1], true
+	}
 	re, err := regexp.Compile(pattern)
 	if err != nil {
 		t.Fatalf("oracle compile %q: %v", pattern, err)
@@ -87,6 +107,10 @@ func cs(patterns ...string) Config { return Config{Patterns: patterns, CaseMode:
 func ci(patterns ...string) Config { return Config{Patterns: patterns, CaseMode: CaseInsensitive} }
 func smart(patterns ...string) Config {
 	return Config{Patterns: patterns, CaseMode: CaseSmart}
+}
+func lineRegexp(cfg Config) Config {
+	cfg.LineRegexp = true
+	return cfg
 }
 func word(cfg Config) Config {
 	cfg.Word = true
@@ -160,6 +184,41 @@ func TestMatcherWord(t *testing.T) {
 	// The specific x-foo half-boundary case from word.go's doc comment.
 	checkLine(t, word(cs("-foo")), "x-foo")
 	checkLine(t, word(cs("-foo")), "x -foo")
+}
+
+// TestMatcherLineRegexp covers -x/--line-regexp: patterns are anchored to
+// whole-line boundaries (rg's `^(?:...)$`, per-line not per-text -- see
+// strategy.go's New doc). checkMatrix's haystacks give broad negative
+// coverage (an unanchored literal substring occurring mid-line must NOT
+// match under -x); exact-line and alternation cases below are added
+// separately since none of the shared haystacks equal a tested pattern
+// outright.
+func TestMatcherLineRegexp(t *testing.T) {
+	cfgs := []Config{
+		lineRegexp(cs("foo")),
+		lineRegexp(ci("sherlock")),
+		lineRegexp(cs(`[A-Z]+_RESUME`)),
+		lineRegexp(fixed(cs("foo"))),
+		lineRegexp(fixed(ci("δελτα"))),
+		lineRegexp(cs(`\w+`)),
+		lineRegexp(cs(`.*`)),
+	}
+	checkMatrix(t, cfgs, haystacks)
+
+	// Exact-line positives/negatives not covered by the shared haystacks.
+	checkLine(t, lineRegexp(cs("hello world")), "hello world")
+	checkLine(t, lineRegexp(cs("hello")), "hello world")
+	checkLine(t, lineRegexp(fixed(cs("a.b"))), "a.b")
+	checkLine(t, lineRegexp(fixed(cs("a.b"))), "azb")
+
+	// The alternation landmine: a literal-substring-Confirmed shortcut
+	// (or a naive "restart the match at s+1 on boundary failure" retry,
+	// as word.go uses for -w) gets `a|aa` against "aa" wrong; a real
+	// ^(?:a|aa)$ engine scan does not. Verified independently against
+	// the real rg binary too (see the -f/-x differential sweep).
+	checkLine(t, lineRegexp(cs("a", "aa")), "aa")
+	checkLine(t, lineRegexp(cs("a", "aa")), "a")
+	checkLine(t, lineRegexp(cs("a", "aa")), "aaa")
 }
 
 func TestMatcherAlternation(t *testing.T) {

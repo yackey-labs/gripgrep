@@ -15,10 +15,11 @@ import (
 // matcher instance itself, not just what Run does with it internally.
 func BuildMatcher(cfg Config) (match.Matcher, error) {
 	return match.New(match.Config{
-		Patterns: cfg.Patterns,
-		CaseMode: convertCaseMode(cfg.Case),
-		Word:     cfg.Word,
-		Fixed:    cfg.Fixed,
+		Patterns:   cfg.Patterns,
+		CaseMode:   convertCaseMode(cfg.Case),
+		Word:       cfg.Word,
+		Fixed:      cfg.Fixed,
+		LineRegexp: cfg.LineRegexp,
 	})
 }
 

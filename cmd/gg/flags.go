@@ -115,7 +115,14 @@ type Config struct {
 
 	Case  CaseMode
 	Fixed bool // -F/--fixed-strings
-	Word  bool // -w/--word-regexp
+	// Word and LineRegexp mirror rg's single shared "boundary" field
+	// (lowargs.rs's BoundaryMode): -w/--word-regexp and -x/--line-regexp
+	// each set ONE of these and clear the other, so whichever of -w/-x
+	// was given LAST wins outright -- verified against the real rg
+	// binary (`rg -x -w` behaves as plain -w; `rg -w -x` behaves as
+	// plain -x), not "both apply". See their flagSpecs below.
+	Word       bool // -w/--word-regexp
+	LineRegexp bool // -x/--line-regexp
 
 	Hidden       bool     // --hidden
 	NoIgnore     bool     // --no-ignore (collapses rg's 5 no-ignore-* sub-flags into one, matching walk.Options.NoIgnore)
@@ -228,9 +235,24 @@ func buildV1Flags() []*flagSpec {
 			},
 		},
 		{
+			// -w and -x share rg's one BoundaryMode field: whichever is
+			// given last wins outright, so each clears the other here.
 			long: "word-regexp", short: 'w', kind: kindSwitch,
 			applySwitch: func(cfg *Config, _ *parseState, _ bool) error {
 				cfg.Word = true
+				cfg.LineRegexp = false
+				return nil
+			},
+		},
+		{
+			// -x/--line-regexp has no negation of its own (rg's own
+			// LineRegexp::update asserts "has no negation"); repeating it
+			// is a harmless no-op, matching -i's pattern. See -w above for
+			// the shared-field override this mirrors.
+			long: "line-regexp", short: 'x', kind: kindSwitch,
+			applySwitch: func(cfg *Config, _ *parseState, _ bool) error {
+				cfg.LineRegexp = true
+				cfg.Word = false
 				return nil
 			},
 		},
@@ -482,8 +504,7 @@ type notImplementedFlag struct {
 // PLAN.md's explicit "Not in v1" line -- replace, multiline, PCRE2,
 // non-UTF-8 encodings, compressed files, --sort, JSON, -o -- plus a
 // handful of flags an rg user is very likely to type that aren't named
-// there: -L/--follow, -f/--file (the file-based alternative to -e),
-// -x/--line-regexp, and --binary (reachable in v1 only indirectly via
+// there: -L/--follow and --binary (reachable in v1 only indirectly via
 // -uuu, but not as a flag of its own yet). -h/--help and -V/--version
 // are real flags (see buildV1Flags), not in this list, per M2's rg-parity
 // fix. This is intentionally not the full ~100-flag rg surface -- see
@@ -501,7 +522,6 @@ var notImplementedFlags = []notImplementedFlag{
 	{long: "json", label: "--json"},
 	{long: "only-matching", short: 'o', label: "-o/--only-matching"},
 	{long: "binary", label: "--binary"},
-	{long: "line-regexp", short: 'x', label: "-x/--line-regexp"},
 	{long: "follow", short: 'L', label: "-L/--follow"},
 	{long: "file", short: 'f', label: "-f/--file"},
 }

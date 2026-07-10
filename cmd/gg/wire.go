@@ -127,6 +127,7 @@ func toEngineConfig(cfg *Config) engine.Config {
 		Case:          convertCaseMode(cfg.Case),
 		Fixed:         cfg.Fixed,
 		Word:          cfg.Word,
+		LineRegexp:    cfg.LineRegexp,
 		Paths:         cfg.Paths,
 		Hidden:        cfg.Hidden,
 		NoIgnore:      cfg.NoIgnore,
