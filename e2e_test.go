@@ -22,6 +22,7 @@ package gripgrep_test
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -30,6 +31,46 @@ import (
 	"strings"
 	"testing"
 )
+
+// TestMain refuses to run the e2e suite against anything but the rg
+// version pinned in internal/bench/rg-version.txt — the same pin the CI
+// workflows install. "Byte-identical to rg" is only a meaningful claim
+// against a known rg: a drifted local rg silently weakens every golden
+// case in this package, so this is a hard failure with install
+// instructions, not a skip.
+func TestMain(m *testing.M) {
+	if err := checkPinnedRG(); err != nil {
+		fmt.Fprintln(os.Stderr, "e2e suite:", err)
+		os.Exit(1)
+	}
+	os.Exit(m.Run())
+}
+
+func checkPinnedRG() error {
+	_, thisFile, _, ok := runtime.Caller(0)
+	if !ok {
+		return fmt.Errorf("could not determine test file location")
+	}
+	pinPath := filepath.Join(filepath.Dir(thisFile), "internal", "bench", "rg-version.txt")
+	pin, err := os.ReadFile(pinPath)
+	if err != nil {
+		return fmt.Errorf("reading rg version pin: %w", err)
+	}
+	want := strings.TrimSpace(string(pin))
+	out, err := exec.Command("rg", "--version").Output()
+	if err != nil {
+		return fmt.Errorf("rg not runnable on PATH: %w", err)
+	}
+	fields := strings.Fields(string(out)) // "ripgrep X.Y.Z (rev ...)"
+	if len(fields) < 2 || fields[1] != want {
+		return fmt.Errorf("rg on PATH is %q, but the golden suite is pinned to ripgrep %s "+
+			"(internal/bench/rg-version.txt, same pin as CI) — install it, e.g.:\n"+
+			"  curl -fsSL https://github.com/BurntSushi/ripgrep/releases/download/%s/ripgrep-%s-x86_64-unknown-linux-musl.tar.gz"+
+			" | tar xz --strip-components=1 -C ~/.local/bin ripgrep-%s-x86_64-unknown-linux-musl/rg",
+			strings.TrimSpace(strings.SplitN(string(out), "\n", 2)[0]), want, want, want, want)
+	}
+	return nil
+}
 
 func TestGoldenVsRipgrep(t *testing.T) {
 	_, thisFile, _, ok := runtime.Caller(0)

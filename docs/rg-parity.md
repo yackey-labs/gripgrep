@@ -14,8 +14,7 @@ document is regenerated).
 | | version | role |
 |---|---|---|
 | ripgrep flag authority | master `3a570990c4cf` (2026-07-09, version 15.1.0), `crates/core/flags/defs.rs` | source of the flag inventory below |
-| ripgrep binary (golden suite) | **rg 14.1.1** | every implemented flag is byte-diff-verified against this binary (17-case e2e suite + full-tree diffs) |
-| ripgrep binary (CI benchmarks) | **rg 15.1.0** | `.github/workflows/bench.yml` pin |
+| ripgrep binary (golden suite + CI benchmarks) | **rg 15.1.0** (single pin: `internal/bench/rg-version.txt`, enforced by the suite itself) | every implemented flag is byte-diff-verified against this binary (17-case e2e suite + full-tree diffs) |
 | gripgrep | `a73ea4f` / **v0.2.0** | the status column below |
 
 **Score: 27 of 104 rg flags implemented.** The gap is
