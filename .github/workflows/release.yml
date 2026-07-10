@@ -1,0 +1,97 @@
+name: release
+
+# Build and publish gg release binaries when a v* tag is pushed (tags
+# are normally created by autotag.yml from conventional commits, which
+# then dispatches this workflow on the tag ref). Pure-Go static binaries
+# (CGO_ENABLED=0) for linux/darwin/windows. GOAMD64 is left at its
+# default: the hot loops (bytes.IndexByte/Index) are runtime
+# CPU-dispatched assembly regardless, and v3 was measured as a wash on
+# the reference box — default keeps binaries runnable on any x86-64.
+# PGO applies automatically (cmd/gg/default.pgo, -pgo=auto).
+#
+# workflow_dispatch runs a DRY RUN: builds everything, uploads the
+# archives as workflow artifacts, publishes nothing.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+          - goos: linux
+            goarch: arm64
+          - goos: darwin
+            goarch: amd64
+          - goos: darwin
+            goarch: arm64
+          - goos: windows
+            goarch: amd64
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Build
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: "0"
+        run: |
+          VERSION="${GITHUB_REF_NAME}"
+          [ "${GITHUB_REF_TYPE}" = tag ] || VERSION="dev-${GITHUB_SHA::8}"
+          NAME="gg-${VERSION}-${GOOS}-${GOARCH}"
+          BIN=gg; [ "$GOOS" = windows ] && BIN=gg.exe
+          mkdir -p "dist/$NAME"
+          go build -trimpath \
+            -ldflags "-s -w -X main.version=${VERSION}" \
+            -o "dist/$NAME/$BIN" ./cmd/gg
+          cp LICENSE LICENSE-THIRD-PARTY README.md "dist/$NAME/"
+          if [ "$GOOS" = windows ]; then
+            (cd dist && zip -qr "$NAME.zip" "$NAME")
+          else
+            tar -C dist -czf "dist/$NAME.tar.gz" "$NAME"
+          fi
+      - name: Smoke test (linux/amd64 only — the runner's own platform)
+        if: matrix.goos == 'linux' && matrix.goarch == 'amd64'
+        run: |
+          BIN=$(echo dist/gg-*-linux-amd64/gg)
+          "$BIN" --version
+          echo "hello world" > /tmp/smoke.txt
+          "$BIN" -n hello /tmp/smoke.txt | grep -q "1:hello world"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: |
+            dist/*.tar.gz
+            dist/*.zip
+
+  publish:
+    needs: build
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Checksums
+        run: cd dist && sha256sum *.tar.gz *.zip > SHA256SUMS
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" \
+            --title "gg ${GITHUB_REF_NAME}" \
+            --generate-notes \
+            dist/*.tar.gz dist/*.zip dist/SHA256SUMS

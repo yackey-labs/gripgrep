@@ -57,8 +57,13 @@ PERF FLAGS:
     -V, --version                 print version information and exit
 `
 
+// version is stamped by the release build via
+// -ldflags "-X main.version=vX.Y.Z" (see .github/workflows/release.yml);
+// source builds report "dev".
+var version = "dev"
+
 // versionText is printed by -V/--version.
-const versionText = "gg 0.1.0 (gripgrep)"
+var versionText = "gg " + version + " (gripgrep)"
 
 // run contains all of main's logic, factored out so it can be exercised
 // directly by an in-process test (see flags_test.go's TestRun*) in

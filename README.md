@@ -134,9 +134,33 @@ mechanisms were ported and why.
 
 ## Install
 
+**Linux / macOS** — downloads the latest release for your platform,
+verifies the checksum, and installs to `~/.local/bin`:
+
+```
+curl -fsSL https://raw.githubusercontent.com/yackey-labs/gripgrep/main/install.sh | sh
+```
+
+**Windows** (PowerShell):
+
+```powershell
+irm https://raw.githubusercontent.com/yackey-labs/gripgrep/main/install.ps1 | iex
+```
+
+**Updating**: run `gg-update` (a tiny helper the installer drops next to
+`gg`), or just re-run the installer — either way the old binary is
+replaced atomically only after the new one downloads and its checksum
+verifies.
+
+**From source**:
+
 ```
 go install github.com/yackey-labs/gripgrep/cmd/gg@latest
 ```
+
+Releases are cut automatically: a `feat:` commit on main bumps the minor
+version, `fix:`/`perf:` bump the patch, a `!`/`BREAKING CHANGE` commit
+bumps the major (see `.github/workflows/autotag.yml`).
 
 ## CLI usage
 
@@ -144,12 +168,36 @@ go install github.com/yackey-labs/gripgrep/cmd/gg@latest
 gg [flags] PATTERN [PATH...]
 ```
 
+`gg` searches for PATTERN (a regular expression by default) in PATH
+(default: the current directory), recursively. Like ripgrep, it skips
+what your project already says to skip — `.gitignore`'d files, hidden
+files, binaries — so the results are code, not noise. If you've used
+`rg`, you already know `gg`; if you haven't:
+
+```
+gg 'parse_config'                # find a string in the current tree
+gg -i 'todo|fixme'               # case-insensitive, regex alternation
+gg -n 'func main' cmd/           # with line numbers, only under cmd/
+gg -F 'x.(*y)'                   # -F: literal string, not a regex
+gg -w 'Read'                     # whole-word: Read but not ReadAll
+gg -l 'deprecated'               # just the file names that match
+gg -c 'import' internal/         # match count per file
+gg -g '*.go' 'context.Context'   # only search files matching a glob
+gg -A2 -B2 'panic('              # show 2 lines of context around hits
+gg -v '^\s*//' main.go           # invert: lines that do NOT match
+gg --files                       # no search: list files a search would see
+gg --hidden --no-ignore 'key'    # search everything, ignore nothing
+```
+
+Exit codes match grep convention: `0` something matched, `1` nothing
+matched, `2` error.
+
 1:1 rg compatibility is the contract for every implemented flag — same
-names, same defaults, same output bytes, same exit codes (0 match /
-1 no match / 2 error). Currently implemented: `-F -i -s -S -w -e`,
-`--hidden --no-ignore -g -u/-uu/-uuu --max-filesize`, `-n/-N -c -l -q
---color -A/-B/-C -v`, `-j -a`, `--files`. rg flags that gg doesn't
-implement yet fail loudly with exit 2 — never silently ignored.
+names, same defaults, same output bytes, same exit codes. Currently
+implemented: `-F -i -s -S -w -e`, `--hidden --no-ignore -g -u/-uu/-uuu
+--max-filesize`, `-n/-N -c -l -q --color -A/-B/-C -v`, `-j -a`,
+`--files`. rg flags that gg doesn't implement yet fail loudly with
+exit 2 — never silently ignored.
 
 ## Library usage
 
