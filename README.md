@@ -63,6 +63,27 @@ across ~79k small files) — the current optimization frontier. The tree
 gap has closed from 3.74× to 1.41× through profile-driven work, and every
 number above is reproducible from this repo.
 
+### Apple Silicon reference (M4 Pro)
+
+A second controlled reference point, same methodology (warm cache,
+hyperfine `--warmup 3 -m 15 -N`, corpora built with the
+`internal/bench/ci-corpus.sh` recipe): MacBook Pro, Apple M4 Pro
+(10 performance + 4 efficiency cores, 24GB), macOS 26.5.1, go 1.26.4,
+rg 15.1.0, 2026-07-10:
+
+| Benchmark | gg vs rg |
+|---|---|
+| Linux kernel tree (~104k files), literal, gitignore-aware | **~parity** (1.581s gg vs 1.516s rg, within σ) — both tools almost entirely `open(2)`-bound on macOS |
+| Same tree, `--files` (pure walk, no search) | **1.07× FASTER** (91ms vs 98ms) |
+| OpenSubtitles ~830MB, literal | **2.07× FASTER** (49ms vs 102ms) |
+| Same file, `Sherlock\|Watson` (multi-literal) | **1.63× FASTER** (95ms vs 155ms) |
+
+Three wins and a statistical tie, against a newer rg than the x64 rows
+above. The single-file rows scale with the hardware — mmap plus
+intra-file parallelism across 10 performance cores puts the literal row
+at ~17 GB/s effective — and multi-literal, a loss on hosted x64 Linux,
+is a clear win on arm64.
+
 ### Hosted CI runners (Linux, macOS, Windows)
 
 The table above is the authoritative one, measured on a controlled Linux
