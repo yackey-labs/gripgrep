@@ -88,3 +88,45 @@ Absolute seconds are hardware-dependent — only the rg-vs-gg ratio on the same 
 **Two load-bearing design insights the numbers reveal:**
 1. **mmap is corpus-dependent, not universal.** On the tree, rg default (`read()` into a reusable buffer) is **0.085 s** but `rg --mmap` is **0.322 s** — mmap per tiny file loses to `read()` due to per-file page-fault/syscall overhead. On the single 1 GB file, mmap wins (0.123 vs 0.176). So: read-into-buffer for many small files, mmap for large files, chosen adaptively.
 2. **Tree wins come from doing less work** — parallel walk + gitignore/binary filtering (rg scans far fewer bytes than `grep -r`) + SIMD literal prefilter. Single-file wins come from SIMD substring search + lazy line counting (don't count line numbers until a match is found). In Go: lean on `bytes.IndexByte`/`bytes.Index` (already SIMD assembly) for the memchr/substring core, keep allocations near zero in the hot loop, and get parallel traversal + ignore-matching + buffer reuse right. Matching rg on the single-file literal is achievable; matching the 0.085 s tree literal (~40k files walked, filtered, and searched across cores in 85 ms) is the hard bar.
+
+## 6. Parallel-I/O dead ends (round #29, 2026-07-10) — do not re-explore without new evidence
+
+Intra-file parallel search (#18) leaves a measured ~22% gap at `-j4` on
+the 830MB tmpfs corpus between the production shared-mmap path (~94.7ms)
+and a zero-fault-cost ceiling (heap buffer with the copy excluded from
+timing: ~73.4ms). Round #29 tried three mechanisms to capture it; all
+were falsified with root causes. Nothing landed. Prototypes were fully
+tested/green before rejection.
+
+1. **Per-worker `pread(2)` into pooled buffers** (`SearchBytesFD`
+   prototype): the mechanism *worked* — minor faults fell 13,120 → 882
+   at `-j4` — and still lost outright (325ms vs 151ms). mmap search is
+   one pass over memory; any copy-based approach is two, and a
+   standalone diagnostic put the copy alone at a ~200ms floor for 830MB
+   on the reference box, **independent of thread count** (1 thread ≈ 4
+   threads — likely a VM memory-channel ceiling; the box is qemu). The
+   copy floor alone exceeds the entire mmap-parallel search time, so no
+   copy-based approach can win here. Corollary: the earlier "2.3×
+   self-speedup on a heap buffer" figure never counted the copy cost —
+   don't cite it as recoverable headroom.
+2. **Per-worker sub-range mmaps** (own VMA per worker): reproducible
+   24–34% *loss*. `mmap()` itself takes the process `mmap_lock` in
+   write mode to insert each VMA, so concurrent per-worker maps
+   serialize on a worse lock than the read-side fault contention they
+   were meant to avoid.
+3. **Worker-local `madvise`** (`MADV_WILLNEED` and `MADV_POPULATE_READ`
+   on each worker's own range): noise centered on zero across three
+   runs (−22%…+4%); never approached the +10% land bar. The kernel's
+   own fault-around clustering on the shared mapping appears to already
+   provide the equivalent batching. (`MAP_POPULATE` at map time was
+   separately measured worse back in M3 — it populates serially.)
+
+Also mis-specified once during this round, worth remembering: comparing
+*self-speedup ratios* between mmap and heap paths is invalid — mmap's
+`-j1` baseline carries the serial fault-in cost, inflating its ratio.
+Compare absolute `-jN` wall times under one harness instead.
+
+Untried and deliberately declined: THP/`MAP_HUGETLB`-backed mappings
+(would cut fault count ~512×) — shmem THP depends on kernel config
+(`shmem_enabled` is commonly `never`), so a win wouldn't generalize to
+user machines.
