@@ -17,7 +17,7 @@ document is regenerated).
 | ripgrep binary (golden suite + CI benchmarks) | **rg 15.1.0** (single pin: `internal/bench/rg-version.txt`, enforced by the suite itself) | every implemented flag is byte-diff-verified against this binary (17-case e2e suite + full-tree diffs) |
 | gripgrep | `4243295` / pending release | the status column below |
 
-<!-- BEGIN GENERATED: score -->**Score: 76 of 104 rg flags implemented.**<!-- END GENERATED --> The gap is
+<!-- BEGIN GENERATED: score -->**Score: 77 of 104 rg flags implemented.**<!-- END GENERATED --> The gap is
 dominated by a few feature clusters (see the notes after the table):
 the file-type system, PCRE2/multiline, encodings, output decoration,
 and replacement.
@@ -146,7 +146,7 @@ unknown-flag error, exit 2)
 | `--count-matches` |  | ✅ | Show count of every match for each file. |
 | `--files-with-matches` | `-l` | ✅ | Print the paths with at least one match. |
 | `--files-without-match` |  | ✅ | Print the paths that contain zero matches. |
-| `--json` (+`--no-json`) |  | ⚠️ | Show search results in a JSON Lines format. |
+| `--json` (+`--no-json`) |  | ✅ | Show search results in a JSON Lines format. |
 
 ### Logging
 
