@@ -960,6 +960,52 @@ func TestBufferFlags(t *testing.T) {
 	}
 }
 
+// TestSortFlags covers --sort/--sortr kind parsing, the shared last-wins
+// slot (each flag overrides the other entirely -- kind AND direction), and
+// the equals form. Behavior against real rg is covered end-to-end in
+// e2e_sort_test.go; this pins the pure flag-resolution contract.
+func TestSortFlags(t *testing.T) {
+	cases := []struct {
+		name string
+		args []string
+		want SortSpec
+	}{
+		{"default none", []string{"pat"}, SortSpec{Kind: SortNone}},
+		{"sort path", []string{"--sort", "path", "pat"}, SortSpec{Kind: SortPath}},
+		{"sort modified", []string{"--sort", "modified", "pat"}, SortSpec{Kind: SortModified}},
+		{"sort accessed", []string{"--sort", "accessed", "pat"}, SortSpec{Kind: SortAccessed}},
+		{"sort none explicit", []string{"--sort", "none", "pat"}, SortSpec{Kind: SortNone}},
+		{"sort created kept for later rejection", []string{"--sort", "created", "pat"}, SortSpec{Kind: SortCreated}},
+		{"sortr path is reversed", []string{"--sortr", "path", "pat"}, SortSpec{Kind: SortPath, Reverse: true}},
+		{"equals form", []string{"--sort=modified", "pat"}, SortSpec{Kind: SortModified}},
+		// Shared slot: the LAST of --sort/--sortr wins entirely.
+		{"sort then sortr: sortr wins", []string{"--sort", "path", "--sortr", "modified", "pat"}, SortSpec{Kind: SortModified, Reverse: true}},
+		{"sortr then sort: sort wins", []string{"--sortr", "modified", "--sort", "path", "pat"}, SortSpec{Kind: SortPath, Reverse: false}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := mustParse(t, tc.args...).Sort; got != tc.want {
+				t.Errorf("Sort = %+v, want %+v", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestSortBadKind pins that an empty or unrecognized KIND is a parse error
+// (exit 2), never silently treated as "none" -- matching rg's choice
+// validation (`--sort '' -> choice '' is unrecognized`).
+func TestSortBadKind(t *testing.T) {
+	for _, args := range [][]string{
+		{"--sort", "", "pat"},
+		{"--sort", "bogus", "pat"},
+		{"--sortr", "sideways", "pat"},
+	} {
+		t.Run(strings.Join(args, "_"), func(t *testing.T) {
+			wantErr(t, args...)
+		})
+	}
+}
+
 // TestUnescapeSeparator ports rg's own bstr::ByteVec::unescape_bytes
 // test table directly (the crate --context-separator/--field-match-
 // separator/--field-context-separator all funnel through -- see
@@ -1233,7 +1279,6 @@ func TestNotYetImplementedFlags(t *testing.T) {
 		{"-U", "pat"},
 		{"--multiline", "pat"},
 		{"--json", "pat"},
-		{"--sort", "path", "pat"},
 		{"-r", "x", "pat"},
 		{"--replace", "x", "pat"},
 		{"-z", "pat"},
