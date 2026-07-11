@@ -6,6 +6,7 @@ import (
 	"runtime"
 	"sync"
 
+	"github.com/yackey-labs/gripgrep/filetype"
 	"github.com/yackey-labs/gripgrep/glob"
 )
 
@@ -99,6 +100,17 @@ type Options struct {
 	// flags; it should stay false for a Globs set built from some other
 	// source that isn't override-shaped.
 	GlobsRequireMatch bool
+	// Types, if non-nil, is an additional file-name filter applied AFTER
+	// ignore-file processing but BEFORE nothing else (e.g. -t/-T/
+	// --type-add/--type-clear): rg's own precedence, verified against the
+	// real binary (round #35) -- -g/--iglob (Globs above) always decides
+	// first when it has an opinion; only when Globs and the ignore stack
+	// both defer does Types get consulted. Never applied to directories
+	// (see filetype.Matcher.Match's doc) or to anything when nil, which
+	// costs one extra pointer check per entry -- the same pattern Globs
+	// above already pays when unset. See worker.classify for the exact
+	// precedence chain.
+	Types *filetype.Matcher
 }
 
 // Walk traverses roots in parallel per opts, calling visit for every

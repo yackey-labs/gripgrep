@@ -385,13 +385,28 @@ func (w *worker) followSymlink(childPath, childAbs []byte, depth int, node *igno
 	return w.doVisit(pathStr, TypeFile, depth, nil) == Quit
 }
 
-// classify applies Options.Globs (highest precedence, whitelist-capable)
-// then the ignore-matcher stack (unless NoIgnore), and reports whether
-// the entry should be skipped and, separately, whether it was explicitly
+// classify applies Options.Globs (highest precedence, whitelist-capable),
+// then the ignore-matcher stack (unless NoIgnore), then Options.Types
+// (round #35: -t/-T/--type-add/--type-clear), and reports whether the
+// entry should be skipped and, separately, whether it was explicitly
 // whitelisted — which the caller must treat as overriding the hidden-file
 // rule (see the call site). globPath is the root-relative display path;
 // ignorePath is the absolute path used for stack matching (see
 // ignoreNode.matched).
+//
+// This precedence chain -- Globs decides outright if it has an opinion;
+// otherwise the ignore stack's Ignored verdict is final, but its
+// Whitelisted verdict can still be overridden by a decisive Types verdict
+// -- mirrors ripgrep's own Dir::matched exactly (crates/ignore/src/dir.rs):
+// overrides short-circuit first, then the ignore stack (an Ignore returns
+// immediately; a Whitelist is remembered but not final), then types (an
+// Ignore returns immediately even over an ignore-stack Whitelist; a
+// Whitelist overwrites it; a NoMatch leaves the ignore stack's verdict
+// standing). Verified against the real rg binary (round #35 probes): `-t
+// rust -g '!*.rs'` excludes .rs files via the glob alone (types never
+// consulted for them) but still lets -t's own exclusion apply to
+// unrelated files; `-g '*.c' -t rust` includes .c files outright (the
+// glob decided first) even though they aren't the rust type.
 func (w *worker) classify(node *ignoreNode, globPath, ignorePath []byte, isDir bool) (skip, whitelisted bool) {
 	if w.opts.Globs != nil {
 		switch w.opts.Globs.Match(globPath, isDir) {
@@ -416,17 +431,33 @@ func (w *worker) classify(node *ignoreNode, globPath, ignorePath []byte, isDir b
 			}
 		}
 	}
-	if w.opts.NoIgnore || node == nil {
-		return false, false
+	if !w.opts.NoIgnore && node != nil {
+		switch node.matched(ignorePath, isDir) {
+		case glob.Ignored:
+			return true, false
+		case glob.Whitelisted:
+			whitelisted = true
+		}
 	}
-	switch node.matched(ignorePath, isDir) {
-	case glob.Ignored:
-		return true, false
-	case glob.Whitelisted:
-		return false, true
-	default:
-		return false, false
+	if w.opts.Types != nil && !isDir {
+		// Types never applies to directories at all (rg's own
+		// Types::matched() returns Match::None unconditionally when
+		// is_dir, before ever touching its glob set) -- a directory is
+		// always descended into regardless of -t/-T, exactly like
+		// GlobsRequireMatch's own isDir exemption above, so files inside
+		// it still get their own chance to match.
+		switch w.opts.Types.Match(globPath) {
+		case glob.Ignored:
+			return true, false
+		case glob.Whitelisted:
+			return false, true
+		case glob.NoMatch:
+			if w.opts.Types.RequireMatch() {
+				return true, false
+			}
+		}
 	}
+	return false, whitelisted
 }
 
 // fileTypeOf classifies a DirEntry using only the type bits readdir(3)
