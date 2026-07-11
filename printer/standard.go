@@ -2,8 +2,8 @@ package printer
 
 import (
 	"strconv"
-	"unicode/utf8"
 
+	"github.com/rivo/uniseg"
 	"github.com/yackey-labs/gripgrep/match"
 	"github.com/yackey-labs/gripgrep/search"
 )
@@ -389,18 +389,23 @@ func (p *Standard) writeSeparatorIfGap(lineNumber int64, hasLineNumber bool, off
 // positions within text, not within the original source line.
 //
 // colorSpans is what actually gets highlighted when Color is on.
-// allSpans is every match relevant to text's underlying line, used only
-// to decide -M/--max-columns' omitted-line wording (the "N matches"
-// count and the preview's "M more matches" count) -- these two DIFFER
-// under Vimgrep (colorSpans narrows to this one row's own occurrence,
-// allSpans is every match on the line: rg's sink_slow per_match branch
-// passes only `[m]` to the shared colored-line writer, but still reports
-// the line's FULL match count in the omission message) and are the same
-// single span under OnlyMatching (by construction: a row's whole text
-// IS the match, nothing else to count). nil/empty allSpans means -M
-// should use its "fast path" wording (an empty matches list is gg's
-// signal, mirroring rg's own, that no span-scan happened for this row at
-// all -- see writeOmittedLine's doc).
+// allSpans is every match relevant to text's underlying line, used to
+// decide -M/--max-columns' omitted-line wording (the "N matches" count)
+// -- these two DIFFER under Vimgrep (colorSpans narrows to this one
+// row's own occurrence, allSpans is every match on the line: rg's
+// sink_slow per_match branch passes only `[m]` to the shared colored-
+// line writer, but still reports the line's FULL match count in the
+// omission message) and are the same single span under OnlyMatching (by
+// construction: a row's whole text IS the match, nothing else to
+// count). nil/empty allSpans means -M should use its "fast path"
+// wording (an empty matches list is gg's signal, mirroring rg's own,
+// that no span-scan happened for this row at all -- see
+// writeOmittedLine's doc).
+//
+// The preview's "M more matches" REMAINING count is a separate story:
+// see writeOmittedPreview's doc for why it prefers colorSpans over
+// allSpans specifically when Color is rendering (another real rg
+// divergence, this one isolated to Vimgrep+Color+preview).
 //
 // termPad is 1 for every row shape except an OnlyMatching row (0): see
 // matchedOnlyMatching's doc for why an -o row's --max-columns boundary
@@ -504,8 +509,31 @@ func (p *Standard) writeOmittedPreview(text []byte, matches, colorSpans []matchS
 		p.buf = append(p.buf, " [... omitted end of long line]"...)
 		return
 	}
+	// The "N more matches" remaining-count uses colorSpans (whatever
+	// THIS row highlighted) instead of matches (every match on the
+	// underlying line) when Color is genuinely rendering -- a real
+	// divergence in rg's own implementation this round's re-review
+	// caught by reproducing it directly against the binary: `--vimgrep
+	// --color=always -M --max-columns-preview` gives each row an
+	// INDEPENDENT count (is THIS row's own occurrence visible in ITS
+	// own preview?), while the identical invocation without --color
+	// gives every row on the line the SAME whole-line count. rg's own
+	// write_colored_line, when color actually renders, receives
+	// whatever narrowed match list the caller built for this one row
+	// (under --vimgrep's per_match branch, just `[m]`) and threads that
+	// SAME list through to both the highlighting AND the remaining-
+	// count math; its no-color fallback (write_line) ignores that
+	// per-row narrowing entirely and always consults the full match
+	// list. For every row type OTHER than Vimgrep, colorSpans and
+	// matches are already the identical list (see writeLine's doc), so
+	// this preference is a no-op there -- it only ever changes anything
+	// for Vimgrep+Color.
+	countSpans := matches
+	if p.Color && len(colorSpans) > 0 {
+		countSpans = colorSpans
+	}
 	remaining := 0
-	for _, sp := range matches {
+	for _, sp := range countSpans {
 		if sp.s >= cut {
 			remaining++
 		}
@@ -519,23 +547,30 @@ func (p *Standard) writeOmittedPreview(text []byte, matches, colorSpans []matchS
 	}
 }
 
-// previewCutoff returns the byte offset of the end of the Nth full rune
-// in text (or len(text), if text has fewer than n runes) -- gg's
-// approximation of rg's actual cut point, which counts grapheme
-// CLUSTERS via unicode-segmentation, not runes or bytes. The two only
-// diverge for a combining mark or ZWJ sequence straddling the cut point
-// (multiple runes forming ONE grapheme cluster, which rg keeps whole and
-// gg may split) -- accepted as documented debt: gg has no grapheme-
-// cluster segmentation dependency, and this only affects a cosmetic
-// preview's exact truncation point on already-rare multi-rune grapheme
-// input, never which bytes are considered part of a match. Verified
-// against the real rg binary that a whole RUNE is never split (unlike a
-// naive text[:n] byte slice, which would corrupt UTF-8 output).
+// previewCutoff returns the byte offset of the end of the Nth grapheme
+// CLUSTER in text (or len(text), if text has fewer than n clusters) --
+// matching rg's actual cut point exactly (rg's write_exceeded_line's
+// preview branch takes N grapheme clusters via the unicode-segmentation
+// crate's UAX#29 implementation, not runes or bytes). Uses github.com/
+// rivo/uniseg, a UAX#29 grapheme-cluster segmenter, so a combining mark
+// or ZWJ sequence straddling the cut point is kept whole exactly where
+// rg keeps it whole -- an earlier rune-boundary approximation here
+// diverged from the real rg binary at every cut point from the first
+// combining mark onward (verified with an "e" + COMBINING ACUTE ACCENT
+// fixture rendering as one visual "é": rune-counting cuts one grapheme
+// short as soon as the combining mark enters the visible prefix). See
+// TestStandard_MaxColumnsPreviewCombiningMarkBoundary and this round's
+// e2e case for the fixed regression.
 func previewCutoff(text []byte, n int) int {
 	cut := 0
+	state := -1
 	for i := 0; i < n && cut < len(text); i++ {
-		_, sz := utf8.DecodeRune(text[cut:])
-		cut += sz
+		cluster, _, _, newState := uniseg.FirstGraphemeCluster(text[cut:], state)
+		if len(cluster) == 0 {
+			break
+		}
+		cut += len(cluster)
+		state = newState
 	}
 	return cut
 }
