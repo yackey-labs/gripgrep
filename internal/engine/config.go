@@ -59,6 +59,22 @@ const (
 	MmapNever
 )
 
+// SortKind mirrors the ordering half of rg's --sort/--sortr, already
+// resolved by the caller to one of these engine-level kinds. Created time
+// is absent: rg rejects it on platforms where it is unavailable (Linux)
+// before any search runs, so cmd/gg surfaces that error itself and never
+// asks the engine to sort by it. Translated straight through to
+// walk.SortKind in Run/Files; the reverse direction rides alongside in
+// Config.SortReverse.
+type SortKind int
+
+const (
+	SortNone SortKind = iota
+	SortPath
+	SortModified
+	SortAccessed
+)
+
 // Config is the plain-data input to BuildMatcher, NewSearcher, Run, and
 // Files. Every field here is engine-level (no CLI flags, no printer/
 // display concerns) so both cmd/gg and the root facade can populate one
@@ -189,6 +205,14 @@ type Config struct {
 	// isn't a plain int with the 0-means-unlimited convention
 	// BeforeContext/AfterContext use above.
 	MaxCount *int
+
+	// SortKind/SortReverse are rg's --sort/--sortr, resolved by the caller
+	// to an engine SortKind plus a direction. SortNone (the default) leaves
+	// the parallel walk untouched; any other kind forces single-threaded,
+	// buffered traversal in walk.Walk (see walk.SortConfig). Passed straight
+	// through to walk.Options.Sort by Run and Files.
+	SortKind    SortKind
+	SortReverse bool
 }
 
 // defaultParallelWorkers is the intra-file parallel-search worker count

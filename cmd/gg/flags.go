@@ -133,6 +133,32 @@ const (
 	MmapNever
 )
 
+// SortKind mirrors rg's --sort/--sortr KIND choices (defs.rs Sort::
+// doc_choices): none|path|modified|accessed|created. SortNone is both the
+// default and the explicit "none" value (rg treats them identically -- no
+// ordering, parallel walk). Created is accepted at parse time but rejected
+// before any search on platforms where creation time is unavailable (all of
+// Linux), matching rg's supported() check -- see execute.
+type SortKind int
+
+const (
+	SortNone SortKind = iota
+	SortPath
+	SortModified
+	SortAccessed
+	SortCreated
+)
+
+// SortSpec is the resolved --sort/--sortr selection: a KIND plus a
+// direction. --sort and --sortr share this single Config field, so the LAST
+// of the two on the command line wins ENTIRELY (both kind and direction),
+// mirroring rg's single Option<SortMode> slot where each flag overrides the
+// other (defs.rs: "this flag overrides --sortr").
+type SortSpec struct {
+	Kind    SortKind
+	Reverse bool
+}
+
 // BufferMode mirrors rg's --line-buffered/--block-buffered choice
 // (flags.rs/hiargs.rs): the default is auto -- line-buffered when stdout
 // is a terminal, block-buffered otherwise -- while --line-buffered and
@@ -468,6 +494,11 @@ type Config struct {
 	// Buffer is rg's --line-buffered/--block-buffered choice -- see
 	// BufferMode. Byte-invisible; drives execute's stdout flush policy.
 	Buffer BufferMode
+	// Sort is rg's --sort/--sortr selection (SortNone by default) -- see
+	// SortSpec. Any kind other than none forces single-threaded, buffered
+	// traversal (an explicit -j is then silently ignored); created is
+	// rejected before searching by execute.
+	Sort SortSpec
 
 	Threads int        // -j/--threads; 0 = auto (rg's None)
 	Binary  BinaryMode // resolved from -a/--text and -uuu; last one processed wins
@@ -1298,6 +1329,34 @@ func buildV1Flags() []*flagSpec {
 			},
 		},
 		{
+			// --sort KIND: order results ascending. Shares Config.Sort with
+			// --sortr (last of the two wins entirely). An empty or bogus KIND
+			// is a parse error (rg: "choice '' is unrecognized").
+			long: "sort", kind: kindValue,
+			applyValue: func(cfg *Config, _ *parseState, val string) error {
+				k, err := parseSortKind(val)
+				if err != nil {
+					return err
+				}
+				cfg.Sort = SortSpec{Kind: k, Reverse: false}
+				return nil
+			},
+		},
+		{
+			// --sortr KIND: order results descending (reversed comparator over
+			// a stable sort -- ties keep discovery order). Shares Config.Sort
+			// with --sort (last of the two wins entirely).
+			long: "sortr", kind: kindValue,
+			applyValue: func(cfg *Config, _ *parseState, val string) error {
+				k, err := parseSortKind(val)
+				if err != nil {
+					return err
+				}
+				cfg.Sort = SortSpec{Kind: k, Reverse: true}
+				return nil
+			},
+		},
+		{
 			// -m/--max-count NUM: repeatable, last one given wins (plain
 			// overwrite of the same field, same as -A/-B/-C's ps.after/
 			// before/both pattern, except MaxCount has no separate
@@ -1399,8 +1458,6 @@ var notImplementedFlags = []notImplementedFlag{
 	{long: "pcre2", short: 'P', label: "-P/--pcre2"},
 	{long: "encoding", short: 'E', label: "-E/--encoding"},
 	{long: "search-zip", short: 'z', label: "-z/--search-zip"},
-	{long: "sort", label: "--sort"},
-	{long: "sortr", label: "--sortr"},
 	{long: "json", label: "--json"},
 	{long: "binary", label: "--binary"},
 }
@@ -1713,6 +1770,28 @@ func parseNonNegInt(s string) (int, error) {
 		return 0, fmt.Errorf("value is not a valid number: too large")
 	}
 	return int(n), nil
+}
+
+// parseSortKind maps a --sort/--sortr KIND argument onto a SortKind. The
+// empty string and any unknown value are parse errors (exit 2), matching
+// rg's choice validation: an empty --sort '' is NOT treated as "none". The
+// error text mirrors rg's "choice %q is unrecognized" (the flag name is
+// prepended by the caller's flag-parse error wrapper).
+func parseSortKind(val string) (SortKind, error) {
+	switch val {
+	case "none":
+		return SortNone, nil
+	case "path":
+		return SortPath, nil
+	case "modified":
+		return SortModified, nil
+	case "accessed":
+		return SortAccessed, nil
+	case "created":
+		return SortCreated, nil
+	default:
+		return SortNone, fmt.Errorf("choice %q is unrecognized", val)
+	}
 }
 
 // parseHumanSize parses rg's --max-filesize format exactly: a run of

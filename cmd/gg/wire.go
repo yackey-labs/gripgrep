@@ -28,6 +28,14 @@ import (
 // (verified: a permission-denied subdirectory alongside a real match
 // still exits 0).
 func execute(cfg *Config, stdin io.Reader, stdout, stderr io.Writer) int {
+	// --sort/--sortr created is rejected before ANY mode runs (rg checks
+	// SortMode::supported() at argument-resolution time, so even --files and
+	// --type-list error), because creation time is unavailable on Linux. One
+	// stderr line, exit 2 -- matching rg's presence and exit code.
+	if cfg.Sort.Kind == SortCreated {
+		fmt.Fprintln(stderr, "gg: sorting by creation time isn't supported: creation time is not available on this platform currently")
+		return 2
+	}
 	if cfg.Mode == ModeFiles {
 		// --files skips the matcher/searcher pipeline entirely (see
 		// executeFiles's doc) -- dispatched before buildMatcher runs
@@ -287,6 +295,24 @@ func toEngineConfig(cfg *Config) engine.Config {
 		MaxCount:              cfg.MaxCount,
 		CRLF:                  cfg.CRLF,
 		NullData:              cfg.NullData,
+		SortKind:              convertSortKind(cfg.Sort.Kind),
+		SortReverse:           cfg.Sort.Reverse,
+	}
+}
+
+// convertSortKind maps cmd/gg's SortKind onto the engine's. SortCreated
+// never reaches here -- execute rejects it before any engine.Config is
+// built -- so it falls through to SortNone defensively.
+func convertSortKind(k SortKind) engine.SortKind {
+	switch k {
+	case SortPath:
+		return engine.SortPath
+	case SortModified:
+		return engine.SortModified
+	case SortAccessed:
+		return engine.SortAccessed
+	default:
+		return engine.SortNone
 	}
 }
 

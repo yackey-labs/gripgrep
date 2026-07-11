@@ -155,6 +155,12 @@ type Options struct {
 	// precedence chain.
 	Types *filetype.Matcher
 
+	// Sort, when Sort.Kind != SortNone, orders visited files (see
+	// SortConfig). It forces single-threaded traversal and buffers files
+	// per root before emitting them; SortNone leaves the parallel walk and
+	// its zero per-entry cost untouched.
+	Sort SortConfig
+
 	// ignoreActive and ictx are derived once at Walk start (not caller-set)
 	// from the fields above: ignoreActive is whether ANY ignore source can
 	// contribute (so the per-directory node chain and matched() are skipped
@@ -162,6 +168,43 @@ type Options struct {
 	// the shared per-walk ignore context threaded into matched().
 	ignoreActive bool
 	ictx         *ignoreCtx
+}
+
+// SortKind selects the ordering imposed on visited files when Sort is
+// active. SortNone (the zero value) is the default: no ordering, and the
+// fast parallel traversal runs unchanged. The other kinds all force a
+// single-threaded traversal (rg parity: "sorting implies single threaded")
+// and buffer each root's files before emitting them in order. Creation
+// time is deliberately absent: rg rejects it on platforms where it is
+// unavailable (all of Linux) before the walk ever starts, so a caller must
+// surface that error itself rather than pass an unsupported kind here.
+type SortKind uint8
+
+const (
+	// SortNone leaves traversal order untouched (parallel, unbuffered).
+	SortNone SortKind = iota
+	// SortPath orders by the displayed path, compared component-wise (rg's
+	// Path ordering: the '/' boundary is a component break, so a directory
+	// sorts against a sibling file by name -- "b/z.txt" precedes "b.txt"
+	// even though byte 0x2F would sort after 0x2E). Ascending path sort is
+	// applied PER ROOT in argument order; descending (Reverse) collects
+	// every root and sorts globally -- see walkSorted.
+	SortPath
+	// SortModified orders by last-modified time (os.Stat, following
+	// symlinks -- rg uses Path::metadata()). Global across all roots.
+	SortModified
+	// SortAccessed orders by last-accessed time (atime), same stat policy
+	// and global scope as SortModified.
+	SortAccessed
+)
+
+// SortConfig configures traversal ordering (see SortKind). Reverse selects
+// descending order via a REVERSED COMPARATOR over a STABLE sort, so files
+// with equal keys keep their discovery (readdir) order in both directions
+// -- never a sort-then-reverse, which would flip ties.
+type SortConfig struct {
+	Kind    SortKind
+	Reverse bool
 }
 
 // Walk traverses roots in parallel per opts, calling visit for every
@@ -193,10 +236,6 @@ func Walk(roots []string, opts Options, visit Visitor) error {
 	if len(roots) == 0 {
 		return nil
 	}
-	n := opts.Threads
-	if n <= 0 {
-		n = defaultThreads()
-	}
 
 	// Derive the per-walk ignore state once. ignoreActive is false only
 	// when nothing could ever match (both tree families off, no global, no
@@ -222,6 +261,27 @@ func Walk(roots []string, opts Options, visit Visitor) error {
 		explicitSet:     opts.ExplicitIgnore,
 	}
 
+	if opts.Sort.Kind != SortNone {
+		// Sorting abandons parallelism and buffers files (see walkSorted);
+		// an explicit -j is silently ignored, matching rg.
+		return walkSorted(roots, &opts, visit)
+	}
+
+	n := opts.Threads
+	if n <= 0 {
+		n = defaultThreads()
+	}
+	runWorkers(roots, &opts, visit, n)
+	return nil
+}
+
+// runWorkers spins up n worker goroutines over a fresh set of per-worker
+// deques seeded with roots (in argument order) and blocks until every
+// worker quiesces or a Visitor returns Quit. It is the shared traversal
+// core behind both the default parallel Walk and walkSorted's per-root
+// single-threaded collection passes -- opts must already have its ignore
+// state derived (Walk does this before dispatching here).
+func runWorkers(roots []string, opts *Options, visit Visitor, n int) {
 	queues := make([]*dirQueue, n)
 	for i := range queues {
 		queues[i] = &dirQueue{}
@@ -229,7 +289,7 @@ func Walk(roots []string, opts Options, visit Visitor) error {
 
 	initial := make([]*dirTask, 0, len(roots))
 	for _, r := range roots {
-		initial = append(initial, buildRootTask(r, &opts))
+		initial = append(initial, buildRootTask(r, opts))
 	}
 	// Push in reverse so each queue's LIFO pop() yields its assigned roots
 	// in original argument order (push appends to the tail, pop removes
@@ -252,14 +312,13 @@ func Walk(roots []string, opts Options, visit Visitor) error {
 	var wg sync.WaitGroup
 	wg.Add(n)
 	for i := 0; i < n; i++ {
-		w := &worker{idx: i, queues: queues, coord: coord, opts: &opts, visit: visit}
+		w := &worker{idx: i, queues: queues, coord: coord, opts: opts, visit: visit}
 		go func() {
 			defer wg.Done()
 			w.run()
 		}()
 	}
 	wg.Wait()
-	return nil
 }
 
 // buildRootTask classifies one walk root. Explicit roots that are

@@ -143,6 +143,7 @@ func Run(cfg Config, newWorker NewWorkerFunc, quiet QuitSink, stop func() bool, 
 	walkOpts.Types = typesMatcher
 	walkOpts.FollowSymlinks = cfg.FollowSymlinks
 	walkOpts.OneFileSystem = cfg.OneFileSystem
+	walkOpts.Sort = sortConfig(cfg)
 
 	var anyMatched, anyError atomic.Bool
 	// reportErr writes one stderr line per per-file/per-path error and flips
@@ -278,6 +279,26 @@ func Run(cfg Config, newWorker NewWorkerFunc, quiet QuitSink, stop func() bool, 
 	return Result{Matched: anyMatched.Load(), AnyError: anyError.Load()}, nil
 }
 
+// sortConfig translates cfg's engine-level SortKind/SortReverse into the
+// walk.SortConfig the traversal consumes. SortNone maps to walk.SortNone
+// (the parallel fast path); the created kind never reaches here (cmd/gg
+// rejects it before building an engine.Config, per rg's pre-search
+// supported() check).
+func sortConfig(cfg Config) walk.SortConfig {
+	var kind walk.SortKind
+	switch cfg.SortKind {
+	case SortPath:
+		kind = walk.SortPath
+	case SortModified:
+		kind = walk.SortModified
+	case SortAccessed:
+		kind = walk.SortAccessed
+	default:
+		kind = walk.SortNone
+	}
+	return walk.SortConfig{Kind: kind, Reverse: cfg.SortReverse}
+}
+
 // FilesVisit is called once per file Files would search (but doesn't --
 // see Files' doc), in nondeterministic (parallel) order. path is a view
 // valid only for the duration of the call (mirrors walk.Entry.Path);
@@ -318,6 +339,7 @@ func Files(cfg Config, visit FilesVisit, stderr io.Writer) (Result, error) {
 	walkOpts.Types = typesMatcher
 	walkOpts.FollowSymlinks = cfg.FollowSymlinks
 	walkOpts.OneFileSystem = cfg.OneFileSystem
+	walkOpts.Sort = sortConfig(cfg)
 
 	var anyMatched, anyError atomic.Bool
 	visitor := func(e *walk.Entry) walk.WalkState {
