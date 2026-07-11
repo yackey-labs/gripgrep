@@ -453,7 +453,7 @@ func TestSearchMaxCountInvert(t *testing.T) {
 	}
 }
 
-// TestSearchPassThru covers round #40's --passthru: every line is sunk,
+// TestSearchPassThru covers --passthru: every line is sunk,
 // matching lines as "match" and everything else as context (recorded as
 // "before" by recordingSink's kind mapping, since PassThru's Context
 // calls always pass after=false -- see matchByLineSlow's PassThru
@@ -485,7 +485,7 @@ func TestSearchPassThru(t *testing.T) {
 
 // TestSearchPassThruInvert covers --passthru -v: every line still
 // prints, but which ones render as "match" vs context is REVERSED --
-// verified against the real rg binary (round #40's differential sweep).
+// verified against the real rg binary (the differential sweep).
 func TestSearchPassThruInvert(t *testing.T) {
 	m := literalMatcher("needle", false)
 	s := newTestSearcher(m, DefaultBufferSize, Searcher{PassThru: true, Invert: true})

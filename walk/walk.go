@@ -146,7 +146,7 @@ type Options struct {
 	// Types, if non-nil, is an additional file-name filter applied AFTER
 	// ignore-file processing but BEFORE nothing else (e.g. -t/-T/
 	// --type-add/--type-clear): rg's own precedence, verified against the
-	// real binary (round #35) -- -g/--iglob (Globs above) always decides
+	// real binary -- -g/--iglob (Globs above) always decides
 	// first when it has an opinion; only when Globs and the ignore stack
 	// both defer does Types get consulted. Never applied to directories
 	// (see filetype.Matcher.Match's doc) or to anything when nil, which
@@ -241,7 +241,7 @@ func Walk(roots []string, opts Options, visit Visitor) error {
 	// round-robin assignment (queue load balancing for n>1 is
 	// unaffected) or the depth-first LIFO semantics children rely on
 	// (see dirQueue's doc; rg -j1 preserves explicit top-level argument
-	// order, verified empirically -- round #37).
+	// order, verified empirically).
 	for i := len(initial) - 1; i >= 0; i-- {
 		queues[i%n].push(initial[i])
 	}

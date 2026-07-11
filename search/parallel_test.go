@@ -9,7 +9,7 @@ import (
 	"github.com/yackey-labs/gripgrep/match"
 )
 
-// TestParallelEligiblePassThruDisqualifies covers round #40's --passthru:
+// TestParallelEligiblePassThruDisqualifies covers --passthru:
 // it must fall back to the serial path exactly like Invert/context
 // already do, since chunkRecorder's per-chunk run-to-completion-then-
 // replay design can't reproduce PassThru's -m interaction (a single
@@ -191,7 +191,7 @@ func TestSearchBytesParallelMatchesSerial(t *testing.T) {
 	}
 }
 
-// TestSearchBytesParallelByteOffsetAcrossChunks is round #34's dedicated
+// TestSearchBytesParallelByteOffsetAcrossChunks is the dedicated
 // gate for -b/--byte-offset's parallel-path correctness: Match.Offset
 // was already an existing field before this round (populated via
 // s.absOffsetBase, which searchBytesParallel already seeds from each

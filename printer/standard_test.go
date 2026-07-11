@@ -171,11 +171,11 @@ func TestStandard_NoGapSeparatorWithoutContext(t *testing.T) {
 	}
 }
 
-// TestStandard_CustomFieldSeparators covers round #40's --field-match-
+// TestStandard_CustomFieldSeparators covers --field-match-
 // separator/--field-context-separator: replaces every ':'/'-' prelude
 // separator (including the path's own, when Null is false) with the
 // custom value, on match and context lines respectively -- verified
-// against the real rg binary (round #40's differential sweep).
+// against the real rg binary (the differential sweep).
 func TestStandard_CustomFieldSeparators(t *testing.T) {
 	dest, out := newTestDest()
 	p := NewStandard(dest)
@@ -216,7 +216,7 @@ func TestStandard_CustomFieldSeparatorsWithNull(t *testing.T) {
 	}
 }
 
-// TestStandard_CustomGapSeparator covers round #40's --context-separator:
+// TestStandard_CustomGapSeparator covers --context-separator:
 // replaces "--" with a custom value, both for the intra-file gap and the
 // inter-file separator -- verified against the real rg binary.
 func TestStandard_CustomGapSeparator(t *testing.T) {
@@ -241,7 +241,7 @@ func TestStandard_CustomGapSeparator(t *testing.T) {
 // TestStandard_NoGapSeparatorDisablesEntirely covers --no-context-
 // separator: GapSeparator == nil means NO separator line at all --
 // neither the intra-file gap marker nor the inter-file one -- verified
-// against the real rg binary (round #40's differential sweep: files run
+// against the real rg binary (the differential sweep: files run
 // together with no blank line and no "--" at all, unlike
 // --context-separator='' which still inserts a bare line break).
 func TestStandard_NoGapSeparatorDisablesEntirely(t *testing.T) {
@@ -441,12 +441,12 @@ func TestStandard_MultiFileSequential(t *testing.T) {
 	}
 }
 
-// TestStandard_HeadingShowPathFalse mirrors round #32's `rg --heading -I`
+// TestStandard_HeadingShowPathFalse mirrors the `rg --heading -I`
 // (gg's -I clears ShowPath, --heading sets Heading): the per-file path
 // header line must be dropped, but the blank-line separator BETWEEN file
 // groups must still appear -- interFileSeparator only reads p.Heading,
 // never p.ShowPath (see its doc). Verified against the real rg 15.1.0
-// binary (round #32's handoff differential sweep).
+// binary (the handoff differential sweep).
 func TestStandard_HeadingShowPathFalse(t *testing.T) {
 	rw := &recordingWriter{}
 	dest := NewDest(rw)

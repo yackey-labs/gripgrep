@@ -700,7 +700,7 @@ func buildV1Flags() []*flagSpec {
 			// --one-file-system / --no-one-file-system: don't cross a
 			// file-system boundary relative to each root (find -xdev).
 			// Per-root: a second root on another file system is still
-			// searched fully (round #42 --one-file-system facts).
+			// searched fully (--one-file-system facts).
 			long: "one-file-system", negated: "no-one-file-system", kind: kindSwitch,
 			applySwitch: func(cfg *Config, _ *parseState, on bool) error {
 				cfg.OneFileSystem = on
@@ -712,7 +712,7 @@ func buildV1Flags() []*flagSpec {
 			// "no-messages" with the (rare) "--messages" turning a preceding
 			// --no-messages back off (last-wins). Suppresses per-file/path
 			// error messages AND ignore-file load warnings, but NEVER the
-			// exit code -- an error still forces exit 2 (round #42 M-block).
+			// exit code -- an error still forces exit 2 (M-block).
 			long: "no-messages", negated: "messages", kind: kindSwitch,
 			applySwitch: func(cfg *Config, _ *parseState, on bool) error {
 				cfg.NoMessages = on
@@ -1656,7 +1656,7 @@ func parseHumanSize(s string) (int64, error) {
 //     all) or a trailing lone backslash at the end of s -- is left
 //     UNTOUCHED as literal text, byte for byte.
 //
-// Verified against rg's own unescape test table (round #40's
+// Verified against rg's own unescape test table (the
 // differential sweep): `\\x61` unescapes to the LITERAL text `\x61`
 // (four bytes: backslash, x, 6, 1), NOT "a" -- the first `\\` consumes
 // to one literal backslash before "x61" is ever reached as plain,

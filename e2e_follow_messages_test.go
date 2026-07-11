@@ -1,12 +1,12 @@
 //go:build e2e
 
-// Golden e2e coverage for round #42's wiring quartet: -L/--follow,
+// Golden e2e coverage for the wiring quartet: -L/--follow,
 // --one-file-system, --no-messages, and --no-ignore-messages. Every case
 // runs BOTH the pinned rg 15.1.0 binary and gg with -j1 in an isolated
 // HOME/XDG (t.TempDir), comparing stdout byte-for-byte and exit codes
 // exactly; stderr text is gg-flavored, so only its presence/absence is
 // asserted (the contractual part). Ported from the lead's answer-key probes
-// (probe42.sh, answer-key-42.txt) -- see round #42's brief. Reuses the
+// -- probe scripts ran against the pinned rg binary. Reuses the
 // helpers defined in e2e_ignore_test.go (buildGG, cmpIgnore, newIgnoreEnv,
 // writeFile, mkdirAll, e2eRoot).
 package gripgrep_test

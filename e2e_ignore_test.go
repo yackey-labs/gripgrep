@@ -1,13 +1,13 @@
 //go:build e2e
 
-// Golden e2e coverage for round #41's ignore-control cluster (--ignore-file,
+// Golden e2e coverage for the ignore-control cluster (--ignore-file,
 // --ignore-file-case-insensitive, and the --no-ignore-dot/exclude/files/
 // global/parent/vcs + --no-require-git sub-flags). Every case runs BOTH the
 // pinned rg 15.1.0 binary and gg with -j1, an isolated HOME/XDG_CONFIG_HOME
 // (t.TempDir), and a specific cwd, then compares stdout byte-for-byte and
 // exit codes exactly. stderr text may be gg-flavored, so only its
 // presence/absence is asserted (the contractual part). Ported from the
-// lead's answer-key probes (probe41.sh, answer-key-41.txt) -- see round #41's
+// lead's answer-key probes -- probe scripts ran against the pinned rg binary.
 // brief. exec.Command with a nil Stdin reads /dev/null on Unix, so the
 // search-mode G-block never blocks reading stdin.
 package gripgrep_test

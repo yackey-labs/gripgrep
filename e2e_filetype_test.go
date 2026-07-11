@@ -18,7 +18,7 @@ import (
 )
 
 // TestGoldenVsRipgrep_TypeList is the file-type system's ultimate oracle
-// (round #35's brief): every type name and every glob, byte-for-byte
+// (the brief): every type name and every glob, byte-for-byte
 // against the real rg binary, with no corpus or PATTERN needed at all.
 func TestGoldenVsRipgrep_TypeList(t *testing.T) {
 	_, thisFile, _, ok := runtime.Caller(0)
@@ -106,7 +106,7 @@ func TestGoldenVsRipgrep_TypeListMutated(t *testing.T) {
 	}
 }
 
-// TestGoldenVsRipgrep_TypeErrors covers round #35's error-shape probes
+// TestGoldenVsRipgrep_TypeErrors covers the error-shape probes
 // against the real rg binary: exit code AND the exact stderr message
 // (gg's convention allows extra detail, but here it deliberately matches
 // rg's wording exactly -- see filetype.ErrInvalidDefinition's doc).
@@ -161,8 +161,8 @@ func stripBinaryPrefix(s, prefix string) string {
 
 // TestGoldenVsRipgrep_FileTypesFiltering exercises -t/-T selection,
 // precedence against -g/--iglob, and the hidden-file whitelist override,
-// on a small mixed-type fixture tree -- the differential sweep round #35's
-// brief calls for beyond the string-only --type-list oracle above.
+// on a small mixed-type fixture tree -- a differential sweep beyond the
+// string-only --type-list oracle above.
 func TestGoldenVsRipgrep_FileTypesFiltering(t *testing.T) {
 	dir := t.TempDir()
 	files := map[string]string{
@@ -230,7 +230,7 @@ func TestGoldenVsRipgrep_FileTypesFiltering(t *testing.T) {
 // isn't checked out): -t c and -T c on real C/header-heavy source,
 // -t make on the kernel's many differently-named Makefiles, and -t all
 // --files as the full "does every default glob actually compile and
-// match correctly against real filenames" oracle the round #35 design
+// match correctly against real filenames" oracle the type-system design
 // review called for (--type-list's own oracle only proves the glob
 // STRINGS match rg's, not that gg's glob engine compiles/matches every
 // one of them the same way rg's does).

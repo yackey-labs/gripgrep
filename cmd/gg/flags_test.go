@@ -359,7 +359,7 @@ func TestIgnoreClusterFlags(t *testing.T) {
 	}
 }
 
-// TestWiringQuartetFlags covers round #42's -L/--follow, --one-file-system,
+// TestWiringQuartetFlags covers -L/--follow, --one-file-system,
 // --no-messages, and --no-ignore-messages: each field defaults false, the
 // primary spelling sets it, and the negation clears it (last-wins).
 func TestWiringQuartetFlags(t *testing.T) {
@@ -873,7 +873,7 @@ func TestContextOverrideSemantics(t *testing.T) {
 	}
 }
 
-// TestPassThruContextInteraction covers round #40's --passthru: it is
+// TestPassThruContextInteraction covers --passthru: it is
 // mutually exclusive with -A/-B/-C in the sense that rg's own
 // ContextMode is ONE mutable value, not independent fields -- whichever
 // of --passthru or an -A/-B/-C flag came LAST wins outright, discarding

@@ -420,7 +420,7 @@ func TestGoldenVsRipgrep_FilesOnLinuxTree(t *testing.T) {
 // not that "--" block boundaries and within-block ordering match.
 //
 // This deliberately targets a single explicit file (not a directory).
-// Earlier versions of this comment noted that, before round #38, gg's
+// Earlier versions of this comment noted that, before that fix, gg's
 // and rg's walk order could differ file-to-file at -j1 whenever a
 // directory tree had multiple sibling subdirectories or interleaved
 // files -- worker.go's processDir finished scanning a whole directory
@@ -519,7 +519,7 @@ func TestGoldenVsRipgrep_MaxCountContextOrdering(t *testing.T) {
 	}
 }
 
-// TestGoldenVsRipgrep_VimgrepMultiOccurrenceOrdering covers round #34's
+// TestGoldenVsRipgrep_VimgrepMultiOccurrenceOrdering covers the
 // --vimgrep row-per-occurrence property, which sort-normalization can't
 // catch: multiple rows from the SAME line must appear consecutively, in
 // left-to-right column order, interleaved correctly with single-
@@ -553,7 +553,7 @@ func TestGoldenVsRipgrep_VimgrepMultiOccurrenceOrdering(t *testing.T) {
 	}
 }
 
-// TestGoldenVsRipgrep_ByteOffsetColumnFieldOrdering covers round #34's
+// TestGoldenVsRipgrep_ByteOffsetColumnFieldOrdering covers the
 // "line:col:offset:text" field ordering (-b --column together): a set
 // comparison of whole lines happens to pass even on a wrong field order
 // as long as gg is INTERNALLY consistent with itself across the corpus
@@ -587,7 +587,7 @@ func TestGoldenVsRipgrep_ByteOffsetColumnFieldOrdering(t *testing.T) {
 	}
 }
 
-// TestGoldenVsRipgrep_VimgrepContextInterleaving covers round #34's
+// TestGoldenVsRipgrep_VimgrepContextInterleaving covers the
 // "--vimgrep -C1" property that context lines print ONCE (never
 // per-occurrence) and correctly interleave with the multi-row match
 // output, including the path-prefixed dash-separated context line
@@ -653,7 +653,7 @@ func TestGoldenVsRipgrep_OnlyMatchingMultiOccurrenceOrdering(t *testing.T) {
 	}
 }
 
-// TestGoldenVsRipgrep_MaxColumnsOmittedTextExactness covers round #36's
+// TestGoldenVsRipgrep_MaxColumnsOmittedTextExactness covers the
 // -M/--max-columns exact replacement text -- "[Omitted long matching
 // line]" vs "[Omitted long line with N matches]" vs the preview's
 // truncated-prefix wording all differ only in their exact bytes, which
@@ -699,7 +699,7 @@ func TestGoldenVsRipgrep_MaxColumnsOmittedTextExactness(t *testing.T) {
 	}
 }
 
-// TestGoldenVsRipgrep_TrimContextOrdering covers round #36's --trim
+// TestGoldenVsRipgrep_TrimContextOrdering covers --trim
 // property that leading whitespace is stripped from CONTEXT lines too,
 // interleaved correctly with trimmed matched lines -- a sort-normalized
 // diff of TRIMMED lines could pass even if gg forgot to trim context
@@ -820,7 +820,7 @@ func TestGoldenVsRipgrep_VimgrepColorPreviewPerRowCount(t *testing.T) {
 }
 
 // TestGoldenVsRipgrep_HeadingGrouping closes the sort-normalization blind
-// spot for round #32's --heading: TestGoldenVsRipgrep's heading cases
+// spot for --heading: TestGoldenVsRipgrep's heading cases
 // only prove the same *set* of lines came out, not that blank-line group
 // separators land between (and only between) file groups, in the right
 // place, with no trailing blank after the last group.
@@ -877,7 +877,7 @@ func TestGoldenVsRipgrep_HeadingGrouping(t *testing.T) {
 	}
 }
 
-// TestGoldenVsRipgrep_ExplicitArgOrder covers round #37's fix: rg -j1
+// TestGoldenVsRipgrep_ExplicitArgOrder covers the fix: rg -j1
 // preserves the order explicit top-level PATH arguments were given on the
 // command line (finishing one argument's entire subtree, in readdir(3)
 // order, before starting the next), a contract gg used to violate by
@@ -893,13 +893,13 @@ func TestGoldenVsRipgrep_HeadingGrouping(t *testing.T) {
 // subdirectories), keeping this test scoped to the top-level
 // argument-seeding bug it exists to catch. Nested directories have their
 // own, separate ordering coverage: see TestGoldenVsRipgrep_NestedSiblingOrder
-// below, which covers round #38's fix for sibling-subdirectory descent
+// below, which covers the fix for sibling-subdirectory descent
 // order (previously a still-open gap noted in an earlier version of this
 // comment -- worker.go's processDir used to finish scanning a whole
 // directory, only *enqueueing* subdirectories, before ever descending
 // into any of them, so sibling subtrees came out reversed relative to
 // rg's readdir order and declustered from interleaved sibling files;
-// round #38 fixed this for -j1 by descending into a subdirectory
+// this was fixed for -j1 by descending into a subdirectory
 // immediately, in the readdir loop, whenever there is only one worker to
 // steal work from).
 func TestGoldenVsRipgrep_ExplicitArgOrder(t *testing.T) {
@@ -990,7 +990,7 @@ func TestGoldenVsRipgrep_ExplicitArgOrder(t *testing.T) {
 	})
 }
 
-// TestGoldenVsRipgrep_NestedSiblingOrder covers round #38's fix: at -j1,
+// TestGoldenVsRipgrep_NestedSiblingOrder covers the fix: at -j1,
 // rg's traversal is true per-entry recursive descent -- a subdirectory's
 // entire subtree is emitted at its exact readdir(3) position, interleaved
 // with sibling files, before moving on to the next entry in the parent
@@ -1004,7 +1004,7 @@ func TestGoldenVsRipgrep_ExplicitArgOrder(t *testing.T) {
 // whenever there is only one worker in play (nobody else could ever have
 // stolen the deferred task anyway) -- see processDir's "single" doc.
 //
-// Verified empirically before the fix (round #38's probe): a tree with
+// Verified empirically before the fix: a tree with
 // f1.txt, sub1/x.txt, f2.txt, sub2/y.txt whose actual on-disk readdir
 // order came out as [sub2, f2.txt, sub1, f1.txt] made rg emit
 // "sub2/y.txt, f2.txt, sub1/x.txt, f1.txt" (each subdirectory's subtree
@@ -1083,7 +1083,7 @@ func TestGoldenVsRipgrep_NestedSiblingOrder(t *testing.T) {
 	}
 }
 
-// TestGoldenVsRipgrep_GlobCaseInsensitive covers round #32's --iglob and
+// TestGoldenVsRipgrep_GlobCaseInsensitive covers --iglob and
 // --glob-case-insensitive on a dedicated fixture tree with a nested
 // upper-case .TXT file (a case-insensitive match target that a
 // case-SENSITIVE -g '*.txt' must miss) -- kept out of testdata/corpus
@@ -1384,7 +1384,7 @@ func TestGoldenVsRipgrep_ExplicitFileBinaryFarNULUntouched(t *testing.T) {
 // runGoldenCompare runs args against both the real rg binary and gg,
 // asserting byte-identical stdout and matching exit codes -- the same
 // single-file, -j1, order-sensitive comparison every TestGoldenVsRipgrep_*
-// test above performs by hand, factored out for round #40's flag cluster
+// test above performs by hand, factored out for the flag cluster
 // (summary/separator flags, where field/separator ORDERING within a row
 // is exactly what's under test -- a sorted/set comparison would hide a
 // wrong-order bug).
@@ -1400,7 +1400,7 @@ func runGoldenCompare(t *testing.T, ggBin string, args []string) {
 	}
 }
 
-// TestGoldenVsRipgrep_CountMatches covers round #40's --count-matches:
+// TestGoldenVsRipgrep_CountMatches covers --count-matches:
 // counts OCCURRENCES, not matched lines (3, not -c's 2, on a line with
 // two "cat"s), and falls back to line-counting under -v exactly like -c
 // does.
@@ -1421,7 +1421,7 @@ func TestGoldenVsRipgrep_CountMatches(t *testing.T) {
 	runGoldenCompare(t, ggBin, []string{"-j1", "--count-matches", "-v", "cat", path})
 }
 
-// TestGoldenVsRipgrep_FilesWithoutMatchIncludeZero covers round #40's
+// TestGoldenVsRipgrep_FilesWithoutMatchIncludeZero covers the
 // --files-without-match (inverted exit-code polarity: 0 iff a zero-match
 // file was printed) and --include-zero (prints "path:0" for a zero-match
 // file under -c, never changes the exit code).
@@ -1442,7 +1442,7 @@ func TestGoldenVsRipgrep_FilesWithoutMatchIncludeZero(t *testing.T) {
 	ggBin := buildGG(t, filepath.Dir(thisFile))
 
 	// Single-file cases avoid this repo's pre-existing, round-#40-
-	// unrelated multi-file walk-ordering divergence (see round #40's
+	// unrelated multi-file walk-ordering divergence (see the
 	// report) -- each of these targets exactly one explicit file, so
 	// there is no ordering ambiguity to filter out.
 	runGoldenCompare(t, ggBin, []string{"-j1", "--files-without-match", "cat", zeroPath})
@@ -1450,7 +1450,7 @@ func TestGoldenVsRipgrep_FilesWithoutMatchIncludeZero(t *testing.T) {
 	runGoldenCompare(t, ggBin, []string{"-j1", "-c", "--include-zero", "cat", zeroPath})
 }
 
-// TestGoldenVsRipgrep_NullStandardMode covers round #40's -0/--null in
+// TestGoldenVsRipgrep_NullStandardMode covers the -0/--null in
 // Standard mode: the path's own prelude separator becomes NUL, every
 // OTHER separator (line number to text) stays ':'.
 func TestGoldenVsRipgrep_NullStandardMode(t *testing.T) {
@@ -1471,7 +1471,7 @@ func TestGoldenVsRipgrep_NullStandardMode(t *testing.T) {
 	runGoldenCompare(t, ggBin, []string{"-j1", "--null", "-H", "-n", "cat", path})
 }
 
-// TestGoldenVsRipgrep_PassThruContextOrdering covers round #40's
+// TestGoldenVsRipgrep_PassThruContextOrdering covers the
 // --passthru in the plain case (-n): every line prints, matched lines
 // colon-rendered, everything else dash-rendered, in file order.
 func TestGoldenVsRipgrep_PassThruContextOrdering(t *testing.T) {
@@ -1491,7 +1491,7 @@ func TestGoldenVsRipgrep_PassThruContextOrdering(t *testing.T) {
 	runGoldenCompare(t, ggBin, []string{"-j1", "--passthru", "-v", "-n", "cat", path})
 }
 
-// TestGoldenVsRipgrep_PassThruMaxCountInvertFlip covers round #40's
+// TestGoldenVsRipgrep_PassThruMaxCountInvertFlip covers the
 // single most surprising verified rg quirk: --passthru -v -m N -- once
 // the limit is exceeded, EVERY remaining line (matching the literal
 // pattern or not) renders as a match, not context, because rg's own
@@ -1516,7 +1516,7 @@ func TestGoldenVsRipgrep_PassThruMaxCountInvertFlip(t *testing.T) {
 	runGoldenCompare(t, ggBin, []string{"-j1", "--passthru", "-m0", "-n", "cat", path})
 }
 
-// TestGoldenVsRipgrep_CustomSeparatorsWithContext covers round #40's
+// TestGoldenVsRipgrep_CustomSeparatorsWithContext covers the
 // --context-separator/--field-match-separator/--field-context-separator,
 // exercised TOGETHER with -A context so the intra-file gap separator,
 // match-line field separator, and context-line field separator are all

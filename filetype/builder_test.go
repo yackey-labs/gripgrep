@@ -9,7 +9,7 @@ import (
 )
 
 func TestAddDefaultsSelectAllCompiles(t *testing.T) {
-	// The "matcher-level oracle" round #35's design review called for:
+	// The "matcher-level oracle" the design review called for:
 	// every default glob must actually COMPILE in package glob's engine,
 	// not just round-trip as a string through Definitions(). Selecting
 	// "all" builds one matcher out of every default type's every glob.
@@ -30,7 +30,7 @@ func TestDefinitionsSortedNameAndGlobs(t *testing.T) {
 	b.AddDefaults()
 	defs := b.Definitions()
 	if len(defs) != 218 {
-		t.Fatalf("got %d definitions, want 218 (verified byte-identical against `rg --type-list`, round #35)", len(defs))
+		t.Fatalf("got %d definitions, want 218 (verified byte-identical against `rg --type-list`)", len(defs))
 	}
 	if !sort.SliceIsSorted(defs, func(i, j int) bool { return defs[i].Name < defs[j].Name }) {
 		t.Error("Definitions() not sorted by name")
@@ -138,7 +138,7 @@ func TestClearThenSelectErrors(t *testing.T) {
 	b.Select("rust")
 	_, err := b.Build()
 	if err == nil || err.Error() != "unrecognized file type: rust" {
-		t.Errorf("err = %v, want unrecognized file type error (round #35 probe: `rg --type-clear rust -t rust` errors)", err)
+		t.Errorf("err = %v, want unrecognized file type error (probed on the real rg binary: `rg --type-clear rust -t rust` errors)", err)
 	}
 }
 
@@ -157,7 +157,7 @@ func TestClearThenAddRebuilds(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Only the rebuilt glob applies -- *.rs (the original default) must
-	// NOT match anymore (round #35 probe: `rg --type-clear rust --type-add
+	// NOT match anymore (probed on the real rg binary: `rg --type-clear rust --type-add
 	// 'rust:*.rs2' --type-list` shows only "rust: *.rs2").
 	if m.Match([]byte("main.rs")) != glob.NoMatch {
 		t.Error("main.rs matched after --type-clear rust: old glob should be gone")

@@ -1,5 +1,5 @@
 // Package filetype implements rg's file-type system: -t/--type,
-// -T/--type-not, --type-add, --type-clear, and --type-list (round #35).
+// -T/--type-not, --type-add, --type-clear, and --type-list.
 // It mirrors ripgrep's crates/ignore/src/types.rs (TypesBuilder/Types)
 // closely enough that Builder's Apply/Build sequencing reproduces the same
 // observable behavior, including its more surprising corners -- see

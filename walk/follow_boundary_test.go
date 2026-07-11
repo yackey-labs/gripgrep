@@ -11,7 +11,7 @@ import (
 
 // TestFollowSymlinkLoopEmitsError verifies that following a symlink back to
 // an ancestor is reported as a per-entry error (errSymlinkLoop), not
-// silently skipped -- the walk-level half of the round #42 L6/L7 contract
+// silently skipped -- the walk-level half of the -L loop contract
 // (the engine turns that error into exit 2 + a stderr line). The non-loop
 // file must still be visited.
 func TestFollowSymlinkLoopEmitsError(t *testing.T) {

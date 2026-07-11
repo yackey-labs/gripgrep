@@ -118,7 +118,7 @@ func buildGlobs(globs, iglobs []string, ci bool) (*glob.Set, bool, error) {
 // errors at every call site in this package, matching rg's own
 // construction order (crates/core/flags/hiargs.rs builds HiArgs.types
 // before HiArgs.globs) -- verified against the real rg binary: a bad -t
-// alongside a bad -g reports the type error, round #35's probes.
+// alongside a bad -g reports the type error, the probes.
 func buildTypes(changes []filetype.Change) (*filetype.Matcher, error) {
 	if len(changes) == 0 {
 		return nil, nil

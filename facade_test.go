@@ -138,7 +138,7 @@ func parseCLIPaths(out string) []string {
 	return got
 }
 
-// TestFacadeVsCLI is round #30's gate 6: gripgrep.CountMatches and
+// TestFacadeVsCLI is the gate 6: gripgrep.CountMatches and
 // gripgrep.FilesWithMatch must agree exactly with the CLI's own -c/-l
 // output (counts + sorted file lists identical) on both testdata/corpus
 // and the full benchmark-data/linux tree -- the latter specifically
@@ -302,8 +302,8 @@ func slicesEq(a, b []string) bool {
 	return true
 }
 
-// TestFacadeNewOptionsVsCLI is round #33's gate: each Options field added
-// for the round #31/#32 flags (MaxCount, LineRegexp, MaxDepth, IGlobs,
+// TestFacadeNewOptionsVsCLI is the gate: each Options field added
+// alongside a CLI flag (MaxCount, LineRegexp, MaxDepth, IGlobs,
 // GlobCaseInsensitive) must agree with the real CLI's own output for the
 // equivalent flag, on small dedicated fixtures under testdata/facade/
 // (deliberately not testdata/corpus, which other tests pin -- see this
@@ -610,7 +610,7 @@ func TestOptions_WordLineRegexpTieBreak(t *testing.T) {
 }
 
 // TestFacadeByteOffset_MultiChunk locks Match.ByteOffset's chunk-adjusted
-// correctness (round #39's brief: search.Match.Offset must already be
+// correctness (the brief: search.Match.Offset must already be
 // absolute, chunk-adjusted, per search/core.go's runChunk, which seeds
 // each intra-file parallel chunk's absOffsetBase from its own byte
 // position in the file -- see runChunk's doc). testdata/facade/column.txt

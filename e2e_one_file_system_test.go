@@ -2,7 +2,7 @@
 
 // --one-file-system e2e (Unix only -- needs a real cross-device mount
 // boundary, and device-number comparison via syscall.Stat_t). See
-// e2e_wiring42_test.go for the shared L/M coverage.
+// e2e_follow_messages_test.go for the shared L/M coverage.
 package gripgrep_test
 
 import (

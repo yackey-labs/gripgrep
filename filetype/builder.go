@@ -79,7 +79,7 @@ type selection struct {
 //     the whole CLI has been processed) -- so `--type-clear rust -t rust`
 //     errors (rust no longer exists at Build time) but `--type-clear rust
 //     --type-add 'rust:*.rs2' -t rust` succeeds, using ONLY the rebuilt
-//     glob (verified against the real rg binary, round #35's probes).
+//     glob (verified against the real rg binary, the probes).
 //
 // Since every Add/Clear/Select/Negate must therefore be applied ONE AT A
 // TIME, in exact CLI order (never batch-sorted or reordered), callers

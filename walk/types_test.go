@@ -81,7 +81,7 @@ func TestTypesDoesNotPruneDirs(t *testing.T) {
 	}
 }
 
-// TestTypesLowerPrecedenceThanGlobs verifies round #35's precedence
+// TestTypesLowerPrecedenceThanGlobs verifies the precedence
 // probes against the real rg binary: -g/--iglob decides outright
 // (Ignored or Whitelisted) before Types is ever consulted; Types only
 // applies to paths -g left undecided.
@@ -117,7 +117,7 @@ func TestTypesGlobOverridesTypeRestriction(t *testing.T) {
 	// outright (Whitelisted, short-circuits Types entirely) even though
 	// it isn't the rust type. main.rs matches no override glob, and with
 	// a positive override present, Set.Match/GlobsRequireMatch excludes
-	// it before Types is ever consulted (round #35 probe).
+	// it before Types is ever consulted (verified against the real rg binary).
 	var b glob.Builder
 	b.Add("!*.c") // flipped-polarity whitelist, matching cmd/gg's own -g CLI encoding
 	set, err := b.Build()
@@ -132,7 +132,7 @@ func TestTypesGlobOverridesTypeRestriction(t *testing.T) {
 	}
 }
 
-// TestTypesWhitelistOverridesHidden verifies round #35's probe against
+// TestTypesWhitelistOverridesHidden verifies the probe against
 // the real rg binary: a Types Whitelist verdict overrides the
 // hidden-file rule exactly like a Globs/ignore-stack whitelist already
 // does (rg's sh type includes dotfiles like .bashrc; `rg -t sh` shows

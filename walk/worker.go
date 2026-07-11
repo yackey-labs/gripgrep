@@ -267,7 +267,7 @@ func (w *worker) processDir(t *dirTask) bool {
 	// reproduces rg's true per-entry recursive-descent order (each
 	// subdirectory's entire subtree completes at its exact readdir
 	// position, interleaved with sibling files -- verified empirically,
-	// round #38) for free: no buffering or push-order reversal needed,
+	// a prior fix) for free: no buffering or push-order reversal needed,
 	// and the dirQueue push/pop is skipped entirely for this path. n>1
 	// (default parallelism) is untouched -- it keeps deferring to the
 	// queue exactly as before, since there is no -j1-style ordering
@@ -410,7 +410,7 @@ func (w *worker) followSymlink(childPath, childAbs []byte, depth int, node *igno
 
 // classify applies Options.Globs (highest precedence, whitelist-capable),
 // then the ignore-matcher stack (unless NoIgnore), then Options.Types
-// (round #35: -t/-T/--type-add/--type-clear), and reports whether the
+// (-t/-T/--type-add/--type-clear), and reports whether the
 // entry should be skipped and, separately, whether it was explicitly
 // whitelisted — which the caller must treat as overriding the hidden-file
 // rule (see the call site). globPath is the root-relative display path;
@@ -425,7 +425,7 @@ func (w *worker) followSymlink(childPath, childAbs []byte, depth int, node *igno
 // immediately; a Whitelist is remembered but not final), then types (an
 // Ignore returns immediately even over an ignore-stack Whitelist; a
 // Whitelist overwrites it; a NoMatch leaves the ignore stack's verdict
-// standing). Verified against the real rg binary (round #35 probes): `-t
+// standing). Verified against the real rg binary (verified against the real rg binary): `-t
 // rust -g '!*.rs'` excludes .rs files via the glob alone (types never
 // consulted for them) but still lets -t's own exclusion apply to
 // unrelated files; `-g '*.c' -t rust` includes .c files outright (the

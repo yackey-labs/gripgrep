@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-// TestSearch_MatchesOutliveCallbacks is round #30's memory-safety test:
+// TestSearch_MatchesOutliveCallbacks is the memory-safety test:
 // the engine's Match/Ctx types are unsafe.String-backed views valid only
 // during the delivering Sink callback (see internal/engine's doc and
 // search.Match's own doc comment) -- this project has been burned before

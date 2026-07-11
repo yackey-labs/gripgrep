@@ -67,7 +67,7 @@ func TestPathPrinter_Color(t *testing.T) {
 
 // TestPathPrinter_Null verifies --null/-0 --files: each path is
 // terminated with a NUL byte instead of '\n', matching the real rg
-// binary (`rg --null --files` -- see round #40's differential sweep).
+// binary (`rg --null --files` -- see the differential sweep).
 func TestPathPrinter_Null(t *testing.T) {
 	dest, out := newTestDest()
 	pp := NewPathPrinter(dest, false, true)

@@ -35,7 +35,7 @@ type Matcher struct {
 // "the highest precedent match is the last one" over ALL globs from every
 // selection flattened into one ordered set, not per-selection) --
 // verified against the real rg binary for the two cases that matter most
-// (round #35 probes): `-t rust -T rust` (negate given last -> excluded)
+// (verified against the real rg binary): `-t rust -T rust` (negate given last -> excluded)
 // and `-T rust -t rust` (select given last -> included).
 //
 // Every glob is escaped via escapeGlobSpecials first: rg's own Types
@@ -53,7 +53,7 @@ type Matcher struct {
 // pattern, whereas real rg's Types matcher only ever tests a bare file
 // name (crates/ignore/src/types.rs's matched(): `file_name(path)`) and so
 // would never match such a glob at all. No default-type glob contains
-// '/' (round #35's audit), and this divergence only changes behavior for
+// '/' (the audit), and this divergence only changes behavior for
 // a hand-written --type-add spec that itself embeds a path separator --
 // treated as out-of-scope debt for this round rather than blocking it.
 func (b *Builder) Build() (*Matcher, error) {

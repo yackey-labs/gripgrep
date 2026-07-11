@@ -66,7 +66,7 @@ func TestStripUTF8BOM_StripsRealBOM(t *testing.T) {
 	}
 }
 
-// TestStripUTF8BOM_EdgeCases covers round #27's rewrite (folding the BOM
+// TestStripUTF8BOM_EdgeCases covers the rewrite (folding the BOM
 // check into the caller's own first full-size Read instead of a separate
 // 3-byte probe read): the sizes/shapes too small or too irregular for the
 // bomReader.Read fast path to ever fire, forcing finishBOMCheck's
@@ -197,7 +197,7 @@ func TestBuildGlobs_InvalidPatternErrors(t *testing.T) {
 	}
 }
 
-// TestBuildGlobs_IGlobAlwaysCaseInsensitive covers round #32's --iglob:
+// TestBuildGlobs_IGlobAlwaysCaseInsensitive covers --iglob:
 // an iglob pattern must match a differently-cased path even when
 // GlobCaseInsensitive (--glob-case-insensitive) was never given.
 func TestBuildGlobs_IGlobAlwaysCaseInsensitive(t *testing.T) {
@@ -231,7 +231,7 @@ func TestBuildGlobs_GlobCaseInsensitiveAppliesToGlobsOnly(t *testing.T) {
 // TestBuildGlobs_NegatedIsPlainExclude for --iglob: a lone negated iglob
 // pattern, with no plain pattern anywhere (globs or iglobs), must not
 // turn on GlobsRequireMatch's "exclude anything that doesn't match"
-// semantics -- verified against the real rg binary (see round #32's
+// semantics -- verified against the real rg binary (see the
 // handoff: `--iglob '!pat'` alone keeps non-matching files, doesn't
 // filter down to only pat).
 func TestBuildGlobs_NegatedIGlobAloneIsNotRequireMatch(t *testing.T) {
@@ -254,7 +254,7 @@ func TestBuildGlobs_NegatedIGlobAloneIsNotRequireMatch(t *testing.T) {
 // caller) is what enforces globs-then-iglobs, this only needs one
 // argument order to prove the guarantee holds regardless of caller
 // intent. Verified against the real rg binary (both CLI orders produce
-// the identical file set -- see round #32's handoff).
+// the identical file set -- see the handoff).
 func TestBuildGlobs_IGlobOverridesGlobRegardlessOfOrder(t *testing.T) {
 	set, _, err := buildGlobs([]string{"!*.TXT"}, []string{"*.txt"}, false)
 	if err != nil {
