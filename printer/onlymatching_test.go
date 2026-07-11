@@ -1,6 +1,7 @@
 package printer
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/yackey-labs/gripgrep/match"
@@ -312,12 +313,91 @@ func TestStandard_MaxColumnsPreviewSingularMatch(t *testing.T) {
 	}
 }
 
+// TestStandard_MaxColumnsPreviewVimgrepColorPerRowCount covers a
+// regression this round's re-review caught by reproducing it directly
+// against the real rg binary: under `--vimgrep --color=always -M
+// --max-columns-preview`, each row's "N more matches" count is
+// INDEPENDENT -- whether THAT row's own occurrence happens to still be
+// visible within its own preview cutoff -- not the whole line's total
+// remaining count. rg's real color-rendering branch threads whatever
+// narrowed match list it built for one row (under --vimgrep, just that
+// row's own occurrence) through to BOTH highlighting and the remaining-
+// count math; only its no-color fallback ignores that narrowing and
+// always uses the full line's match list (see
+// TestStandard_MaxColumnsPreviewVimgrepNoColorWholeLineCount for that
+// contrasting case).
+//
+// Fixture: "catstart catmiddle padding... cat cat end" has 4
+// occurrences at bytes 0, 9, 44, 48. At -M20, the first two are inside
+// the 20-byte visible prefix, the last two are past it -- so under
+// color, row 1 (own occurrence at 0) and row 2 (own occurrence at 9)
+// each say "0 more matches", while row 3 (44) and row 4 (48) each say
+// "1 more match" -- NOT "2 more matches" for every row, which is what a
+// whole-line count would produce (and what this exact fixture gives
+// without color).
+func TestStandard_MaxColumnsPreviewVimgrepColorPerRowCount(t *testing.T) {
+	dest, out := newTestDest()
+	p := NewStandard(dest)
+	p.Vimgrep = true
+	p.Column = true
+	p.Color = true
+	p.MaxColumns = 20
+	p.MaxColumnsPreview = true
+	p.Matcher = mustMatcher(t, match.Config{Patterns: []string{"cat"}})
+
+	p.Begin("multimatch.txt")
+	p.Matched(&search.Match{Line: []byte("catstart catmiddle padding padding padding cat cat end\n"), LineNumber: 1, HasLineNumber: true, Offset: 0})
+	p.Finish("multimatch.txt", &search.Stats{Matched: true})
+
+	got := out.String()
+	wantSuffixes := []string{
+		" [... 0 more matches]\n", // row 1: own occurrence (byte 0) visible
+		" [... 0 more matches]\n", // row 2: own occurrence (byte 9) visible
+		" [... 1 more match]\n",   // row 3: own occurrence (byte 44) not visible
+		" [... 1 more match]\n",   // row 4: own occurrence (byte 48) not visible
+	}
+	for _, want := range wantSuffixes {
+		idx := strings.Index(got, want)
+		if idx < 0 {
+			t.Fatalf("output missing expected row suffix %q; full output:\n%q", want, got)
+		}
+		got = got[idx+len(want):]
+	}
+}
+
+// TestStandard_MaxColumnsPreviewVimgrepNoColorWholeLineCount is the
+// no-color contrast to TestStandard_MaxColumnsPreviewVimgrepColorPerRowCount:
+// without Color, every row on the line reports the SAME whole-line
+// remaining count (2 -- the two occurrences past the -M20 cutoff),
+// regardless of that row's own occurrence's position -- verified
+// against the real rg binary.
+func TestStandard_MaxColumnsPreviewVimgrepNoColorWholeLineCount(t *testing.T) {
+	dest, out := newTestDest()
+	p := NewStandard(dest)
+	p.Vimgrep = true
+	p.Column = true
+	p.MaxColumns = 20
+	p.MaxColumnsPreview = true
+	p.Matcher = mustMatcher(t, match.Config{Patterns: []string{"cat"}})
+
+	p.Begin("multimatch.txt")
+	p.Matched(&search.Match{Line: []byte("catstart catmiddle padding padding padding cat cat end\n"), LineNumber: 1, HasLineNumber: true, Offset: 0})
+	p.Finish("multimatch.txt", &search.Stats{Matched: true})
+
+	got := out.String()
+	count := strings.Count(got, " [... 2 more matches]\n")
+	if count != 4 {
+		t.Errorf("expected all 4 rows to say \"2 more matches\", found %d occurrences; full output:\n%q", count, got)
+	}
+}
+
 // TestStandard_MaxColumnsPreviewMultibyteBoundary mirrors this round's
 // probe against the real rg binary: the preview cut never splits a
-// UTF-8 rune. "café" 's é (2 bytes) sits right at the boundary for -M14
-// -- gg's rune-boundary approximation of rg's grapheme-cluster cut (see
-// previewCutoff's doc for the documented, narrow divergence between the
-// two) keeps é whole here, matching rg exactly.
+// UTF-8 rune. "café" 's é here is a single, precomposed U+00E9 (2 bytes,
+// but exactly one rune AND one grapheme cluster) -- see
+// TestStandard_MaxColumnsPreviewCombiningMarkBoundary for the fixture
+// that actually distinguishes rune-counting from grapheme-cluster
+// counting (this one alone would pass under either).
 func TestStandard_MaxColumnsPreviewMultibyteBoundary(t *testing.T) {
 	line := "abcdefghijcafé cat more text here padding padding\n"
 	dest, out := newTestDest()
@@ -332,6 +412,84 @@ func TestStandard_MaxColumnsPreviewMultibyteBoundary(t *testing.T) {
 	want := "utf8.txt:1:abcdefghijcafé [... omitted end of long line]\n"
 	if got := out.String(); got != want {
 		t.Errorf("got:\n%q\nwant:\n%q", got, want)
+	}
+}
+
+// TestStandard_MaxColumnsPreviewCombiningMarkBoundary mirrors a
+// regression this round's re-review caught by reproducing it directly
+// against the real rg binary: "e" + U+0301 COMBINING ACUTE ACCENT (two
+// runes, ONE grapheme cluster, rendering as one visual "é") straddling
+// the preview cut. A rune-boundary approximation (gg's first attempt at
+// previewCutoff) diverged from rg at EVERY cut point from -M 11 through
+// -M 16 on this exact fixture -- it counted the bare "e" as a whole
+// rune-cluster of its own, landing one grapheme short for the rest of
+// the line. previewCutoff now uses github.com/rivo/uniseg's UAX#29
+// grapheme-cluster segmentation (the same standard rg's own
+// unicode-segmentation dependency implements), matching exactly.
+func TestStandard_MaxColumnsPreviewCombiningMarkBoundary(t *testing.T) {
+	line := "combining é mark cat and more text here after\n"
+	cases := []struct {
+		limit int
+		want  string
+	}{
+		{8, "combinin"},
+		{9, "combining"},
+		{10, "combining "},
+		{11, "combining é"},
+		{12, "combining é "},
+		{13, "combining é m"},
+	}
+	for _, tc := range cases {
+		dest, out := newTestDest()
+		p := NewStandard(dest)
+		p.MaxColumns = tc.limit
+		p.MaxColumnsPreview = true
+
+		p.Begin("combining.txt")
+		p.Matched(&search.Match{Line: []byte(line), LineNumber: 1, HasLineNumber: true, Offset: 0})
+		p.Finish("combining.txt", &search.Stats{Matched: true})
+
+		want := "combining.txt:1:" + tc.want + " [... omitted end of long line]\n"
+		if got := out.String(); got != want {
+			t.Errorf("-M %d: got:\n%q\nwant:\n%q", tc.limit, got, want)
+		}
+	}
+}
+
+// TestStandard_MaxColumnsPreviewZWJEmojiBoundary verifies a ZWJ-joined
+// multi-codepoint emoji sequence (family: man+ZWJ+woman+ZWJ+girl+ZWJ+boy
+// -- 4 codepoints, several ZWJ joiners, ONE grapheme cluster, 25 bytes)
+// is kept atomically whole by the preview cut, never split mid-sequence
+// -- verified against the real rg binary at the exact cut point where a
+// naive per-rune (or per-codepoint) counter would slice into it.
+func TestStandard_MaxColumnsPreviewZWJEmojiBoundary(t *testing.T) {
+	const family = "\U0001F468‍\U0001F469‍\U0001F467‍\U0001F466"
+	line := "start " + family + " cat end text here padding padding\n"
+
+	// Grapheme clusters: s-t-a-r-t-<space>-<family>-<space>-c-a-t-...
+	// The family emoji is cluster #7 -- excluded entirely at -M6 (only
+	// "start " survives), included WHOLE at -M7 (all 25 of its bytes at
+	// once, no partial cut).
+	dest6, out6 := newTestDest()
+	p6 := NewStandard(dest6)
+	p6.MaxColumns = 6
+	p6.MaxColumnsPreview = true
+	p6.Begin("zwj.txt")
+	p6.Matched(&search.Match{Line: []byte(line), LineNumber: 1, HasLineNumber: true, Offset: 0})
+	p6.Finish("zwj.txt", &search.Stats{Matched: true})
+	if want, got := "zwj.txt:1:start  [... omitted end of long line]\n", out6.String(); got != want {
+		t.Errorf("-M 6: got:\n%q\nwant:\n%q", got, want)
+	}
+
+	dest7, out7 := newTestDest()
+	p7 := NewStandard(dest7)
+	p7.MaxColumns = 7
+	p7.MaxColumnsPreview = true
+	p7.Begin("zwj.txt")
+	p7.Matched(&search.Match{Line: []byte(line), LineNumber: 1, HasLineNumber: true, Offset: 0})
+	p7.Finish("zwj.txt", &search.Stats{Matched: true})
+	if want, got := "zwj.txt:1:start "+family+" [... omitted end of long line]\n", out7.String(); got != want {
+		t.Errorf("-M 7: got:\n%q\nwant:\n%q", got, want)
 	}
 }
 

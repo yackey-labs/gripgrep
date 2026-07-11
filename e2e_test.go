@@ -728,6 +728,92 @@ func TestGoldenVsRipgrep_TrimContextOrdering(t *testing.T) {
 	}
 }
 
+// TestGoldenVsRipgrep_MaxColumnsPreviewGraphemeClusterBoundary covers a
+// regression this round's re-review caught: --max-columns-preview's cut
+// point must land on grapheme CLUSTER boundaries (rg's own
+// unicode-segmentation dependency), not rune or byte boundaries. An "e"
+// + COMBINING ACUTE ACCENT (two runes, one visual "é") straddling the
+// cut is the exact fixture that distinguishes the two -- a rune-boundary
+// approximation diverges from the real rg binary at every -M value from
+// the point the combining mark enters the visible prefix onward. Swept
+// across every -M value that matters for this fixture, not just one.
+func TestGoldenVsRipgrep_MaxColumnsPreviewGraphemeClusterBoundary(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "combining.txt")
+	content := "combining é mark cat and more text here after\n"
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, thisFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("could not determine test file location")
+	}
+	ggBin := buildGG(t, filepath.Dir(thisFile))
+
+	for m := 8; m <= 16; m++ {
+		t.Run(fmt.Sprintf("M%d", m), func(t *testing.T) {
+			args := []string{"-j1", "-M", fmt.Sprintf("%d", m), "--max-columns-preview", "cat", path}
+
+			rgOut, rgErr, rgCode := run(t, "rg", args)
+			ggOut, ggErr, ggCode := run(t, ggBin, args)
+
+			if rgCode != ggCode {
+				t.Errorf("exit code mismatch: rg=%d gg=%d\nrg stderr: %s\ngg stderr: %s", rgCode, ggCode, rgErr, ggErr)
+			}
+			if !bytes.Equal(rgOut, ggOut) {
+				t.Errorf("raw (unsorted, -j1, single-file) stdout mismatch:\n--- rg stdout ---\n%s\n--- gg stdout ---\n%s", rgOut, ggOut)
+			}
+		})
+	}
+}
+
+// TestGoldenVsRipgrep_VimgrepColorPreviewPerRowCount covers a regression
+// this round's re-review caught: under `--vimgrep --color=always -M
+// --max-columns-preview`, each row's "N more matches" count must be
+// INDEPENDENT (is THAT row's own occurrence still visible within its
+// own preview cutoff?), not the whole line's total remaining count --
+// a real divergence in rg's own implementation between its color-
+// rendering and no-color code paths. Sort-normalization can't catch a
+// wrong-but-internally-consistent count here (every row having the same
+// wrong number would still be a valid multiset), so this needs the raw,
+// ordered, byte-exact stream, with and without color to lock in both
+// sides of the divergence.
+func TestGoldenVsRipgrep_VimgrepColorPreviewPerRowCount(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "multimatch.txt")
+	content := "catstart catmiddle padding padding padding cat cat end\n"
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, thisFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("could not determine test file location")
+	}
+	ggBin := buildGG(t, filepath.Dir(thisFile))
+
+	for _, tc := range []struct {
+		name string
+		args []string
+	}{
+		{"color", []string{"-j1", "--vimgrep", "--color=always", "-M", "20", "--max-columns-preview", "cat", path}},
+		{"no_color", []string{"-j1", "--vimgrep", "-M", "20", "--max-columns-preview", "cat", path}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rgOut, rgErr, rgCode := run(t, "rg", tc.args)
+			ggOut, ggErr, ggCode := run(t, ggBin, tc.args)
+
+			if rgCode != ggCode {
+				t.Errorf("exit code mismatch: rg=%d gg=%d\nrg stderr: %s\ngg stderr: %s", rgCode, ggCode, rgErr, ggErr)
+			}
+			if !bytes.Equal(rgOut, ggOut) {
+				t.Errorf("raw (unsorted, -j1, single-file) stdout mismatch:\n--- rg stdout ---\n%s\n--- gg stdout ---\n%s", rgOut, ggOut)
+			}
+		})
+	}
+}
+
 // TestGoldenVsRipgrep_HeadingGrouping closes the sort-normalization blind
 // spot for round #32's --heading: TestGoldenVsRipgrep's heading cases
 // only prove the same *set* of lines came out, not that blank-line group
