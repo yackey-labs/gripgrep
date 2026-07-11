@@ -89,13 +89,18 @@ import (
 // cmd/gg and the facade (see PLAN.md's "one engine" requirement).
 type matchTracker struct {
 	search.Sink
-	matched        *atomic.Bool
-	standard       bool
-	binMode        search.BinaryMode
-	showPath       bool
-	heading        bool
-	contextEnabled bool
-	dest           *printer.Dest
+	matched  *atomic.Bool
+	standard bool
+	// invertMatchSignal is Worker.InvertMatchSignal (see its doc):
+	// currently set only for cmd/gg's --files-without-match, whose
+	// exit-code contribution is stats.Matched's COMPLEMENT -- see
+	// matchSignal.
+	invertMatchSignal bool
+	binMode           search.BinaryMode
+	showPath          bool
+	heading           bool
+	contextEnabled    bool
+	dest              *printer.Dest
 	// searcher is consulted live, mid-scan, by Matched/Context to
 	// implement the BinaryConvert suppression rule below -- see those
 	// methods' doc and search.Searcher.HasBinaryOffset's doc for why
@@ -215,6 +220,21 @@ func (t *matchTracker) Context(c *search.Ctx) (bool, error) {
 	return t.Sink.Context(c)
 }
 
+// matchSignal reports whether this file's Stats should count towards the
+// overall exit-code "matched anything" signal -- stats.Matched itself for
+// every mode except --files-without-match (invertMatchSignal), where the
+// desired signal is the exact complement: a file this Stats came from
+// contributes to a "found something" exit code (0) precisely when it had
+// ZERO real matches (i.e. printer.FilesWithoutMatch printed its path),
+// verified against the real rg binary (see ModeFilesWithoutMatch's doc in
+// cmd/gg/flags.go).
+func (t *matchTracker) matchSignal(stats *search.Stats) bool {
+	if t.invertMatchSignal {
+		return !stats.Matched
+	}
+	return stats.Matched
+}
+
 func (t *matchTracker) Finish(path string, stats *search.Stats) error {
 	if t.binMode == search.BinaryQuit && stats.Binary {
 		if !t.standard {
@@ -223,7 +243,7 @@ func (t *matchTracker) Finish(path string, stats *search.Stats) error {
 			// whatever real count/path it already accumulated).
 			return nil
 		}
-		if stats.Matched {
+		if t.matchSignal(stats) {
 			t.matched.Store(true)
 		}
 		if err := t.Sink.Finish(path, stats); err != nil {
@@ -240,7 +260,7 @@ func (t *matchTracker) Finish(path string, stats *search.Stats) error {
 			// binaryConvertSuppressed flagged, so whatever the underlying
 			// sink accumulated is exactly what should display normally --
 			// unlike BinaryQuit above, nothing here needs discarding.
-			if stats.Matched {
+			if t.matchSignal(stats) {
 				t.matched.Store(true)
 			}
 			if err := t.Sink.Finish(path, stats); err != nil {
@@ -252,7 +272,7 @@ func (t *matchTracker) Finish(path string, stats *search.Stats) error {
 			return writeBinaryMessage(t.dest, path, offset, t.showPath, t.heading, t.contextEnabled)
 		}
 	}
-	if stats.Matched {
+	if t.matchSignal(stats) {
 		t.matched.Store(true)
 	}
 	return t.Sink.Finish(path, stats)

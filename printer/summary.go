@@ -170,6 +170,76 @@ func (p *FilesWithMatches) Finish(path string, stats *search.Stats) error {
 	return p.dest.Write(p.buf)
 }
 
+// FilesWithoutMatch implements --files-without-match: the exact complement
+// of FilesWithMatches -- writes "path\n" once per file with ZERO matches,
+// instead of at least one. Like FilesWithMatches, it aborts the file's
+// search after the first match (Matched returns more=false): once any
+// match is found, this file can never end up in the "without match" set,
+// so nothing past the first match changes the outcome.
+//
+// Its exit-code contribution is the exact complement too -- see
+// ModeFilesWithoutMatch's doc in cmd/gg/flags.go and internal/engine's
+// matchTracker, which has to know about this mode specifically to flip
+// its match-signal aggregation (a file with zero Matched calls is the
+// "found" case here, not the "nothing happened" case every other mode
+// treats it as).
+type FilesWithoutMatch struct {
+	dest *Dest
+	// Color enables coloring the path, matching rg's --files-without-match
+	// --color=always.
+	Color bool
+
+	buf     []byte
+	path    []byte
+	matched bool
+}
+
+// NewFilesWithoutMatch returns a FilesWithoutMatch printer flushing
+// completed files to dest.
+func NewFilesWithoutMatch(dest *Dest) *FilesWithoutMatch {
+	return &FilesWithoutMatch{dest: dest, buf: getBuf()}
+}
+
+var _ search.Sink = (*FilesWithoutMatch)(nil)
+
+// Begin implements search.Sink.
+func (p *FilesWithoutMatch) Begin(path string) (bool, error) {
+	p.buf = resetBuf(p.buf)
+	p.path = append(p.path[:0], path...)
+	p.matched = false
+	return true, nil
+}
+
+// Matched implements search.Sink: records the match and returns
+// more=false to abort the rest of this file's search early -- see the
+// type doc.
+func (p *FilesWithoutMatch) Matched(m *search.Match) (bool, error) {
+	p.matched = true
+	return false, nil
+}
+
+// Context implements search.Sink. FilesWithoutMatch never requests
+// context (it aborts on the first match, before any context would be
+// gathered), but the method must exist to satisfy search.Sink.
+func (p *FilesWithoutMatch) Context(c *search.Ctx) (bool, error) {
+	return true, nil
+}
+
+// Finish implements search.Sink: writes "path\n" if the file did NOT
+// match -- the inverse condition of FilesWithMatches.Finish.
+func (p *FilesWithoutMatch) Finish(path string, stats *search.Stats) error {
+	if p.matched {
+		return nil
+	}
+	if p.Color {
+		p.buf = appendColoredBytes(p.buf, ansiPath, p.path)
+	} else {
+		p.buf = append(p.buf, p.path...)
+	}
+	p.buf = append(p.buf, '\n')
+	return p.dest.Write(p.buf)
+}
+
 // Quiet implements -q: it writes nothing at all, just records whether
 // any match was found anywhere and aborts that file's search
 // immediately on the first hit. Unlike Standard/Count/FilesWithMatches,

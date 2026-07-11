@@ -306,7 +306,12 @@ func newEngineWorker(cfg *Config, econf engine.Config, matcher match.Matcher, de
 	searcher := engine.NewSearcher(econf, matcher)
 
 	sink, isStandard := buildCLISink(cfg, dest, matcher, color, heading, showPath, column)
-	return &engine.Worker{Searcher: searcher, Sink: sink, Standard: isStandard}
+	return &engine.Worker{
+		Searcher:          searcher,
+		Sink:              sink,
+		Standard:          isStandard,
+		InvertMatchSignal: cfg.Mode == ModeFilesWithoutMatch,
+	}
 }
 
 // buildCLISink selects and configures the printer sink cfg.Mode calls
@@ -329,8 +334,22 @@ func buildCLISink(cfg *Config, dest *printer.Dest, matcher match.Matcher, color,
 		c.OnlyMatching = cfg.OnlyMatching
 		c.Matcher = matcher
 		return c, false
+	case ModeCountMatches:
+		// --count-matches is Count with OnlyMatching forced true
+		// UNCONDITIONALLY (unlike ModeCount, which only sets it from
+		// cfg.OnlyMatching) -- see ModeCountMatches' doc.
+		c := printer.NewCount(dest)
+		c.Color = color
+		c.ShowPath = showPath
+		c.OnlyMatching = true
+		c.Matcher = matcher
+		return c, false
 	case ModeFilesWithMatches:
 		f := printer.NewFilesWithMatches(dest)
+		f.Color = color
+		return f, false
+	case ModeFilesWithoutMatch:
+		f := printer.NewFilesWithoutMatch(dest)
 		f.Color = color
 		return f, false
 	default:

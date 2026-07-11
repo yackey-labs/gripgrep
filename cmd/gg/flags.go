@@ -59,6 +59,25 @@ const (
 	ModeStandard SearchMode = iota
 	ModeCount
 	ModeFilesWithMatches
+	// ModeCountMatches is --count-matches: like ModeCount, but always
+	// counts OCCURRENCES rather than matched lines -- i.e. the printer
+	// behaves as if -o/--only-matching had ALSO been given, unconditionally
+	// (not just when cfg.OnlyMatching happens to be set), matching rg's own
+	// doc ("ripgrep behaves as if --count-matches was given" is the OTHER
+	// direction of this same rule for -o -c -- see round 36's
+	// printer.Count.OnlyMatching). Verified against the real rg binary:
+	// `--count-matches -v` still falls back to counting LINES, exactly
+	// like plain `-c -v` (Count.OnlyMatching's existing max(1,spanCount)
+	// fallback already handles this for free -- see its doc).
+	ModeCountMatches
+	// ModeFilesWithoutMatch is --files-without-match: the exact complement
+	// of ModeFilesWithMatches -- lists files with ZERO matches instead of
+	// at least one. Exit code polarity is INVERTED from every other mode
+	// (verified against the real rg binary: exit 0 iff at least one file
+	// was printed, exit 1 iff every file had a real match and nothing was
+	// printed) -- see internal/engine's matchTracker, which needs to know
+	// about this mode specifically to flip its match-signal aggregation.
+	ModeFilesWithoutMatch
 	// ModeFiles is --files: list every file that would be searched,
 	// without searching it. See the SearchMode doc above for its
 	// last-flag-wins interaction with -c/-l, and ParseArgs for how it
@@ -703,6 +722,28 @@ func buildV1Flags() []*flagSpec {
 			long: "files-with-matches", short: 'l', kind: kindSwitch,
 			applySwitch: func(cfg *Config, _ *parseState, _ bool) error {
 				cfg.Mode = ModeFilesWithMatches
+				return nil
+			},
+		},
+		{
+			// --count-matches has no short form and no negation in rg
+			// (defs.rs's CountMatches never sets name_short/name_negated).
+			// Joins the same last-flag-wins Mode field every other mode
+			// flag writes -- see SearchMode's doc.
+			long: "count-matches", kind: kindSwitch,
+			applySwitch: func(cfg *Config, _ *parseState, _ bool) error {
+				cfg.Mode = ModeCountMatches
+				return nil
+			},
+		},
+		{
+			// --files-without-match has no short form in rg (defs.rs's
+			// FilesWithoutMatch never sets name_short). Verified against
+			// the real rg binary: last-flag-wins against -l either order,
+			// same as every other mode flag.
+			long: "files-without-match", kind: kindSwitch,
+			applySwitch: func(cfg *Config, _ *parseState, _ bool) error {
+				cfg.Mode = ModeFilesWithoutMatch
 				return nil
 			},
 		},

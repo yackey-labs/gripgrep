@@ -20,10 +20,18 @@ import (
 // count/paths-only/collecting one); Run consults it, together with the
 // per-file BinaryMode, to apply rg's binary suppression rules before any
 // line reaches Sink -- see matchTracker's doc.
+//
+// InvertMatchSignal marks a Sink whose exit-code contribution is the
+// COMPLEMENT of search.Stats.Matched -- currently only cmd/gg's
+// --files-without-match (printer.FilesWithoutMatch), whose whole purpose
+// is to report files where NOTHING matched, and whose real-rg-verified
+// exit code is 0 iff at least one such file was found, not iff any file
+// had a real match. See matchTracker's doc for where this is consulted.
 type Worker struct {
-	Searcher *search.Searcher
-	Sink     search.Sink
-	Standard bool
+	Searcher          *search.Searcher
+	Sink              search.Sink
+	Standard          bool
+	InvertMatchSignal bool
 }
 
 // NewWorkerFunc builds one Worker. Called by Run's own sync.Pool, so it
@@ -161,24 +169,31 @@ func Run(cfg Config, newWorker NewWorkerFunc, quiet QuitSink, stop func() bool, 
 
 		sink := w.Sink
 		standard := w.Standard
+		invertMatchSignal := w.InvertMatchSignal
 		if quiet != nil {
 			// -q always overrides Mode (Config.Quiet's doc: "independent
 			// of Mode"), so the binary-message branches below must never
 			// fire under -q even if Mode happens to be ModeStandard --
 			// quiet writes nothing, ever, and matchTracker must not
-			// write to Dest on its behalf.
+			// write to Dest on its behalf. cmd/gg's execute() also never
+			// reads Result.Matched under -q (it branches on quiet.Found()
+			// instead), so invertMatchSignal is moot here either way --
+			// forced off anyway, for the same "quiet wins outright"
+			// reason standard is.
 			sink = quiet
 			standard = false
+			invertMatchSignal = false
 		}
 		tracked := &matchTracker{
-			Sink:           sink,
-			matched:        &anyMatched,
-			standard:       standard,
-			binMode:        w.Searcher.BinaryMode,
-			showPath:       bm.ShowPath,
-			heading:        bm.Heading,
-			contextEnabled: bm.ContextEnabled,
-			dest:           bm.Dest,
+			Sink:              sink,
+			matched:           &anyMatched,
+			standard:          standard,
+			invertMatchSignal: invertMatchSignal,
+			binMode:           w.Searcher.BinaryMode,
+			showPath:          bm.ShowPath,
+			heading:           bm.Heading,
+			contextEnabled:    bm.ContextEnabled,
+			dest:              bm.Dest,
 			searcher:       w.Searcher,
 		}
 
