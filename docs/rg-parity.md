@@ -17,7 +17,7 @@ document is regenerated).
 | ripgrep binary (golden suite + CI benchmarks) | **rg 15.1.0** (single pin: `internal/bench/rg-version.txt`, enforced by the suite itself) | every implemented flag is byte-diff-verified against this binary (17-case e2e suite + full-tree diffs) |
 | gripgrep | `4243295` / pending release | the status column below |
 
-<!-- BEGIN GENERATED: score -->**Score: 65 of 104 rg flags implemented.**<!-- END GENERATED --> The gap is
+<!-- BEGIN GENERATED: score -->**Score: 69 of 104 rg flags implemented.**<!-- END GENERATED --> The gap is
 dominated by a few feature clusters (see the notes after the table):
 the file-type system, PCRE2/multiline, encodings, output decoration,
 and replacement.
@@ -74,7 +74,7 @@ unknown-flag error, exit 2)
 | Flag | Short | gg | Summary |
 |---|---|---|---|
 | `--binary` (+`--no-binary`) |  | ⚠️ | Search binary files. |
-| `--follow` (+`--no-follow`) | `-L` | ⚠️ | Follow symbolic links. |
+| `--follow` (+`--no-follow`) | `-L` | ✅ | Follow symbolic links. |
 | `--glob` | `-g` | ✅ | Include or exclude file paths. |
 | `--glob-case-insensitive` (+`--no-glob-case-insensitive`) |  | ✅ | Process all glob patterns case insensitively. |
 | `--hidden` (+`--no-hidden`) | `-.` | ✅ | Search hidden files and directories. |
@@ -91,7 +91,7 @@ unknown-flag error, exit 2)
 | `--no-ignore-parent` (+`--ignore-parent`) |  | ✅ | Don't use ignore files in parent directories. |
 | `--no-ignore-vcs` (+`--ignore-vcs`) |  | ✅ | Don't use ignore files from source control. |
 | `--no-require-git` (+`--require-git`) |  | ✅ | Use .gitignore outside of git repositories. |
-| `--one-file-system` (+`--no-one-file-system`) |  | ❌ | Skip directories on other file systems. |
+| `--one-file-system` (+`--no-one-file-system`) |  | ✅ | Skip directories on other file systems. |
 | `--type` | `-t` | ✅ | Only search files matching TYPE. |
 | `--type-add` |  | ✅ | Add a new glob for a file type. |
 | `--type-clear` |  | ✅ | Clear globs for a file type. |
@@ -153,8 +153,8 @@ unknown-flag error, exit 2)
 | Flag | Short | gg | Summary |
 |---|---|---|---|
 | `--debug` |  | ❌ | Show debug messages. |
-| `--no-ignore-messages` (+`--ignore-messages`) |  | ❌ | Suppress gitignore parse error messages. |
-| `--no-messages` (+`--messages`) |  | ❌ | Suppress some error messages. |
+| `--no-ignore-messages` (+`--ignore-messages`) |  | ✅ | Suppress gitignore parse error messages. |
+| `--no-messages` (+`--messages`) |  | ✅ | Suppress some error messages. |
 | `--stats` (+`--no-stats`) |  | ❌ | Print statistics about the search. |
 | `--trace` |  | ❌ | Show trace messages. |
 
