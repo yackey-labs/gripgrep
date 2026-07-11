@@ -98,6 +98,17 @@ type Standard struct {
 	// the MaxColumns length check but never changing an already-computed
 	// Column/ByteOffset field. See cmd/gg's Config.Trim doc.
 	Trim bool
+	// Null is rg's -0/--null: the path's own terminator -- the '\n' after
+	// a heading path line, or the prelude separator (sep, below) right
+	// after an inline path -- becomes a NUL byte instead. Every OTHER
+	// separator in the row (line-number/column/byte-offset fields, and
+	// the field-match/field-context separator between the last prelude
+	// field and the text) is completely unaffected, including when
+	// those are themselves customized -- verified against the real rg
+	// binary: `--field-match-separator='|' --null -H -n` renders
+	// "path\x00N|text", NUL for the path only, '|' everywhere else. See
+	// writeLine.
+	Null bool
 
 	buf  []byte
 	path []byte
@@ -415,13 +426,21 @@ func (p *Standard) writeLine(text []byte, lineNumber int64, hasLineNumber bool, 
 		if !p.headingDone {
 			if p.ShowPath {
 				p.appendPath()
-				p.buf = append(p.buf, '\n')
+				if p.Null {
+					p.buf = append(p.buf, 0)
+				} else {
+					p.buf = append(p.buf, '\n')
+				}
 			}
 			p.headingDone = true
 		}
 	} else if p.ShowPath {
 		p.appendPath()
-		p.buf = append(p.buf, sep)
+		if p.Null {
+			p.buf = append(p.buf, 0)
+		} else {
+			p.buf = append(p.buf, sep)
+		}
 	}
 	if hasLineNumber {
 		p.appendLineNumber(lineNumber)

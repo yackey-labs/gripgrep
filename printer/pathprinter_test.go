@@ -12,7 +12,7 @@ import (
 // inherent nondeterminism), only the resulting set of lines.
 func TestPathPrinter_WritesAllPaths(t *testing.T) {
 	dest, out := newTestDest()
-	pp := NewPathPrinter(dest, false)
+	pp := NewPathPrinter(dest, false, false)
 
 	want := []string{"a.txt", "b/c.txt", "d/e/f.txt"}
 	for _, p := range want {
@@ -38,7 +38,7 @@ func TestPathPrinter_WritesAllPaths(t *testing.T) {
 // nothing sent writes nothing at all.
 func TestPathPrinter_EmptyProducesNoOutput(t *testing.T) {
 	dest, out := newTestDest()
-	pp := NewPathPrinter(dest, false)
+	pp := NewPathPrinter(dest, false, false)
 	close(pp.Paths())
 	pp.Wait()
 
@@ -53,7 +53,7 @@ func TestPathPrinter_EmptyProducesNoOutput(t *testing.T) {
 // same ansiPath scheme Count/FilesWithMatches use for their own paths).
 func TestPathPrinter_Color(t *testing.T) {
 	dest, out := newTestDest()
-	pp := NewPathPrinter(dest, true)
+	pp := NewPathPrinter(dest, true, false)
 
 	pp.Paths() <- "a.txt"
 	close(pp.Paths())
@@ -65,12 +65,30 @@ func TestPathPrinter_Color(t *testing.T) {
 	}
 }
 
+// TestPathPrinter_Null verifies --null/-0 --files: each path is
+// terminated with a NUL byte instead of '\n', matching the real rg
+// binary (`rg --null --files` -- see round #40's differential sweep).
+func TestPathPrinter_Null(t *testing.T) {
+	dest, out := newTestDest()
+	pp := NewPathPrinter(dest, false, true)
+
+	pp.Paths() <- "a.txt"
+	pp.Paths() <- "b.txt"
+	close(pp.Paths())
+	pp.Wait()
+
+	want := "a.txt\x00b.txt\x00"
+	if got := out.String(); got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
 // TestPathPrinter_ManyPathsFlushInBatches exercises the flush-on-batch-
 // size path (more than pathBatchSize paths sent) to make sure batching
 // doesn't drop or duplicate anything.
 func TestPathPrinter_ManyPathsFlushInBatches(t *testing.T) {
 	dest, out := newTestDest()
-	pp := NewPathPrinter(dest, false)
+	pp := NewPathPrinter(dest, false, false)
 
 	n := pathBatchSize*3 + 7
 	for i := 0; i < n; i++ {

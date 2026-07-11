@@ -307,8 +307,16 @@ type Config struct {
 	// silently ignored under -l/--files-without-match) and never changes
 	// the exit code -- see printer.Count.IncludeZero's doc.
 	IncludeZero bool
-	Quiet       bool // -q/--quiet; independent of Mode, matches rg (quiet suppresses output regardless of search mode)
-	Color       ColorMode
+	// Null is rg's -0/--null: terminates each path with a NUL byte
+	// instead of whatever character would normally immediately follow it
+	// (the ':'/'-' prelude separator in Standard mode, or the trailing
+	// '\n' itself for -l/--files-without-match/--files, where the path is
+	// the only field) -- see printer.Standard.Null's doc for the exact
+	// per-mode rule, verified against the real rg binary. No negation in
+	// rg (defs.rs's Null::update asserts "--null has no negation").
+	Null  bool
+	Quiet bool // -q/--quiet; independent of Mode, matches rg (quiet suppresses output regardless of search mode)
+	Color ColorMode
 	// ContextBefore/ContextAfter are already resolved from rg's
 	// independently-tracked -A/-B/-C (see resolveContext); -A/-B always
 	// partially override -C's corresponding side, regardless of order.
@@ -648,6 +656,14 @@ func buildV1Flags() []*flagSpec {
 			long: "heading", negated: "no-heading", kind: kindSwitch,
 			applySwitch: func(cfg *Config, _ *parseState, on bool) error {
 				cfg.Heading = &on
+				return nil
+			},
+		},
+		{
+			// -0/--null: no negation in rg. See Config.Null's doc.
+			long: "null", short: '0', kind: kindSwitch,
+			applySwitch: func(cfg *Config, _ *parseState, _ bool) error {
+				cfg.Null = true
 				return nil
 			},
 		},

@@ -11,6 +11,10 @@ type PathPrinter struct {
 	paths chan string
 	done  chan struct{}
 	color bool
+	// null is rg's --null/-0: each path is terminated with a NUL byte
+	// instead of '\n' (verified against the real rg binary: `rg --null
+	// --files` writes "path\0path\0...", no newlines at all).
+	null bool
 }
 
 // batchSize bounds how many paths PathPrinter accumulates before
@@ -21,16 +25,18 @@ const pathBatchSize = 256
 // on Paths() and writes them to dest until that channel is closed. color
 // enables coloring each path (matching rg's own `--files --color=always`
 // behavior, verified against the real rg binary -- it does colorize
-// --files output, the same magenta used for paths everywhere else); it
-// is a constructor parameter rather than a field set after construction
-// because run's goroutine starts immediately and reads it on every path,
-// so setting it later would race.
-func NewPathPrinter(dest *Dest, color bool) *PathPrinter {
+// --files output, the same magenta used for paths everywhere else); null
+// is --null/-0 (see the null field's doc). Both are constructor
+// parameters rather than fields set after construction because run's
+// goroutine starts immediately and reads them on every path, so setting
+// them later would race.
+func NewPathPrinter(dest *Dest, color, null bool) *PathPrinter {
 	p := &PathPrinter{
 		dest:  dest,
 		paths: make(chan string, pathBatchSize),
 		done:  make(chan struct{}),
 		color: color,
+		null:  null,
 	}
 	go p.run()
 	return p
@@ -59,7 +65,11 @@ func (p *PathPrinter) run() {
 		} else {
 			buf = append(buf, path...)
 		}
-		buf = append(buf, '\n')
+		if p.null {
+			buf = append(buf, 0)
+		} else {
+			buf = append(buf, '\n')
+		}
 		n++
 		if n >= pathBatchSize || len(buf) >= maxPooledCap {
 			p.dest.Write(buf)

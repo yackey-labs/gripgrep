@@ -38,7 +38,7 @@ func executeFiles(cfg *Config, stdout, stderr io.Writer) int {
 	// spin up its goroutine just to discard everything it would write.
 	var pp *printer.PathPrinter
 	if !cfg.Quiet {
-		pp = printer.NewPathPrinter(dest, color)
+		pp = printer.NewPathPrinter(dest, color, cfg.Null)
 	}
 
 	visit := func(path string) {

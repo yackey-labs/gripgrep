@@ -50,6 +50,11 @@ type Count struct {
 	// even though "path:0" lines were printed) -- it's purely a display
 	// change, so ONLY Finish's early-return guard below is affected.
 	IncludeZero bool
+	// Null is rg's -0/--null: the ':' between path and count becomes a
+	// NUL byte instead (the trailing '\n' after the count is unaffected)
+	// -- see printer.Standard.Null's doc for the general rule this is
+	// one instance of.
+	Null bool
 
 	buf         []byte
 	path        []byte
@@ -113,7 +118,11 @@ func (p *Count) Finish(path string, stats *search.Stats) error {
 		} else {
 			p.buf = append(p.buf, p.path...)
 		}
-		p.buf = append(p.buf, ':')
+		if p.Null {
+			p.buf = append(p.buf, 0)
+		} else {
+			p.buf = append(p.buf, ':')
+		}
 	}
 	p.buf = strconv.AppendInt(p.buf, p.count, 10)
 	p.buf = append(p.buf, '\n')
@@ -128,6 +137,10 @@ type FilesWithMatches struct {
 	dest *Dest
 	// Color enables coloring the path, matching rg's -l --color=always.
 	Color bool
+	// Null is rg's -0/--null: the trailing '\n' becomes a NUL byte
+	// instead -- since path is the only field -l ever prints, this IS
+	// the path's own terminator (see printer.Standard.Null's doc).
+	Null bool
 
 	buf     []byte
 	path    []byte
@@ -174,7 +187,11 @@ func (p *FilesWithMatches) Finish(path string, stats *search.Stats) error {
 	} else {
 		p.buf = append(p.buf, p.path...)
 	}
-	p.buf = append(p.buf, '\n')
+	if p.Null {
+		p.buf = append(p.buf, 0)
+	} else {
+		p.buf = append(p.buf, '\n')
+	}
 	return p.dest.Write(p.buf)
 }
 
@@ -196,6 +213,8 @@ type FilesWithoutMatch struct {
 	// Color enables coloring the path, matching rg's --files-without-match
 	// --color=always.
 	Color bool
+	// Null is rg's -0/--null -- see FilesWithMatches.Null's doc.
+	Null bool
 
 	buf     []byte
 	path    []byte
@@ -244,7 +263,11 @@ func (p *FilesWithoutMatch) Finish(path string, stats *search.Stats) error {
 	} else {
 		p.buf = append(p.buf, p.path...)
 	}
-	p.buf = append(p.buf, '\n')
+	if p.Null {
+		p.buf = append(p.buf, 0)
+	} else {
+		p.buf = append(p.buf, '\n')
+	}
 	return p.dest.Write(p.buf)
 }
 
