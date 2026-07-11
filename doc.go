@@ -36,6 +36,13 @@
 // same-name Options method (CLI-flag-equivalent control), except Files,
 // which has no Options variant -- see its own doc comment for why.
 //
+// Each verb also has a context.Context-first twin (SearchContext,
+// SearchStreamContext, FilesWithMatchContext, CountMatchesContext,
+// FilesContext, and the Options methods) for cancellation: when ctx is
+// done the call stops promptly and returns ctx.Err(), with no partial
+// results from the collecting verbs. See docs/library.md's Cancellation
+// section for the exact semantics and promptness granularity.
+//
 // See docs/library.md in the module root for the full guide: an
 // Options-to-flags reference table, the Match struct's context/early-stop
 // semantics, the streaming concurrency contract, the error model, and

@@ -241,6 +241,13 @@ err := gripgrep.SearchStream("TODO", []string{"."}, func(m gripgrep.Match) bool 
 })
 ```
 
+Cancellation via a `context.Context`-first twin of every verb (returns
+`ctx.Err()`, no partial results on cancel):
+
+```go
+matches, err := gripgrep.SearchContext(ctx, "TODO", ".") // also *Context on the others
+```
+
 Everything the facade returns is an independent copy — safe to retain,
 map-key, or pass between goroutines. The lower-level packages (`glob`,
 `walk`, `match`, `search`, `printer`) remain public for callers who

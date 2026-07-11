@@ -131,6 +131,69 @@ streaming over `Search` when the tree is large and you expect to stop
 early (first-hit-wins), or when you don't want to hold every match in
 memory at once.
 
+## Cancellation
+
+Every verb has a `context.Context`-first twin -- `SearchContext`,
+`SearchStreamContext`, `FilesWithMatchContext`, `CountMatchesContext`,
+`FilesContext`, and the matching `Options` methods -- for callers that need
+to abandon an in-progress search (a request was cancelled, a deadline
+fired). The context is always the first parameter, never a field on
+`Options`, following Go convention:
+
+```go
+ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+defer cancel()
+
+matches, err := gripgrep.SearchContext(ctx, "TODO", ".")
+if errors.Is(err, context.DeadlineExceeded) {
+    // search ran out of time; matches is nil
+}
+```
+
+The non-`Context` verbs are unchanged: each simply delegates to its twin
+with `context.Background()`, which starts no watcher and behaves exactly as
+before -- so adopting the context variants costs nothing on the paths that
+don't use them.
+
+**Semantics when `ctx` is done:**
+
+- The call returns an error for which `errors.Is(err, ctx.Err())` is true
+  (`context.Canceled` or `context.DeadlineExceeded`). If per-file errors
+  were also collected, the cancellation error wraps them, so both remain
+  visible.
+- The collecting verbs (`SearchContext`, `FilesWithMatchContext`,
+  `CountMatchesContext`, `FilesContext`) return **no partial results** on
+  cancellation -- `(nil, err)`, not the matches gathered so far. (On an
+  ordinary per-file error with a live context, they still return partial
+  results plus the error, exactly like the non-context verbs.)
+- `SearchStreamContext` invokes your callback **exactly zero more times**
+  once the context is cancelled: each delivery is guarded by a synchronous
+  `ctx.Err()` check, and because deliveries are serialized, a callback that
+  cancels its own context is never called again -- this holds regardless of
+  scheduler timing, not just eventually. It then returns the context error.
+- An already-cancelled context returns immediately, before any file is
+  opened and without a single callback.
+
+**Promptness -- honest granularity.** Cancellation is not instantaneous; it
+is observed at boundaries, riding the same early-stop machinery a streaming
+callback's `false` return uses:
+
+- At every **directory** visit and every **file** boundary during the walk
+  -- so a cancelled walk over a large tree stops within one file, not after
+  the whole tree.
+- On the **intra-file parallel path** (files past ~64 MiB, searched in
+  concurrent chunks), when chunk **replay** begins delivering matches:
+  delivery stops at the next replayed match. The concurrent scan of the
+  chunks already dispatched runs to completion first -- gg never checks the
+  context per scanned line -- so on a single very large file you wait at
+  most for that scan, but the (often far larger) delivery of every match in
+  the file is skipped. It is a "stop soon," not a "stop this instant."
+
+The per-delivery `ctx.Err()` guard above (which makes stream callbacks
+exactly-zero after cancellation) is the only per-match context check, and
+it exists only on the context path; the walk-boundary stops are what keep a
+cancelled tree walk from opening more files.
+
 ## Error model
 
 Per-file errors (permission denied, a file that disappeared between
