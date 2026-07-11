@@ -243,6 +243,20 @@ func (w *worker) processDir(t *dirTask) bool {
 	}
 
 	q := w.queues[w.idx]
+	// single is true for -j1 (exactly one queue exists -- see walk.go's
+	// queues := make([]*dirQueue, n)). With only one worker, nobody can
+	// ever steal a deferred subdirectory task, so descending into it
+	// immediately, right where it's encountered in the readdir loop,
+	// reproduces rg's true per-entry recursive-descent order (each
+	// subdirectory's entire subtree completes at its exact readdir
+	// position, interleaved with sibling files -- verified empirically,
+	// round #38) for free: no buffering or push-order reversal needed,
+	// and the dirQueue push/pop is skipped entirely for this path. n>1
+	// (default parallelism) is untouched -- it keeps deferring to the
+	// queue exactly as before, since there is no -j1-style ordering
+	// contract for parallel mode (see dirQueue's doc). Computed once per
+	// processDir call, not per entry.
+	single := len(w.queues) == 1
 	for _, d := range entries {
 		name := d.Name()
 		if name == "" {
@@ -286,17 +300,24 @@ func (w *worker) processDir(t *dirTask) bool {
 			if st == SkipDir {
 				continue
 			}
-			q.push(&dirTask{
+			child := &dirTask{
 				path:         string(childPath),
 				abs:          string(childAbs),
 				depth:        t.depth + 1,
 				ignore:       node,
 				symAncestors: symAnc,
-			})
+			}
+			if single {
+				if w.processDir(child) {
+					return true
+				}
+				continue
+			}
+			q.push(child)
 
 		case TypeSymlink:
 			if w.opts.FollowSymlinks {
-				if w.followSymlink(childPath, childAbs, t.depth+1, node, symAnc, q) {
+				if w.followSymlink(childPath, childAbs, t.depth+1, node, symAnc, q, single) {
 					return true
 				}
 				continue
@@ -333,7 +354,7 @@ func (w *worker) processDir(t *dirTask) bool {
 // childPath/childAbs are the worker's scratch buffers — still valid at
 // entry, since no other joinPath call has happened since they were
 // filled by the caller.
-func (w *worker) followSymlink(childPath, childAbs []byte, depth int, node *ignoreNode, symAnc *symNode, q *dirQueue) (quit bool) {
+func (w *worker) followSymlink(childPath, childAbs []byte, depth int, node *ignoreNode, symAnc *symNode, q *dirQueue, single bool) (quit bool) {
 	absStr := string(childAbs)
 	pathStr := bufString(childPath)
 	target, err := os.Stat(absStr)
@@ -351,7 +372,11 @@ func (w *worker) followSymlink(childPath, childAbs []byte, depth int, node *igno
 		if st == SkipDir {
 			return false
 		}
-		q.push(&dirTask{path: string(childPath), abs: absStr, depth: depth, ignore: node, symAncestors: symAnc})
+		child := &dirTask{path: string(childPath), abs: absStr, depth: depth, ignore: node, symAncestors: symAnc}
+		if single {
+			return w.processDir(child)
+		}
+		q.push(child)
 		return false
 	}
 	if w.opts.MaxFileSize > 0 && target.Size() > w.opts.MaxFileSize {

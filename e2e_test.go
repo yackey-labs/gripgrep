@@ -419,23 +419,22 @@ func TestGoldenVsRipgrep_FilesOnLinuxTree(t *testing.T) {
 // "context" case only proves gg and rg produce the same *set* of lines,
 // not that "--" block boundaries and within-block ordering match.
 //
-// This deliberately targets a single explicit file (not a directory):
-// with more than one file in play, gg's and rg's walk order can differ
-// file-to-file even at -j1 when a directory tree has multiple sibling
-// subdirectories -- pinning -j1 over testdata/corpus reorders which
-// *file* comes first between the two tools. Round #37 traced this to a
-// real, still-open gg bug (not an inherent cross-tool traversal
-// difference, as an earlier version of this comment claimed):
-// worker.go's processDir pushes each subdirectory dirTask in readdir
-// encounter order onto a LIFO queue that's popped tail-first, so
-// siblings come out in reverse-of-readdir order instead of rg's readdir
-// order -- see round #37's report for the repro and TestGoldenVsRipgrep_
-// ExplicitArgOrder's doc for the analogous, now-fixed bug in root-task
-// seeding. Fixing the subdirectory case touches worker.go's per-entry
-// hot path, so it was deliberately left open rather than fixed in round
-// #37; this test works around it by using a single file, so a raw
-// byte-for-byte diff here can only mean a real within-file
-// context/grouping bug -- exactly what this test exists to catch.
+// This deliberately targets a single explicit file (not a directory).
+// Earlier versions of this comment noted that, before round #38, gg's
+// and rg's walk order could differ file-to-file at -j1 whenever a
+// directory tree had multiple sibling subdirectories or interleaved
+// files -- worker.go's processDir finished scanning a whole directory
+// (visiting files inline but only *enqueueing* subdirectories) before
+// ever descending into any of them, so sibling subtrees came out
+// reversed and clumped after all of that directory's own files, instead
+// of interleaved with them at rg's true per-entry readdir position.
+// Round #38 fixed this for -j1 (see TestGoldenVsRipgrep_ExplicitArgOrder's
+// nested-tree cases, added in the same round, which now cover multi-file
+// multi-directory ordering directly). This test still scopes itself to a
+// single file, since that was always sufficient and remains the more
+// targeted way to isolate within-file context/grouping bugs from
+// cross-file walk-order bugs: a raw byte-for-byte diff here can only
+// mean a real within-file context/grouping bug.
 //
 // The fixture has two matches far enough apart that -C1 must produce two
 // separate blocks joined by "--": lines 1-2 (match then trailing
@@ -891,18 +890,18 @@ func TestGoldenVsRipgrep_HeadingGrouping(t *testing.T) {
 // above.
 //
 // The "dirs" and "mixed" cases use FLAT directories only (no
-// subdirectories). Nested directories have a SEPARATE, still-open -j1
-// parity bug: worker.go's processDir pushes each subdirectory dirTask in
-// readdir encounter order and (like the root-seeding bug this test
-// targets) that queue is popped LIFO, so sibling subdirectories come out
-// in reverse-of-readdir order instead of rg's readdir order -- the same
-// push/pop asymmetry as the bug this file fixes, just one level down and
-// in the actual per-entry hot path, which is why it wasn't fixed in round
-// #37 (see round #37's report for the full writeup and repro). It is a
-// real gap in the byte-parity guarantee, not an accepted/inherent
-// traversal-philosophy difference -- this test stays scoped to flat
-// directories so it doesn't conflate that separate, still-open bug with
-// the top-level argument-seeding bug it exists to catch.
+// subdirectories), keeping this test scoped to the top-level
+// argument-seeding bug it exists to catch. Nested directories have their
+// own, separate ordering coverage: see TestGoldenVsRipgrep_NestedSiblingOrder
+// below, which covers round #38's fix for sibling-subdirectory descent
+// order (previously a still-open gap noted in an earlier version of this
+// comment -- worker.go's processDir used to finish scanning a whole
+// directory, only *enqueueing* subdirectories, before ever descending
+// into any of them, so sibling subtrees came out reversed relative to
+// rg's readdir order and declustered from interleaved sibling files;
+// round #38 fixed this for -j1 by descending into a subdirectory
+// immediately, in the readdir loop, whenever there is only one worker to
+// steal work from).
 func TestGoldenVsRipgrep_ExplicitArgOrder(t *testing.T) {
 	dir := t.TempDir()
 	files := map[string]string{
@@ -989,6 +988,99 @@ func TestGoldenVsRipgrep_ExplicitArgOrder(t *testing.T) {
 			t.Errorf("raw (unsorted, -j1, --files) stdout mismatch:\n--- rg stdout ---\n%s\n--- gg stdout ---\n%s", rgOut, ggOut)
 		}
 	})
+}
+
+// TestGoldenVsRipgrep_NestedSiblingOrder covers round #38's fix: at -j1,
+// rg's traversal is true per-entry recursive descent -- a subdirectory's
+// entire subtree is emitted at its exact readdir(3) position, interleaved
+// with sibling files, before moving on to the next entry in the parent
+// directory. gg used to violate this: worker.go's processDir visited
+// every file in a directory inline but only *enqueued* subdirectories for
+// later processing, so (a) all of a directory's own files came out before
+// any of its subdirectories' subtrees, and (b) sibling subdirectories
+// themselves came out in reverse of readdir order (pushed in encounter
+// order onto a LIFO queue, popped tail-first). Fixed by descending into a
+// subdirectory immediately, synchronously, right in the readdir loop,
+// whenever there is only one worker in play (nobody else could ever have
+// stolen the deferred task anyway) -- see processDir's "single" doc.
+//
+// Verified empirically before the fix (round #38's probe): a tree with
+// f1.txt, sub1/x.txt, f2.txt, sub2/y.txt whose actual on-disk readdir
+// order came out as [sub2, f2.txt, sub1, f1.txt] made rg emit
+// "sub2/y.txt, f2.txt, sub1/x.txt, f1.txt" (each subdirectory's subtree
+// at its own readdir position) while gg emitted "f2.txt, f1.txt,
+// sub1/x.txt, sub2/y.txt" (both files first, subdirectories reversed and
+// clustered at the end) -- two independent divergences from one root
+// cause, neither of which a build that only reverses the subdirectory
+// push order (without changing where descent happens) would have fixed.
+//
+// This test doesn't try to control the filesystem's actual readdir order
+// (not portably controllable from Go); it just builds a tree with
+// multiple sibling directories and interleaved files at 3+ nested levels
+// and diffs gg's raw, unsorted -j1 stdout against the real rg binary's --
+// whatever order the filesystem actually produces, the two tools must
+// agree on it byte-for-byte.
+func TestGoldenVsRipgrep_NestedSiblingOrder(t *testing.T) {
+	dir := t.TempDir()
+	// Three siblings at the root, each with its own file, each holding
+	// three more siblings one level down, each of THOSE holding a file --
+	// three levels of nesting, three-way branching at each level, plus a
+	// root-level file interleaved with the top siblings so file/directory
+	// relative order is exercised at every level, not just leaves.
+	if err := os.WriteFile(filepath.Join(dir, "root0.txt"), []byte("cat root0\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, top := range []string{"a", "b", "c"} {
+		topDir := filepath.Join(dir, top)
+		if err := os.MkdirAll(topDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(topDir, top+"0.txt"), []byte("cat "+top+"0\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		for _, mid := range []string{"x", "y", "z"} {
+			midDir := filepath.Join(topDir, mid)
+			if err := os.MkdirAll(midDir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			for _, leaf := range []string{"1", "2"} {
+				name := top + mid + leaf + ".txt"
+				content := "cat " + top + mid + leaf + "\n"
+				if err := os.WriteFile(filepath.Join(midDir, name), []byte(content), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+		}
+	}
+
+	_, thisFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("could not determine test file location")
+	}
+	ggBin := buildGG(t, filepath.Dir(thisFile))
+
+	cases := []struct {
+		name string
+		args []string
+	}{
+		{"files", []string{"-j1", "--files", dir}},
+		{"search", []string{"-j1", "-n", "cat", dir}},
+		// -A1 exercises ordering through the printer's context-block
+		// grouping, not just raw per-line/per-file emission order.
+		{"search_context", []string{"-j1", "-n", "-A1", "cat", dir}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rgOut, rgErr, rgCode := run(t, "rg", tc.args)
+			ggOut, ggErr, ggCode := run(t, ggBin, tc.args)
+			if rgCode != ggCode {
+				t.Errorf("exit code mismatch: rg=%d gg=%d\nrg stderr: %s\ngg stderr: %s", rgCode, ggCode, rgErr, ggErr)
+			}
+			if !bytes.Equal(rgOut, ggOut) {
+				t.Errorf("raw (unsorted, -j1) stdout mismatch:\n--- rg stdout ---\n%s\n--- gg stdout ---\n%s", rgOut, ggOut)
+			}
+		})
+	}
 }
 
 // TestGoldenVsRipgrep_GlobCaseInsensitive covers round #32's --iglob and
