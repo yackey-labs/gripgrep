@@ -608,3 +608,83 @@ func TestOptions_WordLineRegexpTieBreak(t *testing.T) {
 		t.Fatalf("Word-only and LineRegexp-only gave the same %d matches on this fixture -- the fixture doesn't actually distinguish the two boundary modes, so the tie-break isn't proven", len(wordOnly))
 	}
 }
+
+// TestFacadeByteOffset_MultiChunk locks Match.ByteOffset's chunk-adjusted
+// correctness (round #39's brief: search.Match.Offset must already be
+// absolute, chunk-adjusted, per search/core.go's runChunk, which seeds
+// each intra-file parallel chunk's absOffsetBase from its own byte
+// position in the file -- see runChunk's doc). testdata/facade/column.txt
+// is 3 lines, far below search.defaultParallelMinBytes (64MB), so every
+// other Column/ByteOffset test in this file only ever exercises the
+// single-chunk path. This test generates a >64MB fixture at TempDir (not
+// checked in) with "needle" lines spread across the whole file --
+// crossing multiple 4-worker chunk boundaries at the default ParallelWorkers
+// -- and diffs the facade's ByteOffset against the CLI's own -b on that
+// same file, the same oracle strategy TestFacadeNewOptionsVsCLI's
+// ByteOffset subtest uses on the small single-chunk fixture.
+func TestFacadeByteOffset_MultiChunk(t *testing.T) {
+	if testing.Short() {
+		t.Skip("writes/searches a 64MB+ fixture to exercise intra-file parallel chunking; skipped in -short")
+	}
+	bin := buildGGForFacadeTest(t)
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "big.txt")
+	const targetSize = 70 << 20 // comfortably over the 64MB parallel threshold
+	const needleEvery = 5 << 20 // spread needle lines across every chunk
+	filler := []byte("the quick brown fox jumps over the lazy dog\n")
+	needleLine := []byte("here is the needle line\n")
+
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatalf("create fixture: %v", err)
+	}
+	w := bufio.NewWriter(f)
+	written, nextNeedleAt := 0, needleEvery
+	for written < targetSize {
+		if written >= nextNeedleAt {
+			if _, err := w.Write(needleLine); err != nil {
+				t.Fatalf("write: %v", err)
+			}
+			written += len(needleLine)
+			nextNeedleAt += needleEvery
+			continue
+		}
+		if _, err := w.Write(filler); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+		written += len(filler)
+	}
+	if err := w.Flush(); err != nil {
+		t.Fatalf("flush: %v", err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+
+	cliOut := runGG(t, bin, dir, "-n", "-H", "--column", "-b", "needle", "big.txt")
+	want := parseCLIColumnLines(t, cliOut)
+	if len(want) < 10 {
+		t.Fatalf("only %d needle lines reported by the CLI -- fixture generation didn't spread enough matches across chunks", len(want))
+	}
+
+	gotMatches, err := Options{}.Search("needle", path)
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if len(gotMatches) != len(want) {
+		t.Fatalf("got %d matches, CLI reported %d lines", len(gotMatches), len(want))
+	}
+	for _, m := range gotMatches {
+		w, ok := want[m.LineNumber]
+		if !ok {
+			t.Fatalf("facade matched line %d, CLI --column -b did not report it", m.LineNumber)
+		}
+		if m.ByteOffset != w.Offset {
+			t.Errorf("line %d: ByteOffset = %d, want %d (CLI -b) -- chunk-adjustment mismatch", m.LineNumber, m.ByteOffset, w.Offset)
+		}
+		if m.Column != w.Col {
+			t.Errorf("line %d: Column = %d, want %d (CLI --column)", m.LineNumber, m.Column, w.Col)
+		}
+	}
+}
