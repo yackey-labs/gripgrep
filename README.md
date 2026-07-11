@@ -6,13 +6,20 @@ can Go compete with Rust's flagship CLI on its home turf?
 
 It ships as both a CLI (`gg`, a drop-in `rg` workalike for the flags it
 supports) and a set of reusable library packages (`glob`, `walk`, `match`,
-`search`, `printer`) you can embed in your own tools.
+`search`, `printer`) you can embed in your own tools. **77 of ripgrep's
+104 flags are implemented 1:1** — same stdout bytes, same exit codes,
+verified flag-by-flag against the pinned `rg` binary — including the
+ignore system (global gitignore, `.rgignore`, `--ignore-file`), `--stats`,
+CRLF/NUL line terminators, `--sort`, and the `--json` event stream. The
+full inventory, including the deliberately-unsupported remainder (PCRE2,
+multiline, encodings), lives in
+[docs/rg-parity.md](docs/rg-parity.md).
 
 **Status: working, correct, and winning most rounds.** gg now beats rg
 outright on large single files (both literal and multi-literal queries)
 and on pure directory traversal (~2× faster), and has pulled
 many-small-files tree search — historically its worst row — to
-statistical parity. As of 2026-07-10 it builds and runs on **Linux,
+statistical parity. As of 2026-07-11 it builds and runs on **Linux,
 macOS, and Windows** (per-OS build-tagged tty/mmap/rawfile/symlink
 layers; everything else was portable Go all along). This is a live
 work-in-progress and the numbers below are the real ones.
@@ -20,9 +27,12 @@ work-in-progress and the numbers below are the real ones.
 ## Where we stand vs ripgrep
 
 Correctness first: for every flag `gg` ships, output is verified against
-real `rg` — a 17-case golden end-to-end suite plus manual full-tree diffs
-(literal, `-i`, `-w`, `-c`, `-l`, regex, `-g`, context, binary handling)
-on the ripgrep source tree itself, byte-identical after sort-normalization.
+real `rg` — hundreds of golden end-to-end cases (every flag lands with a
+probe suite captured from the pinned `rg` binary, covering edge cases
+down to terminator bytes and JSON field order) plus full-tree diffs on
+the ripgrep and Linux kernel source trees, byte-identical. The few known
+deviations are documented, not hidden, in
+[docs/rg-parity.md](docs/rg-parity.md).
 Every layer also has a differential oracle: `glob` is fuzzed against real
 `git check-ignore`, `walk` diffs against `rg --files`, `match` fuzzes
 against Go's stdlib regexp, `search` against a naive oracle.
