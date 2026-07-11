@@ -27,6 +27,31 @@ type Match struct {
 	// further lines to know it -- see SearchStream's doc for what that
 	// means for early-stop timing.
 	After []string
+	// Column is the 1-based BYTE column (not rune column -- rg/gg count
+	// bytes throughout, exactly like LineNumber counts lines, not
+	// display rows) of the FIRST match on Line, mirroring the CLI's
+	// --column semantics. It is computed by re-scanning Line through the
+	// same matcher that found it in the first place, since the search
+	// layer deliberately never carries match bounds through to a Sink
+	// (see printer's findSpans doc for why: only callers that actually
+	// need exact spans -- --column, --vimgrep, match coloring -- pay for
+	// locating them, and this package is now one of those callers). 0
+	// means "no column": either the line genuinely has no matchable span
+	// -- which is exactly what happens for a line reported by an
+	// Options.InvertMatch search (the pattern does NOT match such a
+	// line, by definition, so there is nothing to report a column for) --
+	// or LineNumber is also 0 for the same "couldn't attribute" reason.
+	// This mirrors the CLI's own `--column -v`, which omits the column
+	// field entirely.
+	Column int
+	// ByteOffset is the absolute byte offset of Line's FIRST byte within
+	// its file, mirroring the CLI's plain -b/--byte-offset -- NOT -o -b's
+	// per-OCCURRENCE offset. Match is inherently line-granular (one Match
+	// per matched line, however many times the pattern occurs on it), so
+	// there is no second, occurrence-level offset to report here; a
+	// caller that wants one needs Column (the first occurrence only) or
+	// the low-level search/printer packages directly.
+	ByteOffset int64
 }
 
 // Options controls a search's behavior, mirroring gg's/rg's own CLI

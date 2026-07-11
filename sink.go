@@ -5,6 +5,7 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"github.com/yackey-labs/gripgrep/match"
 	"github.com/yackey-labs/gripgrep/search"
 )
 
@@ -19,6 +20,12 @@ import (
 // caller's callback is (via mu/stopped, shared across every worker).
 type matchCollector struct {
 	before, after int // Options.Before/After (post resolveContext), 0 = no context requested
+
+	// matcher is the same match.Matcher engine.NewSearcher was built
+	// with (shared, read-only, already safe for concurrent use across
+	// every worker's Searcher -- see matchColumn's doc), used to
+	// recompute Match.Column via a re-scan of each matched line.
+	matcher match.Matcher
 
 	path              string
 	pendingBefore     []string
@@ -43,13 +50,43 @@ var _ search.Sink = (*matchCollector)(nil)
 // terminal write, not file content), so the trim happens once, here, for
 // every line this package ever returns.
 func trimLineTerminator(line []byte) string {
+	return string(trimLineTerminatorBytes(line)) // copies
+}
+
+// trimLineTerminatorBytes is trimLineTerminator's non-copying half,
+// factored out so matchColumn can re-scan the SAME terminator-free bytes
+// trimLineTerminator turns into Match.Line, without a second copy just to
+// get a []byte to hand the matcher.
+func trimLineTerminatorBytes(line []byte) []byte {
 	if n := len(line); n > 0 && line[n-1] == '\n' {
 		line = line[:n-1]
 		if n := len(line); n > 0 && line[n-1] == '\r' {
 			line = line[:n-1]
 		}
 	}
-	return string(line) // copies
+	return line
+}
+
+// matchColumn re-scans line (already terminator-trimmed, matching
+// printer/standard.go's own findSpans input) through matcher to locate
+// the 1-based byte column of the FIRST match -- see Match.Column's doc.
+// Unlike findSpans, which locates every span on a line for --vimgrep/
+// coloring, Column only ever needs the leftmost one, so a single
+// matcher.Find(line) suffices: no findAtMatcher/subslice loop for a 2nd+
+// occurrence is needed (that machinery only matters once a 2nd match is
+// being searched for). Returns 0 when matcher is nil or the line has no
+// matchable span at all -- exactly what happens for a line reported by
+// an inverted search, since the pattern genuinely does not match such a
+// line (see Match.Column's doc).
+func matchColumn(matcher match.Matcher, line []byte) int {
+	if matcher == nil {
+		return 0
+	}
+	s, _, ok := matcher.Find(line)
+	if !ok {
+		return 0
+	}
+	return s + 1
 }
 
 func (c *matchCollector) Begin(path string) (bool, error) {
@@ -130,10 +167,13 @@ func (c *matchCollector) Matched(m *search.Match) (bool, error) {
 	if m.HasLineNumber {
 		lineNumber = int(m.LineNumber)
 	}
+	trimmed := trimLineTerminatorBytes(m.Line)
 	match := Match{
 		Path:       strings.Clone(c.path),
 		LineNumber: lineNumber,
-		Line:       trimLineTerminator(m.Line),
+		Line:       string(trimmed), // copies
+		Column:     matchColumn(c.matcher, trimmed),
+		ByteOffset: m.Offset,
 		Before:     c.pendingBefore,
 	}
 	c.pendingBefore = nil

@@ -108,7 +108,8 @@ func (o Options) SearchStream(pattern string, paths []string, fn func(Match) boo
 			Searcher: engine.NewSearcher(econf, matcher),
 			Sink: &matchCollector{
 				before: before, after: after,
-				emit: fn, mu: &deliverMu, stopped: &stopped,
+				matcher: matcher,
+				emit:    fn, mu: &deliverMu, stopped: &stopped,
 			},
 			Standard: true,
 		}
