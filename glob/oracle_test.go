@@ -226,7 +226,7 @@ func TestGitCheckIgnoreOracle(t *testing.T) {
 		{"bare-slash-dir", []string{"/"}, "foo", true},
 		{"bare-slash-nested", []string{"/"}, "foo/bar", false},
 
-		// Round #27: pathBetweenOfTokens -- rooted, single-segment
+		// pathBetweenOfTokens -- rooted, single-segment
 		// (empty prefix or suffix means the whole basename is the wild
 		// part on that side, but the pattern is still single-segment
 		// anchored, so a nested path with the same tail must NOT match).
@@ -238,7 +238,7 @@ func TestGitCheckIgnoreOracle(t *testing.T) {
 		{"rooted-between-nested-rejected", []string{"/processed-schema*.yaml"}, "sub/processed-schema1.yaml", false},
 		{"rooted-between-no-match", []string{"/processed-schema*.yaml"}, "processed-schema1.json", false},
 
-		// Round #27: pathBetweenOfTokens -- rooted, multi-segment (an
+		// pathBetweenOfTokens -- rooted, multi-segment (an
 		// interior '/' in both the prefix and suffix literals).
 		{"path-between-multi-seg-dir", []string{"/arch/*/include/generated/"}, "arch/x86/include/generated", true},
 		{"path-between-multi-seg-not-dir", []string{"/arch/*/include/generated/"}, "arch/x86/include/generated", false},
@@ -246,9 +246,9 @@ func TestGitCheckIgnoreOracle(t *testing.T) {
 		{"path-between-interior-slash-anchor", []string{"policy/*.conf"}, "policy/foo.conf", false},
 		{"path-between-interior-slash-nested-rejected", []string{"policy/*.conf"}, "policy/sub/foo.conf", false},
 
-		// Round #27: chainOfTokens -- basename patterns with 2+ wildcard
+		// chainOfTokens -- basename patterns with 2+ wildcard
 		// gaps, unanchored on both ends (from the linux tree's
-		// `*.c.[012]*.*`, which after #23's char-class expansion becomes
+		// `*.c.[012]*.*`, which after char-class expansion becomes
 		// e.g. `*.c.0*.*`).
 		{"chain-basic-match", []string{"*.c.0*.*"}, "vmlinux.c.012345.tmp.o", false},
 		{"chain-basic-nested-match", []string{"*.c.0*.*"}, "sub/vmlinux.c.012345.tmp.o", false},
@@ -329,7 +329,7 @@ func genGlobComponent(c *fuzzCursor) string {
 
 // genChainComponent produces a slash-free component with two or more `*`
 // wildcards separating literal runs (optionally unanchored at either
-// end), the shape round #27's chainOfTokens/chainMatches added a fast
+// end), the shape chainOfTokens/chainMatches added a fast
 // class for -- e.g. "*foo*bar" or "foo*bar*" or "*foo*bar*baz*". Plain
 // genGlobComponent never emits more than one `*` in a single component,
 // so without this the fuzzer would never stress chainOfTokens at all.

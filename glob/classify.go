@@ -285,7 +285,7 @@ func suffixPathOfTokens(tokens []token) (string, bool) {
 // if and only if it starts with prefix (bytes.HasPrefix), regardless of
 // what comes after.
 //
-// Found via M3 #23's evaluation-count census on the linux tree: patterns
+// Found via an evaluation-count census on the linux tree: patterns
 // like "cscope.*", "ncscope.*", "patches-*", and the implicit-dotfile
 // pattern gitignore's own hidden-file handling produces (".*") were each
 // landing in the regex fallback and being evaluated on nearly every one
@@ -319,7 +319,7 @@ func prefixOfTokens(tokens []token) (string, bool) {
 // and a trailing `*`, and nothing else. A path's basename matches if and
 // only if it contains lit anywhere (bytes.Contains).
 //
-// Found via the same M3 #23 census as prefixOfTokens: "*.o.*" (matching
+// Found via the same census as prefixOfTokens: "*.o.*" (matching
 // any name with ".o." anywhere, not just as a suffix -- extOfTokens and
 // suffixOfTokens both require the literal to reach the end of the name)
 // was the single most-evaluated regex pattern on the linux tree, at
@@ -360,7 +360,7 @@ func containsOfTokens(tokens []token) (string, bool) {
 // accept prefix and suffix appearing in the wrong order, or not at the
 // ends at all).
 //
-// Found via the same M3 #23 census as prefixOfTokens/containsOfTokens:
+// Found via the same census as prefixOfTokens/containsOfTokens:
 // after those two landed, "#*#" was the single largest remaining
 // regex-evaluation contributor on the linux tree, at essentially one
 // evaluation per file walked.
@@ -473,11 +473,11 @@ func basenameLiteralOf(tokens []token) (string, bool) {
 // nested "sub/foo.spec": the "middle" there is "sub/foo", which contains
 // a '/'. See Set.Match's pathBetweens loop for where that check lives.
 //
-// Found via the post-#23 census on the linux tree:
+// Found via a follow-up census on the linux tree:
 // `/*.spec`, `/arch/*/include/generated/`, `/processed-schema*.yaml`,
 // `/processed-schema*.json`, `/test_fortify/*.log`, `po/*.gmo`,
 // `/*.skel.h`, `policy/*.conf`, and `/load_address_*` were the largest
-// remaining regex-fallback contributors once #23's basename-anchored
+// remaining regex-fallback contributors once the basename-anchored
 // classes had already landed -- every one of them anchored (by a leading
 // '/' or an interior '/' elsewhere in the pattern) rather than basename-
 // relative, which is exactly what basenameTokens' `**/`-prefix
@@ -537,7 +537,7 @@ func pathBetweenOfTokens(tokens []token) (prefix, suffix string, ok bool) {
 // leaves *more* room for the chunks still to come, never less).
 //
 // Found via the census: after prefixOfTokens/containsOfTokens/
-// betweenOfTokens (#23) and pathBetweenOfTokens (this round) had already
+// betweenOfTokens and pathBetweenOfTokens had already
 // landed, `*.c.[012]*.*` was the single largest remaining regex
 // contributor on the linux tree -- its post-char-class-expansion variants
 // like `*.c.0*.*` need two wildcard gaps, one more than betweenOfTokens

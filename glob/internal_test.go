@@ -294,7 +294,7 @@ func TestSuffixOfTokens(t *testing.T) {
 	}
 }
 
-// TestPrefixOfTokens covers prefixOfTokens directly: found via M3 #23's
+// TestPrefixOfTokens covers prefixOfTokens directly: found via the
 // evaluation-count census (real linux kernel .gitignore patterns like
 // "cscope.*" were landing in the regex fallback and evaluated on nearly
 // every file in the tree).
@@ -602,7 +602,7 @@ func TestBasenameTokensRequiresLiteralSeparatorSafety(t *testing.T) {
 	}
 }
 
-// TestAddCIMatchesCaseInsensitively covers round #32's --iglob/
+// TestAddCIMatchesCaseInsensitively covers --iglob/
 // --glob-case-insensitive support (Builder.AddCI): a pattern that would
 // otherwise classify into a fast class (kindExt here -- "*.txt" is the
 // exact "**/*.ext" shape) must still match a differently-cased basename.
