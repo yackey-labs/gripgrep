@@ -359,6 +359,39 @@ func TestIgnoreClusterFlags(t *testing.T) {
 	}
 }
 
+// TestWiringQuartetFlags covers round #42's -L/--follow, --one-file-system,
+// --no-messages, and --no-ignore-messages: each field defaults false, the
+// primary spelling sets it, and the negation clears it (last-wins).
+func TestWiringQuartetFlags(t *testing.T) {
+	for _, tc := range []struct {
+		flag, neg string
+		get       func(*Config) bool
+	}{
+		{"--follow", "--no-follow", func(c *Config) bool { return c.FollowSymlinks }},
+		{"--one-file-system", "--no-one-file-system", func(c *Config) bool { return c.OneFileSystem }},
+		{"--no-messages", "--messages", func(c *Config) bool { return c.NoMessages }},
+		{"--no-ignore-messages", "--ignore-messages", func(c *Config) bool { return c.NoIgnoreMessages }},
+	} {
+		if cfg := mustParse(t, "pat"); tc.get(cfg) {
+			t.Errorf("%s: field defaults true, want false", tc.flag)
+		}
+		if cfg := mustParse(t, tc.flag, "pat"); !tc.get(cfg) {
+			t.Errorf("%s: field = false, want true", tc.flag)
+		}
+		if cfg := mustParse(t, tc.flag, tc.neg, "pat"); tc.get(cfg) {
+			t.Errorf("%s %s: field = true, want false", tc.flag, tc.neg)
+		}
+	}
+	// -L is the short form of --follow.
+	if cfg := mustParse(t, "-L", "pat"); !cfg.FollowSymlinks {
+		t.Errorf("-L: FollowSymlinks = false, want true")
+	}
+	// --follow is no longer a not-implemented flag (removed from the list).
+	if _, ok := notImplLongIndex["follow"]; ok {
+		t.Error("follow still present in notImplementedFlags")
+	}
+}
+
 func TestGlobRepeatableAndOrdered(t *testing.T) {
 	cfg := mustParse(t, "-g", "*.txt", "-g", "!ctx.txt", "pat")
 	want := []string{"*.txt", "!ctx.txt"}
@@ -1155,7 +1188,6 @@ func TestNotYetImplementedFlags(t *testing.T) {
 		{"-r", "x", "pat"},
 		{"--replace", "x", "pat"},
 		{"-z", "pat"},
-		{"-L", "pat"},
 		{"--binary", "pat"},
 	} {
 		t.Run(args[0], func(t *testing.T) {
