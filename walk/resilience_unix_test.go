@@ -26,7 +26,7 @@ func TestFIFONeverOpened(t *testing.T) {
 	done := make(chan FileType, 1)
 	go func() {
 		var fifoType FileType
-		Walk([]string{root}, Options{NoIgnore: true}, func(e *Entry) WalkState {
+		Walk([]string{root}, Options{NoIgnoreDot: true, NoIgnoreVcs: true}, func(e *Entry) WalkState {
 			if e.Path == fifoPath {
 				fifoType = e.Type
 			}

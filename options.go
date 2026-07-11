@@ -238,14 +238,25 @@ func (o Options) toEngineConfig(pattern string, paths []string) engine.Config {
 	before, after := resolveContext(o)
 	word, lineRegexp := o.boundaryMode()
 	return engine.Config{
-		Patterns:            []string{pattern},
-		Case:                o.caseMode(),
-		Fixed:               o.FixedStrings,
-		Word:                word,
-		LineRegexp:          lineRegexp,
-		Paths:               paths,
-		Hidden:              o.Hidden,
-		NoIgnore:            o.NoIgnore,
+		Patterns:   []string{pattern},
+		Case:       o.caseMode(),
+		Fixed:      o.FixedStrings,
+		Word:       word,
+		LineRegexp: lineRegexp,
+		Paths:      paths,
+		Hidden:     o.Hidden,
+		// NoIgnore is the SDK's single "turn ignore processing off" switch;
+		// it expands to rg's five --no-ignore sub-flags (dot/exclude/global/
+		// parent/vcs) exactly as the CLI's --no-ignore sugar does, but not
+		// no-ignore-files -- the facade exposes no --ignore-file surface, so
+		// there is nothing for it to kill. The finer-grained sub-flags and
+		// --ignore-file are intentionally not part of the SDK Options this
+		// round.
+		NoIgnoreDot:         o.NoIgnore,
+		NoIgnoreExclude:     o.NoIgnore,
+		NoIgnoreGlobal:      o.NoIgnore,
+		NoIgnoreParent:      o.NoIgnore,
+		NoIgnoreVcs:         o.NoIgnore,
 		Globs:               o.Globs,
 		IGlobs:              o.IGlobs,
 		GlobCaseInsensitive: o.GlobCaseInsensitive,

@@ -273,17 +273,89 @@ func TestHidden(t *testing.T) {
 	}
 }
 
+// sugarAllSet reports whether all five --no-ignore sub-flags are set (the
+// state --no-ignore/-u sugar produces).
+func sugarAllSet(cfg *Config) bool {
+	return cfg.NoIgnoreDot && cfg.NoIgnoreExclude && cfg.NoIgnoreGlobal &&
+		cfg.NoIgnoreParent && cfg.NoIgnoreVcs
+}
+
+// sugarAnySet reports whether any of the five sub-flags is set.
+func sugarAnySet(cfg *Config) bool {
+	return cfg.NoIgnoreDot || cfg.NoIgnoreExclude || cfg.NoIgnoreGlobal ||
+		cfg.NoIgnoreParent || cfg.NoIgnoreVcs
+}
+
 func TestNoIgnore(t *testing.T) {
-	if cfg := mustParse(t, "pat"); cfg.NoIgnore {
-		t.Errorf("default NoIgnore = true, want false")
+	if cfg := mustParse(t, "pat"); sugarAnySet(cfg) {
+		t.Errorf("default: a no-ignore sub-flag is set, want none")
 	}
-	if cfg := mustParse(t, "--no-ignore", "pat"); !cfg.NoIgnore {
-		t.Errorf("--no-ignore: NoIgnore = false, want true")
+	// --no-ignore is sugar: it sets the five sub-flags dot/exclude/global/
+	// parent/vcs together, but NOT no-ignore-files (probe B8).
+	if cfg := mustParse(t, "--no-ignore", "pat"); !sugarAllSet(cfg) || cfg.NoIgnoreFiles {
+		t.Errorf("--no-ignore: allSet=%v NoIgnoreFiles=%v, want true/false", sugarAllSet(cfg), cfg.NoIgnoreFiles)
 	}
 	// --ignore is --no-ignore's negation spelling (an unusual, but
-	// real, rg spelling -- see the comment on the flag's registration).
-	if cfg := mustParse(t, "--no-ignore", "--ignore", "pat"); cfg.NoIgnore {
-		t.Errorf("--no-ignore --ignore: NoIgnore = true, want false")
+	// real, rg spelling -- see the comment on the flag's registration):
+	// it resets all five back on (probe A8).
+	if cfg := mustParse(t, "--no-ignore", "--ignore", "pat"); sugarAnySet(cfg) {
+		t.Errorf("--no-ignore --ignore: a sub-flag is still set, want none")
+	}
+	// Each sub-flag is independent and last-wins: --no-ignore then
+	// --ignore-dot re-enables only the dot family (probe A7).
+	cfg := mustParse(t, "--no-ignore", "--ignore-dot", "pat")
+	if cfg.NoIgnoreDot {
+		t.Errorf("--no-ignore --ignore-dot: NoIgnoreDot = true, want false")
+	}
+	if !cfg.NoIgnoreVcs || !cfg.NoIgnoreExclude || !cfg.NoIgnoreGlobal || !cfg.NoIgnoreParent {
+		t.Errorf("--no-ignore --ignore-dot: other sub-flags should stay set")
+	}
+}
+
+func TestIgnoreClusterFlags(t *testing.T) {
+	// --ignore-file is a repeatable value flag with no negation.
+	cfg := mustParse(t, "--ignore-file", "a", "--ignore-file", "b", "pat")
+	if want := []string{"a", "b"}; !reflect.DeepEqual(cfg.IgnoreFiles, want) {
+		t.Errorf("IgnoreFiles = %v, want %v", cfg.IgnoreFiles, want)
+	}
+	// --no-ignore-files kills --ignore-file position-independently (probe
+	// B6): parsing just records both; the kill happens at wire time.
+	cfg = mustParse(t, "--no-ignore-files", "--ignore-file", "a", "pat")
+	if !cfg.NoIgnoreFiles || len(cfg.IgnoreFiles) != 1 {
+		t.Errorf("--no-ignore-files --ignore-file a: NoIgnoreFiles=%v IgnoreFiles=%v", cfg.NoIgnoreFiles, cfg.IgnoreFiles)
+	}
+	// --ignore-files restores (probe B7).
+	cfg = mustParse(t, "--no-ignore-files", "--ignore-files", "pat")
+	if cfg.NoIgnoreFiles {
+		t.Errorf("--no-ignore-files --ignore-files: NoIgnoreFiles = true, want false")
+	}
+	// --ignore-file-case-insensitive and its negation (probe F4).
+	cfg = mustParse(t, "--ignore-file-case-insensitive", "pat")
+	if !cfg.IgnoreCaseInsensitive {
+		t.Errorf("--ignore-file-case-insensitive: IgnoreCaseInsensitive = false, want true")
+	}
+	cfg = mustParse(t, "--ignore-file-case-insensitive", "--no-ignore-file-case-insensitive", "pat")
+	if cfg.IgnoreCaseInsensitive {
+		t.Errorf("case-insensitive then negation: IgnoreCaseInsensitive = true, want false")
+	}
+	// Each individual sub-flag and its negation.
+	for _, tc := range []struct {
+		flag, neg string
+		get       func(*Config) bool
+	}{
+		{"--no-ignore-dot", "--ignore-dot", func(c *Config) bool { return c.NoIgnoreDot }},
+		{"--no-ignore-exclude", "--ignore-exclude", func(c *Config) bool { return c.NoIgnoreExclude }},
+		{"--no-ignore-global", "--ignore-global", func(c *Config) bool { return c.NoIgnoreGlobal }},
+		{"--no-ignore-parent", "--ignore-parent", func(c *Config) bool { return c.NoIgnoreParent }},
+		{"--no-ignore-vcs", "--ignore-vcs", func(c *Config) bool { return c.NoIgnoreVcs }},
+		{"--no-require-git", "--require-git", func(c *Config) bool { return c.NoRequireGit }},
+	} {
+		if cfg := mustParse(t, tc.flag, "pat"); !tc.get(cfg) {
+			t.Errorf("%s: field = false, want true", tc.flag)
+		}
+		if cfg := mustParse(t, tc.flag, tc.neg, "pat"); tc.get(cfg) {
+			t.Errorf("%s %s: field = true, want false", tc.flag, tc.neg)
+		}
 	}
 }
 
@@ -304,18 +376,18 @@ func TestUnrestrictedStacking(t *testing.T) {
 	// -u = --no-ignore; -uu = --no-ignore --hidden; -uuu = --no-ignore
 	// --hidden --binary.
 	cfg := mustParse(t, "-u", "pat")
-	if !cfg.NoIgnore || cfg.Hidden || cfg.Binary != BinaryAuto {
-		t.Errorf("-u: NoIgnore=%v Hidden=%v Binary=%v, want true/false/Auto", cfg.NoIgnore, cfg.Hidden, cfg.Binary)
+	if !sugarAllSet(cfg) || cfg.Hidden || cfg.Binary != BinaryAuto {
+		t.Errorf("-u: noIgnoreAll=%v Hidden=%v Binary=%v, want true/false/Auto", sugarAllSet(cfg), cfg.Hidden, cfg.Binary)
 	}
 
 	cfg = mustParse(t, "-uu", "pat")
-	if !cfg.NoIgnore || !cfg.Hidden || cfg.Binary != BinaryAuto {
-		t.Errorf("-uu: NoIgnore=%v Hidden=%v Binary=%v, want true/true/Auto", cfg.NoIgnore, cfg.Hidden, cfg.Binary)
+	if !sugarAllSet(cfg) || !cfg.Hidden || cfg.Binary != BinaryAuto {
+		t.Errorf("-uu: noIgnoreAll=%v Hidden=%v Binary=%v, want true/true/Auto", sugarAllSet(cfg), cfg.Hidden, cfg.Binary)
 	}
 
 	cfg = mustParse(t, "-uuu", "pat")
-	if !cfg.NoIgnore || !cfg.Hidden || cfg.Binary != BinarySearchAndSuppress {
-		t.Errorf("-uuu: NoIgnore=%v Hidden=%v Binary=%v, want true/true/SearchAndSuppress", cfg.NoIgnore, cfg.Hidden, cfg.Binary)
+	if !sugarAllSet(cfg) || !cfg.Hidden || cfg.Binary != BinarySearchAndSuppress {
+		t.Errorf("-uuu: noIgnoreAll=%v Hidden=%v Binary=%v, want true/true/SearchAndSuppress", sugarAllSet(cfg), cfg.Hidden, cfg.Binary)
 	}
 
 	// Verified: `rg -uuuu` errors ("flag can only be repeated up to 3 times").

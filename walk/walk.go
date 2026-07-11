@@ -61,8 +61,42 @@ type Visitor func(e *Entry) WalkState
 type Options struct {
 	// Hidden includes dot-files/dot-directories (default: excluded).
 	Hidden bool
-	// NoIgnore disables all .gitignore/.ignore/exclude processing.
-	NoIgnore bool
+	// The NoIgnore* fields decompose rg's five independent no-ignore-*
+	// sub-flags, each gating one ignore source (crates/core/flags/
+	// hiargs.rs walk_builder). --no-ignore is CLI sugar that sets the
+	// first five (dot/exclude/global/parent/vcs) but not files; here they
+	// are already resolved to independent bools by the caller.
+	//
+	//   NoIgnoreDot     kills .ignore and .rgignore (dot family)
+	//   NoIgnoreExclude kills .git/info/exclude
+	//   NoIgnoreParent  kills the entire parent-directory ignore chain
+	//   NoIgnoreVcs     kills .gitignore, exclude, and the global matcher
+	//   NoRequireGit    consults git/global matchers even outside a repo
+	//
+	// (--no-ignore-global is resolved at the engine boundary by simply not
+	// passing a GlobalIgnore set, so it has no field here.)
+	NoIgnoreDot     bool
+	NoIgnoreExclude bool
+	NoIgnoreParent  bool
+	NoIgnoreVcs     bool
+	NoRequireGit    bool
+	// IgnoreCaseInsensitive is --ignore-file-case-insensitive: matches the
+	// per-directory tree sources (.rgignore/.ignore/.gitignore/exclude)
+	// case-insensitively. It deliberately does NOT reach GlobalIgnore or
+	// ExplicitIgnore (probe F3): those are compiled case-sensitively by
+	// the caller.
+	IgnoreCaseInsensitive bool
+	// ExplicitIgnore is every --ignore-file's patterns compiled into one
+	// Set (in arg order) by the caller, or nil when none was given or
+	// --no-ignore-files killed them. Matched against the display path,
+	// never git-gated. See ignoreCtx.explicitSet.
+	ExplicitIgnore *glob.Set
+	// GlobalIgnore is the resolved global gitignore matcher (core.
+	// excludesFile / XDG default), or nil when absent or killed by
+	// --no-ignore-global/--no-ignore-vcs. Matched against the display
+	// path, gated per-entry by anyGit. See ignoreCtx.globalSet.
+	GlobalIgnore *glob.Set
+
 	// FollowSymlinks follows symlinks during traversal (default: no).
 	FollowSymlinks bool
 	// MaxFileSize skips files larger than this many bytes; 0 = unlimited.
@@ -111,6 +145,14 @@ type Options struct {
 	// above already pays when unset. See worker.classify for the exact
 	// precedence chain.
 	Types *filetype.Matcher
+
+	// ignoreActive and ictx are derived once at Walk start (not caller-set)
+	// from the fields above: ignoreActive is whether ANY ignore source can
+	// contribute (so the per-directory node chain and matched() are skipped
+	// entirely otherwise, preserving --no-ignore's walk speed), and ictx is
+	// the shared per-walk ignore context threaded into matched().
+	ignoreActive bool
+	ictx         *ignoreCtx
 }
 
 // Walk traverses roots in parallel per opts, calling visit for every
@@ -145,6 +187,30 @@ func Walk(roots []string, opts Options, visit Visitor) error {
 	n := opts.Threads
 	if n <= 0 {
 		n = defaultThreads()
+	}
+
+	// Derive the per-walk ignore state once. ignoreActive is false only
+	// when nothing could ever match (both tree families off, no global, no
+	// explicit) -- e.g. plain --no-ignore with no --ignore-file -- in which
+	// case the per-directory node chain is skipped entirely, exactly as the
+	// old single NoIgnore fast path did.
+	opts.ignoreActive = !opts.NoIgnoreDot || !opts.NoIgnoreVcs ||
+		opts.ExplicitIgnore != nil || opts.GlobalIgnore != nil
+	// cwd re-anchors the global/explicit matchers for absolute walk-root
+	// args (see ignoreCtx.cwd). Only needed when one of those matchers is
+	// active; a Getwd error just disables the re-anchor (empty cwd).
+	var cwd string
+	if opts.GlobalIgnore != nil || opts.ExplicitIgnore != nil {
+		cwd, _ = os.Getwd()
+	}
+	opts.ictx = &ignoreCtx{
+		noIgnoreDot:     opts.NoIgnoreDot,
+		noIgnoreVcs:     opts.NoIgnoreVcs,
+		noIgnoreExclude: opts.NoIgnoreExclude,
+		noRequireGit:    opts.NoRequireGit,
+		cwd:             cwd,
+		globalSet:       opts.GlobalIgnore,
+		explicitSet:     opts.ExplicitIgnore,
 	}
 
 	queues := make([]*dirQueue, n)
@@ -239,8 +305,8 @@ func buildRootTask(root string, opts *Options) *dirTask {
 
 	if info.IsDir() {
 		t.rootKind = rootDir
-		if !opts.NoIgnore {
-			t.ignore = buildParentChain(t.abs)
+		if opts.ignoreActive && !opts.NoIgnoreParent {
+			t.ignore = buildParentChain(t.abs, opts)
 		}
 		return t
 	}

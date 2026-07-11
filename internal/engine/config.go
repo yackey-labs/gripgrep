@@ -82,10 +82,27 @@ type Config struct {
 
 	// Paths are the files/directories to search (or list, for Files);
 	// empty means "search/list the current directory" (see ResolvePaths).
-	Paths       []string
-	Hidden      bool     // --hidden
-	NoIgnore    bool     // --no-ignore
-	Globs       []string // -g/--glob, verbatim (leading '!' is glob polarity, see buildGlobs)
+	Paths  []string
+	Hidden bool // --hidden
+	// The ignore-control cluster, already resolved to independent bools by
+	// the caller (cmd/gg's --no-ignore/-u sugar and the facade's NoIgnore
+	// both expand into these). NoIgnoreGlobal has no walk.Options field --
+	// it is applied here by not resolving a global matcher (see
+	// buildIgnoreSources).
+	NoIgnoreDot     bool // --no-ignore-dot: kills .ignore + .rgignore
+	NoIgnoreExclude bool // --no-ignore-exclude: kills .git/info/exclude
+	NoIgnoreGlobal  bool // --no-ignore-global: kills the global matcher
+	NoIgnoreParent  bool // --no-ignore-parent: kills the parent chain
+	NoIgnoreVcs     bool // --no-ignore-vcs: kills .gitignore + exclude + global
+	NoRequireGit    bool // --no-require-git: git/global matchers apply outside a repo
+	NoIgnoreFiles   bool // --no-ignore-files: kills every --ignore-file
+	// IgnoreFiles are --ignore-file PATH arguments, in the order given.
+	IgnoreFiles []string
+	// IgnoreCaseInsensitive is --ignore-file-case-insensitive: matches the
+	// per-directory tree sources case-insensitively (not the global or
+	// explicit matchers -- see walk.Options.IgnoreCaseInsensitive).
+	IgnoreCaseInsensitive bool
+	Globs                 []string // -g/--glob, verbatim (leading '!' is glob polarity, see buildGlobs)
 	// IGlobs are --iglob GLOB, verbatim (same '!' polarity as Globs).
 	// Always matched case-insensitively, regardless of
 	// GlobCaseInsensitive (rg parity: verified against the real rg

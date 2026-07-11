@@ -127,16 +127,15 @@ func Run(cfg Config, newWorker NewWorkerFunc, quiet QuitSink, stop func() bool, 
 	// once, from the full path list, before any walking starts.
 	mmapOK := mmapEligible(cfg.Mmap, statPaths)
 
-	walkOpts := walk.Options{
-		Hidden:            cfg.Hidden,
-		NoIgnore:          cfg.NoIgnore,
-		MaxFileSize:       cfg.MaxFilesize,
-		MaxDepth:          cfg.MaxDepth,
-		Threads:           cfg.Threads,
-		Globs:             globSet,
-		GlobsRequireMatch: globsRequireMatch,
-		Types:             typesMatcher,
-	}
+	explicitIgnore, globalIgnore := buildIgnoreSources(cfg, stderr)
+	walkOpts := ignoreWalkOptions(cfg, explicitIgnore, globalIgnore)
+	walkOpts.Hidden = cfg.Hidden
+	walkOpts.MaxFileSize = cfg.MaxFilesize
+	walkOpts.MaxDepth = cfg.MaxDepth
+	walkOpts.Threads = cfg.Threads
+	walkOpts.Globs = globSet
+	walkOpts.GlobsRequireMatch = globsRequireMatch
+	walkOpts.Types = typesMatcher
 
 	var anyMatched, anyError atomic.Bool
 	pool := &sync.Pool{
@@ -283,16 +282,15 @@ func Files(cfg Config, visit FilesVisit, stderr io.Writer) (Result, error) {
 	// stat-able form is discarded.
 	_, walkRoots := ResolvePaths(cfg.Paths)
 
-	walkOpts := walk.Options{
-		Hidden:            cfg.Hidden,
-		NoIgnore:          cfg.NoIgnore,
-		MaxFileSize:       cfg.MaxFilesize,
-		MaxDepth:          cfg.MaxDepth,
-		Threads:           cfg.Threads,
-		Globs:             globSet,
-		GlobsRequireMatch: globsRequireMatch,
-		Types:             typesMatcher,
-	}
+	explicitIgnore, globalIgnore := buildIgnoreSources(cfg, stderr)
+	walkOpts := ignoreWalkOptions(cfg, explicitIgnore, globalIgnore)
+	walkOpts.Hidden = cfg.Hidden
+	walkOpts.MaxFileSize = cfg.MaxFilesize
+	walkOpts.MaxDepth = cfg.MaxDepth
+	walkOpts.Threads = cfg.Threads
+	walkOpts.Globs = globSet
+	walkOpts.GlobsRequireMatch = globsRequireMatch
+	walkOpts.Types = typesMatcher
 
 	var anyMatched, anyError atomic.Bool
 	visitor := func(e *walk.Entry) walk.WalkState {

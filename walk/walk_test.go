@@ -59,7 +59,7 @@ func TestWalkVisitsAllFilesExactlyOnce(t *testing.T) {
 
 	var mu sync.Mutex
 	seen := map[string]int{}
-	err := Walk([]string{root}, Options{NoIgnore: true, Hidden: true}, func(e *Entry) WalkState {
+	err := Walk([]string{root}, Options{NoIgnoreDot: true, NoIgnoreVcs: true, Hidden: true}, func(e *Entry) WalkState {
 		mu.Lock()
 		seen[clone(e.Path)]++
 		mu.Unlock()
@@ -99,7 +99,7 @@ func TestSkipDirPrunesSubtree(t *testing.T) {
 
 	var mu sync.Mutex
 	var visited []string
-	err := Walk([]string{root}, Options{NoIgnore: true}, func(e *Entry) WalkState {
+	err := Walk([]string{root}, Options{NoIgnoreDot: true, NoIgnoreVcs: true}, func(e *Entry) WalkState {
 		isPruneDir := e.Path == pruneDir // compared while e.Path is still valid
 		mu.Lock()
 		visited = append(visited, clone(e.Path))
@@ -141,7 +141,7 @@ func TestSkipDirOnFileIsNoop(t *testing.T) {
 
 	var mu sync.Mutex
 	count := 0
-	err := Walk([]string{root}, Options{NoIgnore: true}, func(e *Entry) WalkState {
+	err := Walk([]string{root}, Options{NoIgnoreDot: true, NoIgnoreVcs: true}, func(e *Entry) WalkState {
 		if e.Type == TypeFile {
 			mu.Lock()
 			count++
@@ -169,7 +169,7 @@ func TestQuitStopsPromptly(t *testing.T) {
 	// one Visitor call total.
 	var mu sync.Mutex
 	count := 0
-	err := Walk([]string{root}, Options{NoIgnore: true, Threads: 1}, func(e *Entry) WalkState {
+	err := Walk([]string{root}, Options{NoIgnoreDot: true, NoIgnoreVcs: true, Threads: 1}, func(e *Entry) WalkState {
 		mu.Lock()
 		count++
 		mu.Unlock()
@@ -192,7 +192,7 @@ func TestQuitFromDeepWorkerStopsAllWorkers(t *testing.T) {
 
 	var mu sync.Mutex
 	count := 0
-	err := Walk([]string{root}, Options{NoIgnore: true}, func(e *Entry) WalkState {
+	err := Walk([]string{root}, Options{NoIgnoreDot: true, NoIgnoreVcs: true}, func(e *Entry) WalkState {
 		mu.Lock()
 		count++
 		n := count
@@ -232,7 +232,7 @@ func TestDeepAndWideTree(t *testing.T) {
 
 	var mu sync.Mutex
 	files := map[string]bool{}
-	err := Walk([]string{root}, Options{NoIgnore: true}, func(e *Entry) WalkState {
+	err := Walk([]string{root}, Options{NoIgnoreDot: true, NoIgnoreVcs: true}, func(e *Entry) WalkState {
 		if e.Type == TypeFile {
 			mu.Lock()
 			files[clone(e.Path)] = true
@@ -283,7 +283,7 @@ func TestParkWithManyWorkers(t *testing.T) {
 	go func() {
 		var mu sync.Mutex
 		files := map[string]bool{}
-		err := Walk([]string{root}, Options{NoIgnore: true, Threads: 16}, func(e *Entry) WalkState {
+		err := Walk([]string{root}, Options{NoIgnoreDot: true, NoIgnoreVcs: true, Threads: 16}, func(e *Entry) WalkState {
 			if e.Type == TypeFile {
 				mu.Lock()
 				files[clone(e.Path)] = true
@@ -315,7 +315,7 @@ func TestConcurrentVisitorSafety(t *testing.T) {
 
 	var mu sync.Mutex
 	seen := map[string]bool{}
-	err := Walk([]string{root}, Options{NoIgnore: true}, func(e *Entry) WalkState {
+	err := Walk([]string{root}, Options{NoIgnoreDot: true, NoIgnoreVcs: true}, func(e *Entry) WalkState {
 		p := clone(e.Path)
 		mu.Lock()
 		if seen[p] {
@@ -345,7 +345,7 @@ func TestQuiescenceInvariant(t *testing.T) {
 	for iter := 0; iter < 100; iter++ {
 		var mu sync.Mutex
 		count := 0
-		err := Walk([]string{root}, Options{NoIgnore: true}, func(e *Entry) WalkState {
+		err := Walk([]string{root}, Options{NoIgnoreDot: true, NoIgnoreVcs: true}, func(e *Entry) WalkState {
 			mu.Lock()
 			count++
 			mu.Unlock()
@@ -373,7 +373,7 @@ func TestHiddenExcludedByDefault(t *testing.T) {
 	check := func(hidden bool) map[string]bool {
 		got := map[string]bool{}
 		var mu sync.Mutex
-		err := Walk([]string{root}, Options{NoIgnore: true, Hidden: hidden}, func(e *Entry) WalkState {
+		err := Walk([]string{root}, Options{NoIgnoreDot: true, NoIgnoreVcs: true, Hidden: hidden}, func(e *Entry) WalkState {
 			if e.Type == TypeFile {
 				base := clone(filepath.Base(e.Path))
 				mu.Lock()
@@ -406,7 +406,7 @@ func TestMaxFileSize(t *testing.T) {
 
 	got := map[string]bool{}
 	var mu sync.Mutex
-	err := Walk([]string{root}, Options{NoIgnore: true, MaxFileSize: 6}, func(e *Entry) WalkState {
+	err := Walk([]string{root}, Options{NoIgnoreDot: true, NoIgnoreVcs: true, MaxFileSize: 6}, func(e *Entry) WalkState {
 		if e.Type == TypeFile {
 			base := clone(filepath.Base(e.Path))
 			mu.Lock()
@@ -437,7 +437,7 @@ func TestMaxDepth(t *testing.T) {
 	depthOf := func(md *int) map[string]bool {
 		got := map[string]bool{}
 		var mu sync.Mutex
-		err := Walk([]string{root}, Options{NoIgnore: true, MaxDepth: md}, func(e *Entry) WalkState {
+		err := Walk([]string{root}, Options{NoIgnoreDot: true, NoIgnoreVcs: true, MaxDepth: md}, func(e *Entry) WalkState {
 			if e.Type == TypeFile {
 				mu.Lock()
 				got[clone(filepath.Base(e.Path))] = true
@@ -477,7 +477,7 @@ func TestMaxDepthZeroStillSearchesExplicitFileRoot(t *testing.T) {
 
 	var visited []string
 	zero := 0
-	err := Walk([]string{filePath}, Options{NoIgnore: true, MaxDepth: &zero}, func(e *Entry) WalkState {
+	err := Walk([]string{filePath}, Options{NoIgnoreDot: true, NoIgnoreVcs: true, MaxDepth: &zero}, func(e *Entry) WalkState {
 		if e.Type == TypeFile {
 			visited = append(visited, clone(e.Path))
 		}
@@ -496,7 +496,7 @@ func TestSingleFileRoot(t *testing.T) {
 	filePath := filepath.Join(root, "only.txt")
 
 	var got []Entry
-	err := Walk([]string{filePath}, Options{NoIgnore: true}, func(e *Entry) WalkState {
+	err := Walk([]string{filePath}, Options{NoIgnoreDot: true, NoIgnoreVcs: true}, func(e *Entry) WalkState {
 		got = append(got, *e)
 		return Continue
 	})
@@ -529,7 +529,7 @@ func TestDotRootPreservesPrefix(t *testing.T) {
 	defer os.Chdir(origWd)
 
 	var got []string
-	err = Walk([]string{"."}, Options{NoIgnore: true}, func(e *Entry) WalkState {
+	err = Walk([]string{"."}, Options{NoIgnoreDot: true, NoIgnoreVcs: true}, func(e *Entry) WalkState {
 		if e.Type == TypeFile {
 			got = append(got, clone(e.Path))
 		}
@@ -565,7 +565,7 @@ func TestEmptyRootProducesUnprefixedPaths(t *testing.T) {
 	defer os.Chdir(origWd)
 
 	var got []string
-	err = Walk([]string{""}, Options{NoIgnore: true}, func(e *Entry) WalkState {
+	err = Walk([]string{""}, Options{NoIgnoreDot: true, NoIgnoreVcs: true}, func(e *Entry) WalkState {
 		if e.Type == TypeFile {
 			got = append(got, clone(e.Path))
 		}
@@ -598,7 +598,7 @@ func TestInvalidRootReportsErr(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "does-not-exist")
 
 	var got *Entry
-	err := Walk([]string{root}, Options{NoIgnore: true}, func(e *Entry) WalkState {
+	err := Walk([]string{root}, Options{NoIgnoreDot: true, NoIgnoreVcs: true}, func(e *Entry) WalkState {
 		cp := *e
 		got = &cp
 		return Continue
@@ -631,7 +631,7 @@ func TestMultipleRootsRoundRobin(t *testing.T) {
 
 	var mu sync.Mutex
 	var got []string
-	err := Walk([]string{r1, r2}, Options{NoIgnore: true}, func(e *Entry) WalkState {
+	err := Walk([]string{r1, r2}, Options{NoIgnoreDot: true, NoIgnoreVcs: true}, func(e *Entry) WalkState {
 		if e.Type == TypeFile {
 			p := clone(e.Path)
 			mu.Lock()

@@ -209,7 +209,7 @@ func TestNoIgnoreDisablesAllIgnoreFiles(t *testing.T) {
 	writeFile(t, filepath.Join(root, "a.txt"), "a")
 	writeFile(t, filepath.Join(root, "b.log"), "b")
 
-	got := visitFiles(t, root, Options{NoIgnore: true})
+	got := visitFiles(t, root, Options{NoIgnoreDot: true, NoIgnoreVcs: true})
 	// NoIgnore disables ignore-*file processing* only; the dotfiles
 	// themselves are still hidden by the (independent) hidden-file rule.
 	want := []string{"a.txt", "b.log"}
@@ -261,7 +261,7 @@ func TestGlobsRequireMatch(t *testing.T) {
 		t.Fatalf("glob build: %v", err)
 	}
 
-	got := visitFiles(t, root, Options{NoIgnore: true, Globs: set, GlobsRequireMatch: true})
+	got := visitFiles(t, root, Options{NoIgnoreDot: true, NoIgnoreVcs: true, Globs: set, GlobsRequireMatch: true})
 	want := []string{"a.go"}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Errorf("got %v, want %v (b.txt matches no override glob and should be excluded)", got, want)
@@ -294,7 +294,7 @@ func TestGlobsRequireMatchDoesNotPruneDirs(t *testing.T) {
 		t.Fatalf("glob build: %v", err)
 	}
 
-	got := visitFiles(t, root, Options{NoIgnore: true, Globs: set, GlobsRequireMatch: true})
+	got := visitFiles(t, root, Options{NoIgnoreDot: true, NoIgnoreVcs: true, Globs: set, GlobsRequireMatch: true})
 	want := []string{"a.go", "more.go", "nested.go"}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Errorf("got %v, want %v (every .go file at every depth should match; skip.txt should not; subdirectories must never be pruned just for failing to match *.go themselves)", got, want)

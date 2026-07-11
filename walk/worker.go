@@ -217,24 +217,27 @@ func (w *worker) processDir(t *dirTask) bool {
 	f.Close()
 
 	var node *ignoreNode
-	if !w.opts.NoIgnore {
+	if w.opts.ignoreActive {
 		// Single pass over the directory listing already in hand (from
-		// f.ReadDir(-1) above) checks membership for all three ignore-
-		// related names at once, instead of buildNode blindly attempting
-		// to open .ignore/.gitignore and discarding the ENOENT most
-		// directories produce (M3 #24).
-		var hasGit, hasIgnore, hasGitignore bool
+		// f.ReadDir(-1) above) checks membership for every ignore-related
+		// name at once, instead of buildNode blindly attempting to open
+		// each and discarding the ENOENT most directories produce (M3 #24).
+		var hasGit, hasJJ, hasIgnore, hasGitignore, hasRgignore bool
 		for _, d := range entries {
 			switch d.Name() {
 			case ".git":
 				hasGit = true
+			case ".jj":
+				hasJJ = true
 			case ".ignore":
 				hasIgnore = true
 			case ".gitignore":
 				hasGitignore = true
+			case ".rgignore":
+				hasRgignore = true
 			}
 		}
-		node = buildNode(t.ignore, t.abs, hasGit, hasIgnore, hasGitignore)
+		node = buildNode(t.ignore, t.abs, hasGit, hasJJ, hasIgnore, hasGitignore, hasRgignore, w.opts)
 	}
 
 	var symAnc *symNode
@@ -431,8 +434,8 @@ func (w *worker) classify(node *ignoreNode, globPath, ignorePath []byte, isDir b
 			}
 		}
 	}
-	if !w.opts.NoIgnore && node != nil {
-		switch node.matched(ignorePath, isDir) {
+	if w.opts.ignoreActive && node != nil {
+		switch node.matched(ignorePath, globPath, isDir, w.opts.ictx) {
 		case glob.Ignored:
 			return true, false
 		case glob.Whitelisted:

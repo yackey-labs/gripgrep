@@ -42,7 +42,7 @@ func BenchmarkWalkRipgrepTreeNoIgnore(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		err := Walk([]string{dir}, Options{NoIgnore: true}, func(e *Entry) WalkState {
+		err := Walk([]string{dir}, Options{NoIgnoreDot: true, NoIgnoreVcs: true}, func(e *Entry) WalkState {
 			return Continue
 		})
 		if err != nil {

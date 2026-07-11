@@ -208,9 +208,29 @@ type Config struct {
 	Word       bool // -w/--word-regexp
 	LineRegexp bool // -x/--line-regexp
 
-	Hidden   bool     // --hidden
-	NoIgnore bool     // --no-ignore (collapses rg's 5 no-ignore-* sub-flags into one, matching walk.Options.NoIgnore)
-	Globs    []string // -g/--glob, in the order given verbatim (leading '!' negation is glob syntax, handled by package glob, not here)
+	Hidden bool // --hidden
+	// The ignore-control cluster. --no-ignore and the first -u level are
+	// sugar that set the first five NoIgnore* fields together (see their
+	// flagSpecs); each sub-flag is otherwise an independent last-wins bool,
+	// mirroring rg's LowArgs exactly.
+	NoIgnoreDot     bool // --no-ignore-dot / --ignore-dot
+	NoIgnoreExclude bool // --no-ignore-exclude / --ignore-exclude
+	NoIgnoreGlobal  bool // --no-ignore-global / --ignore-global
+	NoIgnoreParent  bool // --no-ignore-parent / --ignore-parent
+	NoIgnoreVcs     bool // --no-ignore-vcs / --ignore-vcs
+	NoRequireGit    bool // --no-require-git / --require-git
+	// NoIgnoreFiles is --no-ignore-files / --ignore-files: kills every
+	// --ignore-file, even ones given after it (position-independent, probe
+	// B6). NOT set by --no-ignore (probe B8).
+	NoIgnoreFiles bool
+	// IgnoreFiles are --ignore-file PATH, repeatable, in the order given.
+	IgnoreFiles []string
+	// IgnoreCaseInsensitive is --ignore-file-case-insensitive /
+	// --no-ignore-file-case-insensitive: matches the per-directory tree
+	// ignore sources case-insensitively (not the global or explicit
+	// matchers -- probe F3).
+	IgnoreCaseInsensitive bool
+	Globs                 []string // -g/--glob, in the order given verbatim (leading '!' negation is glob syntax, handled by package glob, not here)
 	// IGlobs are --iglob GLOB, repeatable, same verbatim/negation
 	// convention as Globs but always matched case-insensitively -- see
 	// internal/engine.Config.IGlobs' doc for the combined-ordering rule
@@ -314,8 +334,8 @@ type Config struct {
 	// still reports the position in the UNTRIMMED line -- trimming only
 	// ever changes what TEXT gets printed, never the numbers around it.
 	// See printer.Standard.Trim's doc for the full breakdown.
-	Trim  bool
-	Mode  SearchMode
+	Trim bool
+	Mode SearchMode
 	// IncludeZero is rg's --include-zero: makes -c/--count-matches print
 	// "path:0" for a file with no matches instead of skipping it. No
 	// effect on any other Mode (verified against the real rg binary:
@@ -558,9 +578,112 @@ func buildV1Flags() []*flagSpec {
 			// rg's primary flag name really is "no-ignore"; its negation
 			// is the (rarely typed) "--ignore", used to turn a preceding
 			// --no-ignore back off. Do not "fix" this spelling.
+			//
+			// --no-ignore is SUGAR: it sets the five no-ignore-* sub-flags
+			// dot/exclude/global/parent/vcs together, but NOT no-ignore-
+			// files (probe B8). Because each sub-flag is an independent
+			// last-wins field, a later --ignore-dot re-enables just the dot
+			// family (probe A7), and a bare --ignore (on=false here) resets
+			// all five back on (probe A8). This mirrors rg's LowArgs update
+			// order exactly -- order-sensitivity comes for free.
 			long: "no-ignore", negated: "ignore", kind: kindSwitch,
 			applySwitch: func(cfg *Config, _ *parseState, on bool) error {
-				cfg.NoIgnore = on
+				cfg.NoIgnoreDot = on
+				cfg.NoIgnoreExclude = on
+				cfg.NoIgnoreGlobal = on
+				cfg.NoIgnoreParent = on
+				cfg.NoIgnoreVcs = on
+				return nil
+			},
+		},
+		{
+			// --no-ignore-dot / --ignore-dot: kills .ignore AND .rgignore
+			// (probe A3). Parent .ignore/.rgignore too, but keeps parent
+			// .gitignore (probe D4).
+			long: "no-ignore-dot", negated: "ignore-dot", kind: kindSwitch,
+			applySwitch: func(cfg *Config, _ *parseState, on bool) error {
+				cfg.NoIgnoreDot = on
+				return nil
+			},
+		},
+		{
+			// --no-ignore-exclude / --ignore-exclude: kills .git/info/exclude.
+			long: "no-ignore-exclude", negated: "ignore-exclude", kind: kindSwitch,
+			applySwitch: func(cfg *Config, _ *parseState, on bool) error {
+				cfg.NoIgnoreExclude = on
+				return nil
+			},
+		},
+		{
+			// --no-ignore-files / --ignore-files: kills every --ignore-file,
+			// position-independently (probe B6); negation restores (B7). NOT
+			// implied by --no-ignore (B8).
+			long: "no-ignore-files", negated: "ignore-files", kind: kindSwitch,
+			applySwitch: func(cfg *Config, _ *parseState, on bool) error {
+				cfg.NoIgnoreFiles = on
+				return nil
+			},
+		},
+		{
+			// --no-ignore-global / --ignore-global: kills the global
+			// (core.excludesFile / XDG) matcher.
+			long: "no-ignore-global", negated: "ignore-global", kind: kindSwitch,
+			applySwitch: func(cfg *Config, _ *parseState, on bool) error {
+				cfg.NoIgnoreGlobal = on
+				return nil
+			},
+		},
+		{
+			// --no-ignore-parent / --ignore-parent: kills the entire
+			// parent-directory ignore chain (probe D3). "Parent" is above
+			// the WALK ROOT, not CWD (probe D6).
+			long: "no-ignore-parent", negated: "ignore-parent", kind: kindSwitch,
+			applySwitch: func(cfg *Config, _ *parseState, on bool) error {
+				cfg.NoIgnoreParent = on
+				return nil
+			},
+		},
+		{
+			// --no-ignore-vcs / --ignore-vcs: kills .gitignore, exclude, AND
+			// the global matcher (probe A4).
+			long: "no-ignore-vcs", negated: "ignore-vcs", kind: kindSwitch,
+			applySwitch: func(cfg *Config, _ *parseState, on bool) error {
+				cfg.NoIgnoreVcs = on
+				return nil
+			},
+		},
+		{
+			// --no-require-git / --require-git: when set, git ignore sources
+			// (.gitignore/exclude/global) apply even outside a git repo
+			// (probes C2/E5). --no-ignore-vcs still wins over it (probe C3).
+			long: "no-require-git", negated: "require-git", kind: kindSwitch,
+			applySwitch: func(cfg *Config, _ *parseState, on bool) error {
+				cfg.NoRequireGit = on
+				return nil
+			},
+		},
+		{
+			// --ignore-file PATH: repeatable value flag with NO negation of
+			// its own (rg's IgnoreFile never sets name_negated) -- killing
+			// it is --no-ignore-files' job. Each PATH's patterns are anchored
+			// at CWD (probes B9-B11). A PATH that can't be read is a stderr
+			// warning, never an exit-code change (probes G4r-G7); that I/O
+			// happens later, in internal/engine.buildIgnoreSources, since
+			// this parser does no I/O of its own.
+			long: "ignore-file", kind: kindValue,
+			applyValue: func(cfg *Config, _ *parseState, val string) error {
+				cfg.IgnoreFiles = append(cfg.IgnoreFiles, val)
+				return nil
+			},
+		},
+		{
+			// --ignore-file-case-insensitive / --no-ignore-file-case-
+			// insensitive: applies to the per-directory tree sources only
+			// (probe F2), never the explicit --ignore-file (F3) or global
+			// matcher.
+			long: "ignore-file-case-insensitive", negated: "no-ignore-file-case-insensitive", kind: kindSwitch,
+			applySwitch: func(cfg *Config, _ *parseState, on bool) error {
+				cfg.IgnoreCaseInsensitive = on
 				return nil
 			},
 		},
@@ -612,7 +735,13 @@ func buildV1Flags() []*flagSpec {
 				}
 				switch ps.uLevel {
 				case 1:
-					cfg.NoIgnore = true
+					// -u once == --no-ignore (probe A9): the same five-flag
+					// sugar, not no-ignore-files.
+					cfg.NoIgnoreDot = true
+					cfg.NoIgnoreExclude = true
+					cfg.NoIgnoreGlobal = true
+					cfg.NoIgnoreParent = true
+					cfg.NoIgnoreVcs = true
 				case 2:
 					cfg.Hidden = true
 				case 3:

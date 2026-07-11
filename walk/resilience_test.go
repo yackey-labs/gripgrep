@@ -37,7 +37,7 @@ func TestPermissionDeniedDirectory(t *testing.T) {
 	var mu sync.Mutex
 	var lockedErr error
 	sawSibling := false
-	err := Walk([]string{root}, Options{NoIgnore: true}, func(e *Entry) WalkState {
+	err := Walk([]string{root}, Options{NoIgnoreDot: true, NoIgnoreVcs: true}, func(e *Entry) WalkState {
 		mu.Lock()
 		defer mu.Unlock()
 		if e.Path == locked {
@@ -77,7 +77,7 @@ func TestFileDeletedBetweenReaddirAndOpen(t *testing.T) {
 	var vanishErr error
 	var vanishErrSet bool
 	sawKeep := false
-	err := Walk([]string{root}, Options{NoIgnore: true, Threads: 1}, func(e *Entry) WalkState {
+	err := Walk([]string{root}, Options{NoIgnoreDot: true, NoIgnoreVcs: true, Threads: 1}, func(e *Entry) WalkState {
 		mu.Lock()
 		defer mu.Unlock()
 		if e.Path == vanish && e.Err == nil {
@@ -120,7 +120,7 @@ func TestSymlinkSelfLoop(t *testing.T) {
 	done := make(chan int, 1)
 	go func() {
 		n := 0
-		Walk([]string{root}, Options{NoIgnore: true, FollowSymlinks: true}, func(e *Entry) WalkState {
+		Walk([]string{root}, Options{NoIgnoreDot: true, NoIgnoreVcs: true, FollowSymlinks: true}, func(e *Entry) WalkState {
 			n++
 			return Continue
 		})
@@ -152,7 +152,7 @@ func TestSymlinkCrossLoop(t *testing.T) {
 	done := make(chan int, 1)
 	go func() {
 		n := 0
-		Walk([]string{root}, Options{NoIgnore: true, FollowSymlinks: true}, func(e *Entry) WalkState {
+		Walk([]string{root}, Options{NoIgnoreDot: true, NoIgnoreVcs: true, FollowSymlinks: true}, func(e *Entry) WalkState {
 			n++
 			return Continue
 		})
@@ -192,7 +192,7 @@ func TestNonUTF8Filename(t *testing.T) {
 	}
 
 	found := false
-	err := Walk([]string{root}, Options{NoIgnore: true}, func(e *Entry) WalkState {
+	err := Walk([]string{root}, Options{NoIgnoreDot: true, NoIgnoreVcs: true}, func(e *Entry) WalkState {
 		if e.Type == TypeFile && e.Path == full {
 			found = true
 		}
@@ -231,7 +231,7 @@ func TestDeepNestingNoStackOverflow(t *testing.T) {
 	writeFile(t, filepath.Join(path, "leaf.txt"), "x")
 
 	found := false
-	err := Walk([]string{root}, Options{NoIgnore: true, Threads: 1}, func(e *Entry) WalkState {
+	err := Walk([]string{root}, Options{NoIgnoreDot: true, NoIgnoreVcs: true, Threads: 1}, func(e *Entry) WalkState {
 		if e.Type == TypeFile {
 			found = true
 		}
@@ -308,7 +308,7 @@ func TestQuiescenceRandomQuitInjection(t *testing.T) {
 		n := 0
 		done := make(chan error, 1)
 		go func() {
-			done <- Walk([]string{root}, Options{NoIgnore: true}, func(e *Entry) WalkState {
+			done <- Walk([]string{root}, Options{NoIgnoreDot: true, NoIgnoreVcs: true}, func(e *Entry) WalkState {
 				p := clone(e.Path)
 				mu.Lock()
 				dup := seen[p]
@@ -349,7 +349,7 @@ func TestAllocsPerEntrySteadyState(t *testing.T) {
 	}
 
 	allocs := testing.AllocsPerRun(5, func() {
-		err := Walk([]string{root}, Options{NoIgnore: true, Threads: 1}, func(e *Entry) WalkState {
+		err := Walk([]string{root}, Options{NoIgnoreDot: true, NoIgnoreVcs: true, Threads: 1}, func(e *Entry) WalkState {
 			return Continue
 		})
 		if err != nil {
