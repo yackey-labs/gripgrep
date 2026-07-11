@@ -171,6 +171,32 @@ func TestGoldenVsRipgrep(t *testing.T) {
 		{"byte_offset_files_with_matches", []string{"-b", "-l", "hello", corpus}},
 		{"byte_offset_vimgrep", []string{"-b", "--vimgrep", "hello", corpus}},
 		{"byte_offset_context", []string{"-b", "-C", "1", "hello", corpus}},
+		// Round #36: -o/--only-matching, -M/--max-columns(-preview),
+		// --trim. Order-sensitive (multi-occurrence ordering, exact
+		// omitted-line text) properties are covered separately below
+		// (TestGoldenVsRipgrep_OnlyMatching*, TestGoldenVsRipgrep_
+		// MaxColumns*, TestGoldenVsRipgrep_TrimContextOrdering).
+		{"only_matching", []string{"-o", "hello", corpus}},
+		{"only_matching_line_number", []string{"-o", "-n", "hello", corpus}},
+		{"only_matching_column", []string{"-o", "--column", "hello", corpus}},
+		{"only_matching_byte_offset", []string{"-o", "-b", "hello", corpus}},
+		{"only_matching_invert", []string{"-o", "-v", "hello", corpus}},
+		{"only_matching_count_mode", []string{"-o", "-c", "hello", corpus}},
+		{"only_matching_count_mode_invert", []string{"-o", "-c", "-v", "hello", corpus}},
+		{"only_matching_files_with_matches", []string{"-o", "-l", "hello", corpus}},
+		{"only_matching_vimgrep", []string{"-o", "--vimgrep", "hello", corpus}},
+		{"only_matching_context", []string{"-o", "-C", "1", "hello", corpus}},
+		{"max_columns", []string{"-M", "20", "-n", "hello", corpus}},
+		{"max_columns_zero_unlimited", []string{"-M", "0", "-n", "hello", corpus}},
+		{"max_columns_preview", []string{"-M", "20", "--max-columns-preview", "-n", "hello", corpus}},
+		{"max_columns_column", []string{"-M", "20", "--column", "hello", corpus}},
+		{"max_columns_only_matching", []string{"-M", "20", "-o", "hello", corpus}},
+		{"max_columns_context", []string{"-M", "20", "-C", "1", "hello", corpus}},
+		{"trim", []string{"--trim", "-n", "hello", corpus}},
+		{"trim_column", []string{"--trim", "--column", "hello", corpus}},
+		{"trim_byte_offset", []string{"--trim", "-b", "hello", corpus}},
+		{"trim_max_columns", []string{"--trim", "-M", "20", "-n", "hello", corpus}},
+		{"trim_only_matching", []string{"--trim", "-o", "hello", corpus}},
 	}
 
 	for _, tc := range cases {
@@ -576,6 +602,120 @@ func TestGoldenVsRipgrep_VimgrepContextInterleaving(t *testing.T) {
 	ggBin := buildGG(t, filepath.Dir(thisFile))
 
 	args := []string{"-j1", "--vimgrep", "-C", "1", "cat", path}
+
+	rgOut, rgErr, rgCode := run(t, "rg", args)
+	ggOut, ggErr, ggCode := run(t, ggBin, args)
+
+	if rgCode != ggCode {
+		t.Errorf("exit code mismatch: rg=%d gg=%d\nrg stderr: %s\ngg stderr: %s", rgCode, ggCode, rgErr, ggErr)
+	}
+	if !bytes.Equal(rgOut, ggOut) {
+		t.Errorf("raw (unsorted, -j1, single-file) stdout mismatch:\n--- rg stdout ---\n%s\n--- gg stdout ---\n%s", rgOut, ggOut)
+	}
+}
+
+// TestGoldenVsRipgrep_OnlyMatchingMultiOccurrenceOrdering covers round
+// #36's -o property that a line with multiple occurrences becomes
+// multiple, per-occurrence rows in left-to-right order -- a set
+// comparison would pass even if rows came out in the wrong order or
+// with the wrong text per row, since (for this fixture) every row is
+// the literal text "cat", indistinguishable from any other by a
+// sort-normalized diff.
+func TestGoldenVsRipgrep_OnlyMatchingMultiOccurrenceOrdering(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "multi.txt")
+	content := "one cat two cat\nno match here\ncat at start\n"
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, thisFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("could not determine test file location")
+	}
+	ggBin := buildGG(t, filepath.Dir(thisFile))
+
+	args := []string{"-j1", "-o", "-n", "--column", "-b", "cat", path}
+
+	rgOut, rgErr, rgCode := run(t, "rg", args)
+	ggOut, ggErr, ggCode := run(t, ggBin, args)
+
+	if rgCode != ggCode {
+		t.Errorf("exit code mismatch: rg=%d gg=%d\nrg stderr: %s\ngg stderr: %s", rgCode, ggCode, rgErr, ggErr)
+	}
+	if !bytes.Equal(rgOut, ggOut) {
+		t.Errorf("raw (unsorted, -j1, single-file) stdout mismatch:\n--- rg stdout ---\n%s\n--- gg stdout ---\n%s", rgOut, ggOut)
+	}
+}
+
+// TestGoldenVsRipgrep_MaxColumnsOmittedTextExactness covers round #36's
+// -M/--max-columns exact replacement text -- "[Omitted long matching
+// line]" vs "[Omitted long line with N matches]" vs the preview's
+// truncated-prefix wording all differ only in their exact bytes, which
+// a sort-normalized set comparison can still pass on if gg picks a
+// consistently-wrong wording. Exercises the plain, --column-driven, and
+// --max-columns-preview wordings all in one fixture, byte for byte.
+func TestGoldenVsRipgrep_MaxColumnsOmittedTextExactness(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "long.txt")
+	content := "short cat line\n" +
+		"catstart catmiddle padding padding padding cat cat end\n" +
+		"short cat line\n"
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, thisFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("could not determine test file location")
+	}
+	ggBin := buildGG(t, filepath.Dir(thisFile))
+
+	for _, tc := range []struct {
+		name string
+		args []string
+	}{
+		{"plain", []string{"-j1", "-n", "-M", "20", "cat", path}},
+		{"column", []string{"-j1", "-n", "--column", "-M", "20", "cat", path}},
+		{"preview", []string{"-j1", "-n", "-M", "20", "--max-columns-preview", "cat", path}},
+		{"preview_color", []string{"-j1", "-n", "-M", "20", "--max-columns-preview", "--color=always", "cat", path}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rgOut, rgErr, rgCode := run(t, "rg", tc.args)
+			ggOut, ggErr, ggCode := run(t, ggBin, tc.args)
+
+			if rgCode != ggCode {
+				t.Errorf("exit code mismatch: rg=%d gg=%d\nrg stderr: %s\ngg stderr: %s", rgCode, ggCode, rgErr, ggErr)
+			}
+			if !bytes.Equal(rgOut, ggOut) {
+				t.Errorf("raw (unsorted, -j1, single-file) stdout mismatch:\n--- rg stdout ---\n%s\n--- gg stdout ---\n%s", rgOut, ggOut)
+			}
+		})
+	}
+}
+
+// TestGoldenVsRipgrep_TrimContextOrdering covers round #36's --trim
+// property that leading whitespace is stripped from CONTEXT lines too,
+// interleaved correctly with trimmed matched lines -- a sort-normalized
+// diff of TRIMMED lines could pass even if gg forgot to trim context
+// lines specifically, since the untrimmed context text wouldn't be
+// present to compare against (it just wouldn't be trimmed), so this
+// needs the raw, ordered byte stream.
+func TestGoldenVsRipgrep_TrimContextOrdering(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "trim.txt")
+	content := "   indented cat\n\tTAB context after\nplain cat line\n    more indented context\n"
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, thisFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("could not determine test file location")
+	}
+	ggBin := buildGG(t, filepath.Dir(thisFile))
+
+	args := []string{"-j1", "--trim", "-n", "-A", "1", "cat", path}
 
 	rgOut, rgErr, rgCode := run(t, "rg", args)
 	ggOut, ggErr, ggCode := run(t, ggBin, args)
