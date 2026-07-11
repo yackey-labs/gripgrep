@@ -21,6 +21,10 @@ func BuildMatcher(cfg Config) (match.Matcher, error) {
 		Word:       cfg.Word,
 		Fixed:      cfg.Fixed,
 		LineRegexp: cfg.LineRegexp,
+		// --null-data records may span '\n', so anchors must be line-aware
+		// within a record window (rg's null-data regex semantics) -- see
+		// match.Config.MultiLine.
+		MultiLine: cfg.NullData,
 	})
 }
 
@@ -48,6 +52,8 @@ func NewSearcher(cfg Config, matcher match.Matcher) *search.Searcher {
 		AfterContext:    cfg.AfterContext,
 		PassThru:        cfg.PassThru,
 		MaxCount:        cfg.MaxCount,
+		CRLF:            cfg.CRLF,
+		NullData:        cfg.NullData,
 		ParallelWorkers: resolveParallelWorkers(cfg.Threads),
 	})
 }

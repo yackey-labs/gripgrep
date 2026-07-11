@@ -24,6 +24,12 @@ type lineBuffer struct {
 	binaryMode      BinaryMode
 	hasBinaryOffset bool
 	binaryOffset    int64
+
+	// lineTerm is the record/line terminator the rolling buffer looks for
+	// when deciding how much of a freshly-read chunk is complete lines
+	// ('\n' by default and under --crlf, '\x00' under --null-data). Set by
+	// reset from the Searcher's resolved terminator.
+	lineTerm byte
 }
 
 func newLineBuffer(capacity int) *lineBuffer {
@@ -31,7 +37,7 @@ func newLineBuffer(capacity int) *lineBuffer {
 }
 
 // reset prepares the buffer for a new file/reader.
-func (lb *lineBuffer) reset(mode BinaryMode) {
+func (lb *lineBuffer) reset(mode BinaryMode, term byte) {
 	lb.pos = 0
 	lb.last = 0
 	lb.end = 0
@@ -39,6 +45,7 @@ func (lb *lineBuffer) reset(mode BinaryMode) {
 	lb.hasBinaryOffset = false
 	lb.binaryOffset = 0
 	lb.binaryMode = mode
+	lb.lineTerm = term
 }
 
 // buffer returns the currently readable, complete-lines-only region.
@@ -143,7 +150,7 @@ func (lb *lineBuffer) fill(r io.Reader) (bool, error) {
 				replaceNULInPlace(chunk)
 			}
 
-			if i := bytes.LastIndexByte(chunk, '\n'); i >= 0 {
+			if i := bytes.LastIndexByte(chunk, lb.lineTerm); i >= 0 {
 				lb.last = oldEnd + i + 1
 				return true, nil
 			}

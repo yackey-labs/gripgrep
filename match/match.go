@@ -52,6 +52,14 @@ type Config struct {
 	// where the last of -w/-x given wins outright (see strategy.go's New
 	// doc for how this is implemented).
 	LineRegexp bool
+	// MultiLine compiles the pattern with Go's (?m) flag so `^`/`$` bind to
+	// '\n' line boundaries anywhere within a search window, not just its
+	// very start/end (rg's --null-data behavior: a record may span '\n', so
+	// `foo$` must anchor before an interior '\n', while `.` still does NOT
+	// match '\n'). No effect on -F/literal patterns (they carry no
+	// anchors) and redundant under LineRegexp (which already wraps in
+	// (?m)^...$). See strategy.go's newRegexMatcher.
+	MultiLine bool
 }
 
 // Matcher is a compiled pattern ready to search []byte haystacks. Every

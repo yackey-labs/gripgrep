@@ -18,6 +18,7 @@ const (
 // Search/SearchBytes call; the pooled buffers/scratch structs are left
 // alone so they carry over across files on the same *Searcher.
 func (s *Searcher) resetRun() {
+	s.lineTerm = resolveLineTerm(s.NullData)
 	s.pos = 0
 	s.absOffsetBase = 0
 	if s.LineNumbers {
@@ -105,7 +106,7 @@ func (s *Searcher) matchByLine(buf []byte, sink Sink) (scanOutcome, error) {
 // (never even re-invokes the matcher once the limit is exceeded under
 // passthru, since its result is discarded either way).
 func (s *Searcher) matchByLineSlow(buf []byte, sink Sink) (scanOutcome, error) {
-	step := newLineStep(s.pos, len(buf))
+	step := newLineStep(s.lineTerm, s.pos, len(buf))
 	for {
 		start, end, ok := step.next(buf)
 		if !ok {
@@ -129,7 +130,7 @@ func (s *Searcher) matchByLineSlow(buf []byte, sink Sink) (scanOutcome, error) {
 			// -v with no -m at all inverts the render of every line).
 			success = false
 		} else {
-			matched := s.Matcher.Verify(withoutTerminator(buf[start:end]))
+			matched := s.Matcher.Verify(withoutTerminator(buf[start:end], s.lineTerm, s.CRLF))
 			success = matched != s.Invert && !s.matchLimitReached
 		}
 		if success {
@@ -302,7 +303,7 @@ func (s *Searcher) matchByLineFastInvert(buf []byte, sink Sink) (keepGoing bool,
 		return false, err
 	}
 
-	step := newLineStep(gapStart, gapEnd)
+	step := newLineStep(s.lineTerm, gapStart, gapEnd)
 	for {
 		start, end, ok := step.next(buf)
 		if !ok {
@@ -342,7 +343,7 @@ func (s *Searcher) findByLineFast(buf []byte) (lineStart, lineEnd int, found boo
 		if !ok {
 			return 0, 0, false, nil
 		}
-		ls, le := lineLocate(buf, off, off)
+		ls, le := lineLocate(buf, s.lineTerm, off, off)
 		if ls == len(buf) {
 			// Matched beyond the end of the buffer; not a real hit.
 			pos = len(buf)
@@ -351,7 +352,7 @@ func (s *Searcher) findByLineFast(buf []byte) (lineStart, lineEnd int, found boo
 		if kind == match.Confirmed {
 			return ls, le, true, nil
 		}
-		if s.Matcher.Verify(withoutTerminator(buf[ls:le])) {
+		if s.Matcher.Verify(withoutTerminator(buf[ls:le], s.lineTerm, s.CRLF)) {
 			return ls, le, true, nil
 		}
 		pos = le
@@ -369,9 +370,9 @@ func (s *Searcher) beforeContextByLine(buf []byte, sink Sink, upto int) (scanOut
 	if rangeStart >= upto {
 		return scanContinue, nil
 	}
-	beforeStart := rangeStart + linePreceding(buf[rangeStart:upto], s.BeforeContext-1)
+	beforeStart := rangeStart + linePreceding(buf[rangeStart:upto], s.lineTerm, s.BeforeContext-1)
 
-	step := newLineStep(beforeStart, upto)
+	step := newLineStep(s.lineTerm, beforeStart, upto)
 	for {
 		start, end, ok := step.next(buf)
 		if !ok {
@@ -394,7 +395,7 @@ func (s *Searcher) afterContextByLine(buf []byte, sink Sink, upto int) (scanOutc
 	if s.afterContextLeft == 0 {
 		return scanContinue, nil
 	}
-	step := newLineStep(s.lastLineVisited, upto)
+	step := newLineStep(s.lineTerm, s.lastLineVisited, upto)
 	for {
 		start, end, ok := step.next(buf)
 		if !ok {
@@ -425,7 +426,7 @@ func (s *Searcher) countLines(buf []byte, upto int) {
 	if s.lastLineCounted >= upto {
 		return
 	}
-	s.lineNumber += lineCount(buf[s.lastLineCounted:upto])
+	s.lineNumber += lineCount(buf[s.lastLineCounted:upto], s.lineTerm)
 	s.lastLineCounted = upto
 }
 
@@ -481,7 +482,7 @@ func (s *Searcher) rollConsume(buf []byte) int {
 	if s.maxContext() == 0 {
 		consumed = len(buf)
 	} else {
-		contextStart := linePreceding(buf, s.BeforeContext)
+		contextStart := linePreceding(buf, s.lineTerm, s.BeforeContext)
 		consumed = contextStart
 		if s.lastLineVisited > consumed {
 			consumed = s.lastLineVisited

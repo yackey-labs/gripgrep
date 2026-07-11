@@ -384,6 +384,21 @@ type Config struct {
 	// silently ignored under -l/--files-without-match) and never changes
 	// the exit code -- see printer.Count.IncludeZero's doc.
 	IncludeZero bool
+	// CRLF is rg's --crlf/--no-crlf and NullData is rg's --null-data: the
+	// line-terminator cluster. They are MUTUALLY EXCLUSIVE, resolved by
+	// cross-clearing exactly like rg's LowArgs (defs.rs): --crlf sets
+	// CRLF=true and clears NullData; --null-data sets NullData=true and
+	// clears CRLF; --no-crlf clears CRLF only (leaving NullData). So the
+	// LAST of --crlf/--null-data on the command line wins outright
+	// (verified against the real rg binary: `--null-data --crlf` uses CRLF
+	// with binary detection back ON, printing "binary file matches" on a
+	// NUL file; `--crlf --null-data` uses NUL with detection off). --crlf
+	// strips a trailing '\r' from the match window; --null-data delimits
+	// records on '\x00' and disables binary detection. rg's --null-data has
+	// NO negation (defs.rs asserts it), so `--no-null-data` is an
+	// unrecognized flag here too (exit 2), matching rg.
+	CRLF     bool
+	NullData bool
 	// Null is rg's -0/--null: terminates each path with a NUL byte
 	// instead of whatever character would normally immediately follow it
 	// (the ':'/'-' prelude separator in Standard mode, or the trailing
@@ -965,6 +980,32 @@ func buildV1Flags() []*flagSpec {
 			long: "null", short: '0', kind: kindSwitch,
 			applySwitch: func(cfg *Config, _ *parseState, _ bool) error {
 				cfg.Null = true
+				return nil
+			},
+		},
+		{
+			// --crlf/--no-crlf: sets CRLF and (when turned ON) clears
+			// NullData -- rg's Crlf::update does exactly this ("overrides
+			// null-data"). --no-crlf clears CRLF only. See Config.CRLF's doc.
+			long: "crlf", negated: "no-crlf", kind: kindSwitch,
+			applySwitch: func(cfg *Config, _ *parseState, on bool) error {
+				cfg.CRLF = on
+				if on {
+					cfg.NullData = false
+				}
+				return nil
+			},
+		},
+		{
+			// --null-data: NUL is the record terminator. Sets NullData and
+			// clears CRLF (rg's NullData::update: "overrides crlf"). NO
+			// negation in rg (defs.rs asserts "--null-data has no negation"),
+			// so it is a plain switch with no negated spelling -- see
+			// Config.CRLF's doc.
+			long: "null-data", kind: kindSwitch,
+			applySwitch: func(cfg *Config, _ *parseState, _ bool) error {
+				cfg.NullData = true
+				cfg.CRLF = false
 				return nil
 			},
 		},

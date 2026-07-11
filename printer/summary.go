@@ -51,15 +51,37 @@ type Count struct {
 	// change, so ONLY Finish's early-return guard below is affected.
 	IncludeZero bool
 	// Null is rg's -0/--null: the ':' between path and count becomes a
-	// NUL byte instead (the trailing '\n' after the count is unaffected)
-	// -- see printer.Standard.Null's doc for the general rule this is
-	// one instance of.
+	// NUL byte instead (the trailing terminator after the count is
+	// unaffected) -- see printer.Standard.Null's doc for the general rule
+	// this is one instance of.
 	Null bool
+	// CRLF/NullData select the trailing terminator after the count, matching
+	// the searcher's line terminator (rg's -c honors --crlf/--null-data:
+	// "path:1\r\n" / "path:1\x00" -- verified against the real rg binary).
+	// The ':' separator itself is unaffected (it is Null's concern). See
+	// summaryTerm.
+	CRLF     bool
+	NullData bool
 
 	buf         []byte
 	path        []byte
 	count       int64
 	spanScratch []matchSpan
+}
+
+// summaryTerm returns the trailing terminator bytes for a summary-mode row
+// (rg's LineTerminator::as_bytes): '\r\n' under CRLF, '\x00' under
+// NullData, '\n' otherwise. Shared by Count and the -l/--files-without-match
+// printers, whose path/count rows all follow the searcher's terminator.
+func summaryTerm(crlf, nullData bool) []byte {
+	switch {
+	case nullData:
+		return termNUL
+	case crlf:
+		return termCRLF
+	default:
+		return termLF
+	}
 }
 
 // NewCount returns a Count printer flushing completed files to dest, with
@@ -89,7 +111,7 @@ func (p *Count) Matched(m *search.Match) (bool, error) {
 		p.count++
 		return true, nil
 	}
-	line := trimLineTerminator(m.Line)
+	line := trimRecordTerminator(m.Line, p.CRLF, p.NullData)
 	p.spanScratch = findMatchSpans(p.spanScratch[:0], p.Matcher, line)
 	if n := len(p.spanScratch); n > 0 {
 		p.count += int64(n)
@@ -125,7 +147,7 @@ func (p *Count) Finish(path string, stats *search.Stats) error {
 		}
 	}
 	p.buf = strconv.AppendInt(p.buf, p.count, 10)
-	p.buf = append(p.buf, '\n')
+	p.buf = append(p.buf, summaryTerm(p.CRLF, p.NullData)...)
 	return p.dest.Write(p.buf)
 }
 
@@ -137,10 +159,17 @@ type FilesWithMatches struct {
 	dest *Dest
 	// Color enables coloring the path, matching rg's -l --color=always.
 	Color bool
-	// Null is rg's -0/--null: the trailing '\n' becomes a NUL byte
+	// Null is rg's -0/--null: the trailing terminator becomes a NUL byte
 	// instead -- since path is the only field -l ever prints, this IS
-	// the path's own terminator (see printer.Standard.Null's doc).
+	// the path's own terminator (see printer.Standard.Null's doc). Null
+	// wins over CRLF/NullData for this single field.
 	Null bool
+	// CRLF/NullData select the path terminator when Null is not set, matching
+	// the searcher's line terminator (rg's -l honors --null-data:
+	// "path\x00" -- verified against the real rg binary; -0 gives the same
+	// '\x00' independently). See summaryTerm.
+	CRLF     bool
+	NullData bool
 
 	buf     []byte
 	path    []byte
@@ -190,7 +219,7 @@ func (p *FilesWithMatches) Finish(path string, stats *search.Stats) error {
 	if p.Null {
 		p.buf = append(p.buf, 0)
 	} else {
-		p.buf = append(p.buf, '\n')
+		p.buf = append(p.buf, summaryTerm(p.CRLF, p.NullData)...)
 	}
 	return p.dest.Write(p.buf)
 }
@@ -215,6 +244,10 @@ type FilesWithoutMatch struct {
 	Color bool
 	// Null is rg's -0/--null -- see FilesWithMatches.Null's doc.
 	Null bool
+	// CRLF/NullData select the path terminator when Null is not set -- see
+	// FilesWithMatches.CRLF's doc.
+	CRLF     bool
+	NullData bool
 
 	buf     []byte
 	path    []byte
@@ -266,7 +299,7 @@ func (p *FilesWithoutMatch) Finish(path string, stats *search.Stats) error {
 	if p.Null {
 		p.buf = append(p.buf, 0)
 	} else {
-		p.buf = append(p.buf, '\n')
+		p.buf = append(p.buf, summaryTerm(p.CRLF, p.NullData)...)
 	}
 	return p.dest.Write(p.buf)
 }

@@ -375,6 +375,17 @@ func newRegexMatcher(cfg Config, caseInsensitive bool) (Matcher, error) {
 		// under -x -- exactly PLAN.md's round-31 landmine requirement,
 		// achieved by construction rather than a special case.
 		combined = "(?m)^(?:" + combined + ")$"
+	} else if cfg.MultiLine {
+		// --null-data: a record may span '\n', so `^`/`$` must anchor at
+		// interior '\n' boundaries within the record window handed to the
+		// matcher (Go's (?m)), while `.` still does not match '\n'. This is
+		// a no-op for anchor-free patterns (a bare literal parses to the
+		// same OpLiteral with or without the flag, keeping Strategy 1) and
+		// is subsumed by the LineRegexp branch above (already (?m)). Verified
+		// against the real rg binary: `--null-data 'foo$'` anchors before an
+		// interior '\n' inside a record, `--null-data 'foo.bar'` does not
+		// cross one.
+		combined = "(?m)" + combined
 	}
 
 	baseFlags := syntax.Perl

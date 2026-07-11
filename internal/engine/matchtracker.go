@@ -256,7 +256,7 @@ func (t *matchTracker) Matched(m *search.Match) (bool, error) {
 		// if standard-mode display later withholds its bytes -- EXCEPT past
 		// the binary-detection point, where rg stops counting entirely (see
 		// statsBinaryTruncated).
-		t.stats.AddMatchedLine(printer.CountMatches(t.searcher.Matcher, m.Line))
+		t.stats.AddMatchedLine(printer.CountMatches(t.searcher.Matcher, m.Line, t.searcher.CRLF, t.searcher.NullData))
 	}
 	if t.standard {
 		t.noteLineNUL(m.Offset, m.Line)

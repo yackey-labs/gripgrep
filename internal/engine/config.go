@@ -167,6 +167,17 @@ type Config struct {
 	LineNumbers   bool
 	BeforeContext int
 	AfterContext  int
+	// CRLF is rg's --crlf and NullData is rg's --null-data: the
+	// line-terminator cluster. They are mutually exclusive (cmd/gg resolves
+	// them so at most one is set -- --crlf clears null-data and vice versa,
+	// last flag wins). CRLF strips a trailing '\r' from the match window
+	// (see search.Searcher.CRLF); NullData delimits records on '\x00'
+	// (see search.Searcher.NullData), forces the matcher into (?m)
+	// multi-line mode (BuildMatcher), and disables binary detection
+	// entirely regardless of -a/-uuu (a NUL cannot be both a terminator and
+	// a binary marker -- see NewSearcher).
+	CRLF     bool
+	NullData bool
 	// PassThru is rg's --passthru, passed straight through to
 	// search.Searcher.PassThru (see its doc). cmd/gg guarantees
 	// BeforeContext/AfterContext are both 0 whenever this is set,

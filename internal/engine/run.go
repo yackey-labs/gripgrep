@@ -183,6 +183,13 @@ func Run(cfg Config, newWorker NewWorkerFunc, quiet QuitSink, stop func() bool, 
 		w := pool.Get().(*Worker)
 		defer pool.Put(w)
 		w.Searcher.BinaryMode = resolveBinaryMode(cfg.Binary, explicit)
+		if cfg.NullData {
+			// --null-data disables binary detection entirely: a NUL is the
+			// record terminator here, not a binary marker (rg's own
+			// `none = AsText || null_data`). Overrides the -a/-uuu/explicit
+			// resolution above for both walk-discovered and explicit files.
+			w.Searcher.BinaryMode = search.BinaryNone
+		}
 
 		sink := w.Sink
 		standard := w.Standard

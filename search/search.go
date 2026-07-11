@@ -113,6 +113,18 @@ type Searcher struct {
 	BinaryMode  BinaryMode
 	Invert      bool
 	LineNumbers bool
+	// CRLF is rg's --crlf: lines are still split on '\n', but a trailing
+	// '\r' is stripped from the MATCH window (see withoutTerminator) so
+	// `$`/`-x`/`.` behave as if the '\r' weren't there, while the printer
+	// still emits the original bytes. Never combined with NullData (the
+	// CLI resolves them mutually exclusively -- see cmd/gg's flags).
+	CRLF bool
+	// NullData is rg's --null-data: records are delimited by '\x00' instead
+	// of '\n' (the terminator threads through the searcher's line splitting,
+	// the rolling buffer, and the printer). Binary detection is disabled
+	// under this mode (a NUL cannot be both a record terminator and a
+	// binary marker); the caller sets BinaryMode=BinaryNone accordingly.
+	NullData bool
 	// BeforeContext / AfterContext are line counts for -B/-A; -C sets
 	// both to the same value.
 	BeforeContext int
@@ -169,6 +181,12 @@ type Searcher struct {
 	matchScratch Match
 	ctxScratch   Ctx
 	statsScratch Stats
+
+	// lineTerm is the resolved record/line terminator byte for this scan
+	// ('\x00' under NullData, otherwise '\n' -- including under CRLF, which
+	// still splits on '\n'). Set by resetRun/runChunk from NullData so the
+	// zero value of a Searcher stays the default '\n' path.
+	lineTerm byte
 
 	// Per-call scan state, reset by resetRun at the start of every
 	// Search/SearchBytes call.
@@ -260,7 +278,7 @@ func (s *Searcher) Search(path string, r io.Reader, sink Sink) error {
 	if s.lb == nil {
 		s.lb = newLineBuffer(DefaultBufferSize)
 	}
-	s.lb.reset(s.BinaryMode)
+	s.lb.reset(s.BinaryMode, s.lineTerm)
 
 	for {
 		oldBuf := s.lb.buffer()
@@ -407,6 +425,7 @@ func (s *Searcher) SearchBytes(path string, data []byte, sink Sink) error {
 // with BinaryMode=BinaryNone specifically so they never redo or interact
 // with it.
 func (s *Searcher) runChunk(data []byte, sink Sink, base, lineBase int64) error {
+	s.lineTerm = resolveLineTerm(s.NullData)
 	s.pos = 0
 	s.absOffsetBase = base
 	if s.LineNumbers {

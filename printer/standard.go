@@ -15,6 +15,16 @@ var (
 	sepContextBreak = []byte("--\n")
 )
 
+// Preallocated line-terminator byte sequences (rg's LineTerminator::
+// as_bytes): '\n' by default, '\r\n' under --crlf, '\x00' under
+// --null-data. Reused everywhere a terminator is appended so no per-line
+// allocation is ever needed.
+var (
+	termLF   = []byte{'\n'}
+	termCRLF = []byte{'\r', '\n'}
+	termNUL  = []byte{0}
+)
+
 // Standard formats matched and context lines as rg's default output:
 // "path:line:text" per match ("path:text" when line numbers are off),
 // "path-line-text" for context lines, with "--" between discontiguous
@@ -109,6 +119,19 @@ type Standard struct {
 	// "path\x00N|text", NUL for the path only, '|' everywhere else. See
 	// writeLine.
 	Null bool
+	// CRLF (rg's --crlf) and NullData (rg's --null-data) select the line/
+	// record terminator this printer emits and preserves. Default (both
+	// false) terminates every generated line with '\n'; CRLF uses '\r\n';
+	// NullData uses '\x00'. They are mutually exclusive (cmd/gg resolves
+	// them so at most one is ever set). A matched/context line's ORIGINAL
+	// terminator bytes are preserved verbatim (an LF line inside a CRLF
+	// file still prints '\n', a '\n' inside a NUL record passes through);
+	// only a final line/record with NO terminator, and every synthetic row
+	// (-o text, a heading path, a separator), gets the configured
+	// terminator appended -- see splitTerm/configTerm and writeLine, all
+	// verified against the real rg binary.
+	CRLF     bool
+	NullData bool
 	// MatchFieldSep is rg's --field-match-separator: replaces EVERY ':'
 	// field separator on a matched line -- path, line number, column,
 	// byte offset -- with this instead. Callers must always set this
@@ -189,12 +212,14 @@ func (p *Standard) Begin(path string) (bool, error) {
 
 // Matched implements search.Sink. Per search's documented line-boundary
 // convention (search's lineStep: "Line terminators are considered part
-// of the line they terminate"), m.Line includes its trailing '\n' when
-// one exists in the source -- trimLineTerminator strips it once here so
-// writeLine's own unconditional '\n' doesn't double up, and so the
-// gap-detection byte-offset math in writeSeparatorIfGap (which already
-// accounts for one terminator byte via its own "+1") sees the same
-// terminator-free length convention it was written against.
+// of the line they terminate"), m.Line includes its trailing terminator
+// when one exists in the source -- splitTerm separates the terminator-free
+// content (for spans/trim/max-columns) from the exact terminator bytes to
+// re-emit, which writeLine appends verbatim (preserving the original, or
+// the configured terminator for a line with none -- see splitTerm). The
+// gap-detection byte-offset math in writeSeparatorIfGap is fed the FULL
+// delivered line length (len(m.Line), terminator included) so contiguous
+// lines line up under any terminator width.
 //
 // Match spans (needed for Column, Vimgrep, and match coloring alike) are
 // located here via findSpans -- the SAME re-scan of the line's bytes
@@ -217,8 +242,8 @@ func (p *Standard) Begin(path string) (bool, error) {
 // is to print the line with no column at all, which is exactly what
 // falls out here for free once no span is found.
 func (p *Standard) Matched(m *search.Match) (bool, error) {
-	line := trimLineTerminator(m.Line)
-	p.writeSeparatorIfGap(m.LineNumber, m.HasLineNumber, m.Offset, len(line))
+	line, term := p.splitTerm(m.Line)
+	p.writeSeparatorIfGap(m.LineNumber, m.HasLineNumber, m.Offset, len(m.Line))
 
 	// OnlyMatching is checked BEFORE Vimgrep, not after -- verified
 	// against the real rg binary, which surprised this round's probes:
@@ -234,10 +259,10 @@ func (p *Standard) Matched(m *search.Match) (bool, error) {
 	// --column/-H defaults, forced heading off) are resolved in cmd/gg's
 	// wire.go independently of this branch, so they still apply.
 	if p.OnlyMatching {
-		return p.matchedOnlyMatching(m, line)
+		return p.matchedOnlyMatching(m, line, term)
 	}
 	if p.Vimgrep {
-		return p.matchedVimgrep(m, line)
+		return p.matchedVimgrep(m, line, term)
 	}
 
 	col := -1
@@ -250,7 +275,7 @@ func (p *Standard) Matched(m *search.Match) (bool, error) {
 	}
 	text, cut := p.trimPrefix(line)
 	spans = shiftSpansAfterTrim(spans, cut)
-	p.writeLine(text, m.LineNumber, m.HasLineNumber, false, col, m.Offset, spans, spans, 1)
+	p.writeLine(text, m.LineNumber, m.HasLineNumber, false, col, m.Offset, spans, spans, 1, term)
 	return true, nil
 }
 
@@ -263,11 +288,11 @@ func (p *Standard) Matched(m *search.Match) (bool, error) {
 // (rg's sink_slow per_match branch colors `&[m]`, not every span on the
 // line). A line with zero spans (the Invert case; see Matched's doc)
 // still prints exactly one row, with no column, matching `--vimgrep -v`.
-func (p *Standard) matchedVimgrep(m *search.Match, line []byte) (bool, error) {
+func (p *Standard) matchedVimgrep(m *search.Match, line, term []byte) (bool, error) {
 	spans := p.findSpans(line)
 	text, cut := p.trimPrefix(line)
 	if len(spans) == 0 {
-		p.writeLine(text, m.LineNumber, m.HasLineNumber, false, -1, m.Offset, nil, nil, 1)
+		p.writeLine(text, m.LineNumber, m.HasLineNumber, false, -1, m.Offset, nil, nil, 1, term)
 		return true, nil
 	}
 	// allSpans (every match on this line) drives -M's omitted-line
@@ -283,7 +308,7 @@ func (p *Standard) matchedVimgrep(m *search.Match, line []byte) (bool, error) {
 			col = sp.s + 1
 		}
 		row := shiftSpansAfterTrim([]matchSpan{sp}, cut)
-		p.writeLine(text, m.LineNumber, m.HasLineNumber, false, col, m.Offset+int64(sp.s), row, allSpans, 1)
+		p.writeLine(text, m.LineNumber, m.HasLineNumber, false, col, m.Offset+int64(sp.s), row, allSpans, 1, term)
 	}
 	return true, nil
 }
@@ -299,11 +324,13 @@ func (p *Standard) matchedVimgrep(m *search.Match, line []byte) (bool, error) {
 // A line with zero spans (the Invert case; see Matched's doc) still
 // prints exactly one row with the WHOLE line and no column, matching
 // `-o -v`.
-func (p *Standard) matchedOnlyMatching(m *search.Match, line []byte) (bool, error) {
+func (p *Standard) matchedOnlyMatching(m *search.Match, line, term []byte) (bool, error) {
 	spans := p.findSpans(line)
 	if len(spans) == 0 {
 		text, _ := p.trimPrefix(line)
-		p.writeLine(text, m.LineNumber, m.HasLineNumber, false, -1, m.Offset, nil, nil, 1)
+		// The Invert case: the WHOLE line prints, so it keeps its ORIGINAL
+		// terminator (term), unlike a real -o row's synthetic match text.
+		p.writeLine(text, m.LineNumber, m.HasLineNumber, false, -1, m.Offset, nil, nil, 1, term)
 		return true, nil
 	}
 	for _, sp := range spans {
@@ -325,8 +352,10 @@ func (p *Standard) matchedOnlyMatching(m *search.Match, line []byte) (bool, erro
 		// other row shape -- verified against the real rg binary's
 		// --max-columns boundary: `-M N -o` omits only when the match
 		// itself is STRICTLY longer than N, one byte later than the
-		// `>=` boundary every other row uses (see writeLine's doc).
-		p.writeLine(text, m.LineNumber, m.HasLineNumber, false, col, m.Offset+int64(sp.s), only, only, 0)
+		// `>=` boundary every other row uses (see writeLine's doc). Each
+		// -o row is synthetic (a bare match substring), so it takes the
+		// CONFIGURED terminator, not the source line's.
+		p.writeLine(text, m.LineNumber, m.HasLineNumber, false, col, m.Offset+int64(sp.s), only, only, 0, p.configTerm())
 	}
 	return true, nil
 }
@@ -340,28 +369,96 @@ func (p *Standard) matchedOnlyMatching(m *search.Match, line []byte) (bool, erro
 // matching rg's own context sink, which shares the same match-coloring
 // path as a matched line.
 func (p *Standard) Context(c *search.Ctx) (bool, error) {
-	line := trimLineTerminator(c.Line)
-	p.writeSeparatorIfGap(c.LineNumber, c.HasLineNumber, c.Offset, len(line))
+	line, term := p.splitTerm(c.Line)
+	p.writeSeparatorIfGap(c.LineNumber, c.HasLineNumber, c.Offset, len(c.Line))
 	var spans []matchSpan
 	if p.Color && p.Matcher != nil {
 		spans = p.findSpans(line)
 	}
 	text, cut := p.trimPrefix(line)
 	spans = shiftSpansAfterTrim(spans, cut)
-	p.writeLine(text, c.LineNumber, c.HasLineNumber, true, -1, c.Offset, spans, spans, 1)
+	p.writeLine(text, c.LineNumber, c.HasLineNumber, true, -1, c.Offset, spans, spans, 1, term)
 	return true, nil
 }
 
-// trimLineTerminator strips a single trailing '\n' from line, if
-// present. A CRLF file's '\r' is left untouched -- it is ordinary line
-// content per PLAN.md's CRLF edge case ("\r stays in the line bytes"),
-// matching rg exactly: only the '\n' search's line-boundary scan treats
-// as a terminator is ever removed.
-func trimLineTerminator(line []byte) []byte {
-	if n := len(line); n > 0 && line[n-1] == '\n' {
-		return line[:n-1]
+// trimRecordTerminator strips a single trailing record/line terminator
+// using the SAME window convention the searcher's match layer uses
+// (search's withoutTerminator): the configured terminator plus, under
+// CRLF, a preceding '\r'. It exists so the --stats occurrence re-scan
+// (CountMatches) and -o's -c occurrence tally (Count.Matched) hand the
+// matcher the exact same terminator-free window it matched against during
+// the search -- without it an anchored pattern (`foo$`, `needle$`) would
+// re-scan against a window still carrying its '\r' or '\x00' and find zero
+// occurrences, undercounting rg's "N matches" (verified against the real
+// rg binary: `--crlf --stats -c 'foo$'` and `--null-data --stats
+// 'needle$'` both report 1 match, not 0).
+func trimRecordTerminator(line []byte, crlf, nullData bool) []byte {
+	n := len(line)
+	if n == 0 {
+		return line
 	}
-	return line
+	if nullData {
+		if line[n-1] == 0 {
+			return line[:n-1]
+		}
+		return line
+	}
+	if line[n-1] == '\n' {
+		n--
+		if crlf && n > 0 && line[n-1] == '\r' {
+			n--
+		}
+	}
+	return line[:n]
+}
+
+// configTerm returns the terminator bytes this printer appends to any
+// synthetic row (rg's LineTerminator::as_bytes): '\r\n' under CRLF,
+// '\x00' under NullData, '\n' otherwise.
+func (p *Standard) configTerm() []byte {
+	switch {
+	case p.NullData:
+		return termNUL
+	case p.CRLF:
+		return termCRLF
+	default:
+		return termLF
+	}
+}
+
+// splitTerm splits a matched/context line delivered by the searcher (which
+// includes its trailing terminator, per search's line-boundary
+// convention) into its terminator-free content and the exact terminator
+// bytes to re-emit after it. The ORIGINAL terminator is preserved: a
+// '\r\n' line yields '\r\n', a lone '\n' (e.g. an LF line inside a CRLF
+// file) yields '\n', a '\x00' record yields '\x00'. A line/record with NO
+// trailing terminator (a file's final line) yields the CONFIGURED
+// terminator, which is rg's rule for appending one only when the line
+// doesn't already end in the terminator byte (StandardImpl::write_line's
+// has_line_terminator check). Interior bytes (a '\n' inside a NUL record,
+// an interior '\r') are never touched.
+func (p *Standard) splitTerm(line []byte) (content, term []byte) {
+	n := len(line)
+	switch {
+	case p.NullData:
+		if n > 0 && line[n-1] == 0 {
+			return line[:n-1], termNUL
+		}
+		return line, termNUL
+	case p.CRLF:
+		if n > 0 && line[n-1] == '\n' {
+			if n > 1 && line[n-2] == '\r' {
+				return line[:n-2], termCRLF
+			}
+			return line[:n-1], termLF
+		}
+		return line, termCRLF
+	default:
+		if n > 0 && line[n-1] == '\n' {
+			return line[:n-1], termLF
+		}
+		return line, termLF
+	}
 }
 
 // Finish implements search.Sink: flushes the accumulated buffer to Dest
@@ -386,7 +483,10 @@ func (p *Standard) Finish(path string, stats *search.Stats) error {
 func (p *Standard) interFileSeparator() []byte {
 	switch {
 	case p.Heading:
-		return sepHeading
+		// The between-file blank line in heading mode is one line
+		// terminator, which follows the configured terminator under
+		// --crlf/--null-data (verified against the real rg binary).
+		return p.configTerm()
 	case p.ContextEnabled && p.GapSeparator != nil:
 		return p.gapSepLine()
 	default:
@@ -399,9 +499,10 @@ func (p *Standard) interFileSeparator() []byte {
 // many Standard instances -- see wire.go -- so this must never mutate or
 // alias it). Only ever called when GapSeparator != nil.
 func (p *Standard) gapSepLine() []byte {
-	line := make([]byte, 0, len(p.GapSeparator)+1)
+	term := p.configTerm()
+	line := make([]byte, 0, len(p.GapSeparator)+len(term))
 	line = append(line, p.GapSeparator...)
-	line = append(line, '\n')
+	line = append(line, term...)
 	return line
 }
 
@@ -423,11 +524,17 @@ func (p *Standard) writeSeparatorIfGap(lineNumber int64, hasLineNumber bool, off
 		if hasLineNumber {
 			gap = lineNumber != p.lastLine+1
 		} else {
-			gap = offset != p.lastOffset+int64(p.lastLen)+1
+			// lastLen is the FULL delivered line length (content plus its
+			// terminator bytes), so two contiguous lines satisfy
+			// offset == lastOffset+lastLen exactly -- no fixed "+1"
+			// terminator-size assumption, which would misfire for CRLF's
+			// two-byte '\r\n' (verified against the real rg binary: no
+			// spurious "--" between contiguous CRLF context lines).
+			gap = offset != p.lastOffset+int64(p.lastLen)
 		}
 		if gap && p.GapSeparator != nil {
 			p.buf = append(p.buf, p.GapSeparator...)
-			p.buf = append(p.buf, '\n')
+			p.buf = append(p.buf, p.configTerm()...)
 		}
 	}
 	p.haveLast = true
@@ -480,7 +587,7 @@ func (p *Standard) writeSeparatorIfGap(lineNumber int64, hasLineNumber bool, off
 // termPad is 1 for every row shape except an OnlyMatching row (0): see
 // matchedOnlyMatching's doc for why an -o row's --max-columns boundary
 // is one byte later than every other row's.
-func (p *Standard) writeLine(text []byte, lineNumber int64, hasLineNumber bool, isContext bool, column int, offset int64, colorSpans, allSpans []matchSpan, termPad int) {
+func (p *Standard) writeLine(text []byte, lineNumber int64, hasLineNumber bool, isContext bool, column int, offset int64, colorSpans, allSpans []matchSpan, termPad int, term []byte) {
 	sep := p.MatchFieldSep
 	if isContext {
 		sep = p.ContextFieldSep
@@ -492,7 +599,10 @@ func (p *Standard) writeLine(text []byte, lineNumber int64, hasLineNumber bool, 
 				if p.Null {
 					p.buf = append(p.buf, 0)
 				} else {
-					p.buf = append(p.buf, '\n')
+					// The heading path line follows the configured line
+					// terminator ('\r\n'/'\x00'/'\n'), not the per-match
+					// terminator -- verified against the real rg binary.
+					p.buf = append(p.buf, p.configTerm()...)
 				}
 			}
 			p.headingDone = true
@@ -525,7 +635,7 @@ func (p *Standard) writeLine(text []byte, lineNumber int64, hasLineNumber bool, 
 	default:
 		p.buf = append(p.buf, text...)
 	}
-	p.buf = append(p.buf, '\n')
+	p.buf = append(p.buf, term...)
 }
 
 // writeOmittedLine appends -M/--max-columns' replacement content for a
@@ -845,17 +955,20 @@ func (p *Standard) findSpans(line []byte) []matchSpan {
 // this is only ever invoked when --stats is active, never on the default
 // hot path.
 //
-// line's trailing '\n' is stripped first (trimLineTerminator), exactly as
-// the -o/--count-matches sinks do before their own findSpans: an empty
-// pattern must count one position per character plus one before the line's
-// end, NOT an extra phantom occurrence at the '\n' itself, so --stats' "N
+// line's trailing terminator is stripped first (trimRecordTerminator, the
+// same window convention the searcher matched against), exactly as the
+// -o/--count-matches sinks do before their own findSpans: an empty pattern
+// must count one position per character plus one before the line's end,
+// NOT an extra phantom occurrence at the terminator itself, so --stats' "N
 // matches" stays identical to --count-matches for every pattern (verified:
-// empty pattern over the 3-line fixture is 26, not 29).
-func CountMatches(matcher match.Matcher, line []byte) int {
+// empty pattern over the 3-line fixture is 26, not 29). crlf/nullData
+// select that window so an anchored pattern re-scans against the same
+// terminator-free bytes it originally matched (see trimRecordTerminator).
+func CountMatches(matcher match.Matcher, line []byte, crlf, nullData bool) int {
 	if matcher == nil {
 		return 0
 	}
-	return len(findMatchSpans(nil, matcher, trimLineTerminator(line)))
+	return len(findMatchSpans(nil, matcher, trimRecordTerminator(line, crlf, nullData)))
 }
 
 // findMatchSpans is findSpans' actual algorithm, factored out to a

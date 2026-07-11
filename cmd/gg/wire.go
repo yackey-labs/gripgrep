@@ -285,6 +285,8 @@ func toEngineConfig(cfg *Config) engine.Config {
 		AfterContext:          cfg.ContextAfter,
 		PassThru:              cfg.PassThru,
 		MaxCount:              cfg.MaxCount,
+		CRLF:                  cfg.CRLF,
+		NullData:              cfg.NullData,
 	}
 }
 
@@ -426,6 +428,8 @@ func buildCLISink(cfg *Config, dest *printer.Dest, matcher match.Matcher, color,
 		c.OnlyMatching = cfg.OnlyMatching
 		c.IncludeZero = cfg.IncludeZero
 		c.Null = cfg.Null
+		c.CRLF = cfg.CRLF
+		c.NullData = cfg.NullData
 		c.Matcher = matcher
 		return c, false
 	case ModeCountMatches:
@@ -438,17 +442,23 @@ func buildCLISink(cfg *Config, dest *printer.Dest, matcher match.Matcher, color,
 		c.OnlyMatching = true
 		c.IncludeZero = cfg.IncludeZero
 		c.Null = cfg.Null
+		c.CRLF = cfg.CRLF
+		c.NullData = cfg.NullData
 		c.Matcher = matcher
 		return c, false
 	case ModeFilesWithMatches:
 		f := printer.NewFilesWithMatches(dest)
 		f.Color = color
 		f.Null = cfg.Null
+		f.CRLF = cfg.CRLF
+		f.NullData = cfg.NullData
 		return f, false
 	case ModeFilesWithoutMatch:
 		f := printer.NewFilesWithoutMatch(dest)
 		f.Color = color
 		f.Null = cfg.Null
+		f.CRLF = cfg.CRLF
+		f.NullData = cfg.NullData
 		return f, false
 	default:
 		s := printer.NewStandard(dest)
@@ -465,6 +475,8 @@ func buildCLISink(cfg *Config, dest *printer.Dest, matcher match.Matcher, color,
 		s.MaxColumnsPreview = cfg.MaxColumnsPreview
 		s.Trim = cfg.Trim
 		s.Null = cfg.Null
+		s.CRLF = cfg.CRLF
+		s.NullData = cfg.NullData
 		s.MatchFieldSep = resolveFieldSep(cfg.FieldMatchSeparator, ":")
 		s.ContextFieldSep = resolveFieldSep(cfg.FieldContextSeparator, "-")
 		s.GapSeparator = resolveGapSeparator(cfg.ContextSeparator)

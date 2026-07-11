@@ -43,6 +43,13 @@ func (s *Searcher) parallelEligible(n int) bool {
 	if s.Invert || s.BeforeContext > 0 || s.AfterContext > 0 || s.PassThru {
 		return false
 	}
+	// --crlf and --null-data force the serial path this round: the chunk
+	// splitter aligns on '\n', and null-data's '\x00'-delimited records
+	// (plus crlf's carriage-return-stripped match window) would need their
+	// own boundary reasoning. Both are rare flags; correctness first.
+	if s.CRLF || s.NullData {
+		return false
+	}
 	minBytes := s.ParallelMinBytes
 	if minBytes <= 0 {
 		minBytes = defaultParallelMinBytes
@@ -81,7 +88,7 @@ func splitChunks(data []byte, n int) []chunkRange {
 		if want <= pos || want >= len(data) {
 			continue
 		}
-		idx := bytes.IndexByte(data[want:], lineTerm)
+		idx := bytes.IndexByte(data[want:], defaultLineTerm)
 		if idx < 0 {
 			// No newline at or after want: everything from pos onward
 			// becomes the final chunk, so stop looking for more splits.
