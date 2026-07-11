@@ -78,6 +78,53 @@ func parseCLICounts(t *testing.T, out string) map[string]int {
 	return got
 }
 
+// cliColumnOffset is one parsed row of `gg -n -H --column -b` output:
+// the column and byte offset the CLI reported for one matched line.
+type cliColumnOffset struct {
+	Col    int
+	Offset int64
+}
+
+// parseCLIColumnLines parses `gg -n -H --column -b PATTERN PATH` output
+// ("path:line:col:offset:text\n", verified directly against the real
+// binary -- see this round's exploration) into a map from 1-based line
+// number to (column, byte offset), the oracle TestFacadeNewOptionsVsCLI's
+// Column/ByteOffset subtests diff the facade's own Match.Column/
+// Match.ByteOffset against. Keyed by line number rather than positional
+// order since that's what a Match carries too.
+func parseCLIColumnLines(t *testing.T, out string) map[int]cliColumnOffset {
+	t.Helper()
+	got := make(map[int]cliColumnOffset)
+	sc := bufio.NewScanner(strings.NewReader(out))
+	sc.Buffer(make([]byte, 1024*1024), 1024*1024)
+	for sc.Scan() {
+		line := sc.Text()
+		if line == "" {
+			continue
+		}
+		// path:line:col:offset:text -- SplitN(5) so a ':' inside the
+		// matched text (the 5th field) never fragments the split.
+		parts := strings.SplitN(line, ":", 5)
+		if len(parts) != 5 {
+			t.Fatalf("unparseable --column -b line: %q", line)
+		}
+		lineNo, err := strconv.Atoi(parts[1])
+		if err != nil {
+			t.Fatalf("unparseable line number in %q: %v", line, err)
+		}
+		col, err := strconv.Atoi(parts[2])
+		if err != nil {
+			t.Fatalf("unparseable column in %q: %v", line, err)
+		}
+		offset, err := strconv.ParseInt(parts[3], 10, 64)
+		if err != nil {
+			t.Fatalf("unparseable byte offset in %q: %v", line, err)
+		}
+		got[lineNo] = cliColumnOffset{Col: col, Offset: offset}
+	}
+	return got
+}
+
 func parseCLIPaths(out string) []string {
 	var got []string
 	sc := bufio.NewScanner(strings.NewReader(out))
@@ -380,6 +427,138 @@ func TestFacadeNewOptionsVsCLI(t *testing.T) {
 		// File.TXT; with it, file.txt matches too.
 		if len(gotFilesRel) != 2 {
 			t.Errorf("GlobCaseInsensitive -g *.TXT: got %v, want File.TXT and file.txt (2 files)", gotFilesRel)
+		}
+	})
+
+	t.Run("Column", func(t *testing.T) {
+		relPath := "testdata/facade/column.txt"
+		absPath := filepath.Join(root, relPath)
+
+		cliOut := runGG(t, bin, root, "-n", "-H", "--column", "-b", "needle", relPath)
+		want := parseCLIColumnLines(t, cliOut)
+
+		gotMatches, err := Options{}.Search("needle", absPath)
+		if err != nil {
+			t.Fatalf("Search: %v", err)
+		}
+		if len(gotMatches) != len(want) {
+			t.Fatalf("got %d matches, CLI reported %d lines", len(gotMatches), len(want))
+		}
+		for _, m := range gotMatches {
+			w, ok := want[m.LineNumber]
+			if !ok {
+				t.Fatalf("facade matched line %d, CLI --column -b did not report it", m.LineNumber)
+			}
+			if m.Column != w.Col {
+				t.Errorf("line %d: Column = %d, want %d (CLI --column)", m.LineNumber, m.Column, w.Col)
+			}
+		}
+	})
+
+	t.Run("ByteOffset", func(t *testing.T) {
+		relPath := "testdata/facade/column.txt"
+		absPath := filepath.Join(root, relPath)
+
+		cliOut := runGG(t, bin, root, "-n", "-H", "--column", "-b", "needle", relPath)
+		want := parseCLIColumnLines(t, cliOut)
+
+		gotMatches, err := Options{}.Search("needle", absPath)
+		if err != nil {
+			t.Fatalf("Search: %v", err)
+		}
+		for _, m := range gotMatches {
+			w, ok := want[m.LineNumber]
+			if !ok {
+				t.Fatalf("facade matched line %d, CLI -b did not report it", m.LineNumber)
+			}
+			if m.ByteOffset != w.Offset {
+				t.Errorf("line %d: ByteOffset = %d, want %d (CLI -b)", m.LineNumber, m.ByteOffset, w.Offset)
+			}
+		}
+		// column.txt has exactly 3 lines, all matching "needle" -- a
+		// sanity floor so a bug that silently dropped matches wouldn't
+		// pass this subtest by comparing an empty set to an empty want.
+		if len(gotMatches) != 3 {
+			t.Errorf("column.txt: got %d matches, want 3 (one per line)", len(gotMatches))
+		}
+	})
+
+	// Column on an inverted search is locked at 0: an inverted "match" is
+	// a line the pattern does NOT match, so there is no span to report a
+	// column for -- see Match.Column's doc and matchColumn's doc.
+	t.Run("Column_InvertMatch", func(t *testing.T) {
+		relPath := "testdata/facade/column.txt"
+		absPath := filepath.Join(root, relPath)
+
+		gotMatches, err := Options{InvertMatch: true}.Search("does-not-exist-xyz", absPath)
+		if err != nil {
+			t.Fatalf("Search: %v", err)
+		}
+		if len(gotMatches) != 3 {
+			t.Fatalf("InvertMatch on a pattern absent from the fixture should match every line, got %d", len(gotMatches))
+		}
+		for _, m := range gotMatches {
+			if m.Column != 0 {
+				t.Errorf("line %d: InvertMatch Column = %d, want 0", m.LineNumber, m.Column)
+			}
+		}
+	})
+
+	t.Run("Types", func(t *testing.T) {
+		relPath := "testdata/facade/types"
+		absPath := filepath.Join(root, relPath)
+
+		cliOut := runGG(t, bin, root, "-l", "-t", "go", "needle", relPath)
+		wantFiles := parseCLIPaths(cliOut)
+
+		gotFiles, err := Options{Types: []string{"go"}}.FilesWithMatch("needle", absPath)
+		if err != nil {
+			t.Fatalf("FilesWithMatch: %v", err)
+		}
+		gotFilesRel := relPaths(t, root, gotFiles)
+		sort.Strings(gotFilesRel)
+		if !slicesEq(wantFiles, gotFilesRel) {
+			t.Errorf("Types=[go] mismatch:\nCLI:    %v\nfacade: %v", wantFiles, gotFilesRel)
+		}
+		if len(gotFilesRel) != 1 || !strings.HasSuffix(gotFilesRel[0], "main.go") {
+			t.Errorf("Types=[go]: got %v, want exactly main.go", gotFilesRel)
+		}
+	})
+
+	t.Run("TypesNot", func(t *testing.T) {
+		relPath := "testdata/facade/types"
+		absPath := filepath.Join(root, relPath)
+
+		cliOut := runGG(t, bin, root, "-l", "-T", "py", "needle", relPath)
+		wantFiles := parseCLIPaths(cliOut)
+
+		gotFiles, err := Options{TypesNot: []string{"py"}}.FilesWithMatch("needle", absPath)
+		if err != nil {
+			t.Fatalf("FilesWithMatch: %v", err)
+		}
+		gotFilesRel := relPaths(t, root, gotFiles)
+		sort.Strings(gotFilesRel)
+		if !slicesEq(wantFiles, gotFilesRel) {
+			t.Errorf("TypesNot=[py] mismatch:\nCLI:    %v\nfacade: %v", wantFiles, gotFilesRel)
+		}
+		// main.go and notes.txt both match "needle" and aren't type py;
+		// script.py must be excluded.
+		if len(gotFilesRel) != 2 {
+			t.Errorf("TypesNot=[py]: got %v, want main.go and notes.txt (2 files)", gotFilesRel)
+		}
+	})
+
+	t.Run("Types_UnknownName", func(t *testing.T) {
+		relPath := "testdata/facade/types"
+		absPath := filepath.Join(root, relPath)
+
+		_, err := Options{Types: []string{"bogus-type-xyz"}}.Search("needle", absPath)
+		if err == nil {
+			t.Fatal("Types with an unrecognized name should error, got nil")
+		}
+		const want = "unrecognized file type: bogus-type-xyz"
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error = %q, want it to contain the CLI's own %q", err.Error(), want)
 		}
 	})
 }
