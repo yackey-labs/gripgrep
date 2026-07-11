@@ -420,16 +420,22 @@ func TestGoldenVsRipgrep_FilesOnLinuxTree(t *testing.T) {
 // not that "--" block boundaries and within-block ordering match.
 //
 // This deliberately targets a single explicit file (not a directory):
-// with more than one file in play, gg's and rg's walk order can
-// legitimately differ file-to-file even at -j1 (each tool's own
-// unsorted-readdir traversal strategy, not a correctness contract --
-// verified empirically: pinning -j1 over testdata/corpus still
-// reordered which *file* came first between the two tools, which would
-// make a byte-for-byte multi-file comparison flaky for a reason that has
-// nothing to do with context-block correctness). A single file removes
-// that variable entirely, so a raw byte-for-byte diff here can only mean
-// a real within-file context/grouping bug -- exactly what this test
-// exists to catch.
+// with more than one file in play, gg's and rg's walk order can differ
+// file-to-file even at -j1 when a directory tree has multiple sibling
+// subdirectories -- pinning -j1 over testdata/corpus reorders which
+// *file* comes first between the two tools. Round #37 traced this to a
+// real, still-open gg bug (not an inherent cross-tool traversal
+// difference, as an earlier version of this comment claimed):
+// worker.go's processDir pushes each subdirectory dirTask in readdir
+// encounter order onto a LIFO queue that's popped tail-first, so
+// siblings come out in reverse-of-readdir order instead of rg's readdir
+// order -- see round #37's report for the repro and TestGoldenVsRipgrep_
+// ExplicitArgOrder's doc for the analogous, now-fixed bug in root-task
+// seeding. Fixing the subdirectory case touches worker.go's per-entry
+// hot path, so it was deliberately left open rather than fixed in round
+// #37; this test works around it by using a single file, so a raw
+// byte-for-byte diff here can only mean a real within-file
+// context/grouping bug -- exactly what this test exists to catch.
 //
 // The fixture has two matches far enough apart that -C1 must produce two
 // separate blocks joined by "--": lines 1-2 (match then trailing
@@ -870,6 +876,119 @@ func TestGoldenVsRipgrep_HeadingGrouping(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestGoldenVsRipgrep_ExplicitArgOrder covers round #37's fix: rg -j1
+// preserves the order explicit top-level PATH arguments were given on the
+// command line (finishing one argument's entire subtree, in readdir(3)
+// order, before starting the next), a contract gg used to violate by
+// printing multiple explicit arguments in exact reverse order (root
+// dirTasks were seeded via dirQueue.push in argument order but consumed
+// LIFO by pop -- see walk.Walk's seeding loop). Sort-normalization is
+// provably blind to this bug class (it only checks line-set membership),
+// so every case here needs the raw, unsorted byte stream, like
+// TestGoldenVsRipgrep_ContextOrdering and TestGoldenVsRipgrep_HeadingGrouping
+// above.
+//
+// The "dirs" and "mixed" cases use FLAT directories only (no
+// subdirectories). Nested directories have a SEPARATE, still-open -j1
+// parity bug: worker.go's processDir pushes each subdirectory dirTask in
+// readdir encounter order and (like the root-seeding bug this test
+// targets) that queue is popped LIFO, so sibling subdirectories come out
+// in reverse-of-readdir order instead of rg's readdir order -- the same
+// push/pop asymmetry as the bug this file fixes, just one level down and
+// in the actual per-entry hot path, which is why it wasn't fixed in round
+// #37 (see round #37's report for the full writeup and repro). It is a
+// real gap in the byte-parity guarantee, not an accepted/inherent
+// traversal-philosophy difference -- this test stays scoped to flat
+// directories so it doesn't conflate that separate, still-open bug with
+// the top-level argument-seeding bug it exists to catch.
+func TestGoldenVsRipgrep_ExplicitArgOrder(t *testing.T) {
+	dir := t.TempDir()
+	files := map[string]string{
+		"multi.txt": "one cat two cat\ncat at start\n",
+		"trim.txt":  "   indented cat\n",
+		"aaa.txt":   "aaa cat\n",
+		"zzz.txt":   "zzz cat\n",
+	}
+	for name, content := range files {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	dirFiles := map[string]map[string]string{
+		"dirA": {"afile.txt": "cat A1\n", "zfile.txt": "cat A2\n"},
+		"dirB": {"afile.txt": "cat B1\n", "zfile.txt": "cat B2\n"},
+	}
+	for d, fs := range dirFiles {
+		if err := os.MkdirAll(filepath.Join(dir, d), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		for name, content := range fs {
+			if err := os.WriteFile(filepath.Join(dir, d, name), []byte(content), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+
+	_, thisFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("could not determine test file location")
+	}
+	ggBin := buildGG(t, filepath.Dir(thisFile))
+
+	p := func(names ...string) []string {
+		out := make([]string, len(names))
+		for i, n := range names {
+			out[i] = filepath.Join(dir, n)
+		}
+		return out
+	}
+
+	cases := []struct {
+		name  string
+		paths []string
+	}{
+		// The originally reported repro: 4 explicit files, argument order.
+		{"files_argument_order", p("multi.txt", "trim.txt", "aaa.txt", "zzz.txt")},
+		// Same files, opposite argument order -- proves the fix tracks
+		// argument order rather than some other fixed (e.g. alphabetical
+		// or reversed-alphabetical) ordering.
+		{"files_reverse_argument_order", p("zzz.txt", "aaa.txt", "trim.txt", "multi.txt")},
+		// Two explicit flat directories: rg finishes one entirely before
+		// starting the next.
+		{"dirs_argument_order", p("dirB", "dirA")},
+		{"dirs_reverse_argument_order", p("dirA", "dirB")},
+		// Files and directories interleaved on the command line.
+		{"mixed_argument_order", p("zzz.txt", "dirB", "aaa.txt", "dirA", "multi.txt")},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			args := append([]string{"-j1", "cat"}, tc.paths...)
+			rgOut, rgErr, rgCode := run(t, "rg", args)
+			ggOut, ggErr, ggCode := run(t, ggBin, args)
+			if rgCode != ggCode {
+				t.Errorf("exit code mismatch: rg=%d gg=%d\nrg stderr: %s\ngg stderr: %s", rgCode, ggCode, rgErr, ggErr)
+			}
+			if !bytes.Equal(rgOut, ggOut) {
+				t.Errorf("raw (unsorted, -j1) stdout mismatch:\n--- rg stdout ---\n%s\n--- gg stdout ---\n%s", rgOut, ggOut)
+			}
+		})
+	}
+
+	// --files -j1 with multiple explicit args follows the same ordering
+	// rule (no search pattern involved, just enumeration order).
+	t.Run("files_flag_argument_order", func(t *testing.T) {
+		args := append([]string{"-j1", "--files"}, p("zzz.txt", "dirB", "aaa.txt", "dirA", "multi.txt")...)
+		rgOut, rgErr, rgCode := run(t, "rg", args)
+		ggOut, ggErr, ggCode := run(t, ggBin, args)
+		if rgCode != ggCode {
+			t.Errorf("exit code mismatch: rg=%d gg=%d\nrg stderr: %s\ngg stderr: %s", rgCode, ggCode, rgErr, ggErr)
+		}
+		if !bytes.Equal(rgOut, ggOut) {
+			t.Errorf("raw (unsorted, -j1, --files) stdout mismatch:\n--- rg stdout ---\n%s\n--- gg stdout ---\n%s", rgOut, ggOut)
+		}
+	})
 }
 
 // TestGoldenVsRipgrep_GlobCaseInsensitive covers round #32's --iglob and

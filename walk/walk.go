@@ -144,8 +144,19 @@ func Walk(roots []string, opts Options, visit Visitor) error {
 	for _, r := range roots {
 		initial = append(initial, buildRootTask(r, &opts))
 	}
-	for i, t := range initial {
-		queues[i%n].push(t)
+	// Push in reverse so each queue's LIFO pop() yields its assigned roots
+	// in original argument order (push appends to the tail, pop removes
+	// from the tail): the last root pushed to a given queue is the first
+	// one popped from it. Iterating backwards while keeping the same
+	// i%n assignment means, for any queue, the earliest-argument root
+	// among those assigned to it is pushed last and therefore popped
+	// first -- restoring argument order without touching the
+	// round-robin assignment (queue load balancing for n>1 is
+	// unaffected) or the depth-first LIFO semantics children rely on
+	// (see dirQueue's doc; rg -j1 preserves explicit top-level argument
+	// order, verified empirically -- round #37).
+	for i := len(initial) - 1; i >= 0; i-- {
+		queues[i%n].push(initial[i])
 	}
 
 	coord := newCoordinator()
