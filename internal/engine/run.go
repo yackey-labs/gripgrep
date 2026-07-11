@@ -29,9 +29,16 @@ import (
 // exit code is 0 iff at least one such file was found, not iff any file
 // had a real match. See matchTracker's doc for where this is consulted.
 type Worker struct {
-	Searcher          *search.Searcher
-	Sink              search.Sink
-	Standard          bool
+	Searcher *search.Searcher
+	Sink     search.Sink
+	Standard bool
+	// JSON marks cmd/gg's --json printer sink, which owns binary handling
+	// itself (it records binary_offset and clamps bytes_searched from the
+	// finish Stats, and never emits a plain-text binary message). When set,
+	// matchTracker leaves ALL binary special-casing to the sink and always
+	// forwards Finish -- so even a quarantined binary file is still counted
+	// in the run's searches/bytes_searched summary. See matchTracker.Finish.
+	JSON              bool
 	InvertMatchSignal bool
 }
 
@@ -194,6 +201,7 @@ func Run(cfg Config, newWorker NewWorkerFunc, quiet QuitSink, stop func() bool, 
 
 		sink := w.Sink
 		standard := w.Standard
+		jsonMode := w.JSON
 		invertMatchSignal := w.InvertMatchSignal
 		if quiet != nil {
 			// -q always overrides Mode (Config.Quiet's doc: "independent
@@ -207,12 +215,14 @@ func Run(cfg Config, newWorker NewWorkerFunc, quiet QuitSink, stop func() bool, 
 			// reason standard is.
 			sink = quiet
 			standard = false
+			jsonMode = false
 			invertMatchSignal = false
 		}
 		tracked := &matchTracker{
 			Sink:              sink,
 			matched:           &anyMatched,
 			standard:          standard,
+			json:              jsonMode,
 			invertMatchSignal: invertMatchSignal,
 			binMode:           w.Searcher.BinaryMode,
 			showPath:          bm.ShowPath,

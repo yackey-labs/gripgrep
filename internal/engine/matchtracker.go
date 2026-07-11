@@ -92,6 +92,10 @@ type matchTracker struct {
 	search.Sink
 	matched  *atomic.Bool
 	standard bool
+	// json marks cmd/gg's --json sink (Worker.JSON): Finish forwards
+	// unconditionally and skips every binary branch, since that sink owns
+	// binary reporting itself -- see Finish.
+	json bool
 	// invertMatchSignal is Worker.InvertMatchSignal (see its doc):
 	// currently set only for cmd/gg's --files-without-match, whose
 	// exit-code contribution is stats.Matched's COMPLEMENT -- see
@@ -305,6 +309,16 @@ func (t *matchTracker) Finish(path string, stats *search.Stats) error {
 		// display sink, so -v (whose inverted output lines set Matched)
 		// contributes exactly as rg's does.
 		t.stats.AddFile(stats.BytesSearched, stats.Matched, time.Since(t.statsStart))
+	}
+	if t.json {
+		// The --json sink owns binary handling: it reads binary_offset and
+		// clamps bytes_searched from stats itself, emits no plain-text binary
+		// message, and must be Finished for EVERY searched file so even a
+		// quarantined binary one lands in the summary's searches count.
+		if t.matchSignal(stats) {
+			t.matched.Store(true)
+		}
+		return t.Sink.Finish(path, stats)
 	}
 	if t.binMode == search.BinaryQuit && stats.Binary {
 		if !t.standard {

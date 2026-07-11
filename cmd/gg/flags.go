@@ -491,6 +491,15 @@ type Config struct {
 	// -- see execute. No pluralization is ever applied ("1 matched
 	// lines"), matching rg's fixed format. See engine.StatsAccumulator.
 	Stats bool
+	// JSON is rg's --json/--no-json: emit the event-stream printer's output
+	// (begin/match/context/end messages per file plus one trailing summary)
+	// instead of the standard human-readable format. Last flag wins. It
+	// takes effect ONLY in the standard search mode (and under -q, which
+	// then emits summary-only, J8); the summary-mode flags -c/-l/
+	// --count-matches/--files-without-match/--files keep their own plain
+	// output and ignore --json entirely (verified against the real rg
+	// binary, J6/J7/J9). See wire.go's execute for the mode gating.
+	JSON bool
 	// Buffer is rg's --line-buffered/--block-buffered choice -- see
 	// BufferMode. Byte-invisible; drives execute's stdout flush policy.
 	Buffer BufferMode
@@ -1300,6 +1309,14 @@ func buildV1Flags() []*flagSpec {
 			},
 		},
 		{
+			// --json/--no-json: last flag wins via the switch's on value.
+			long: "json", negated: "no-json", kind: kindSwitch,
+			applySwitch: func(cfg *Config, _ *parseState, on bool) error {
+				cfg.JSON = on
+				return nil
+			},
+		},
+		{
 			// --line-buffered/--no-line-buffered: forces line buffering, or
 			// restores auto on negation. Shares Config.Buffer with
 			// --block-buffered, so the last of the two on the command line
@@ -1458,7 +1475,6 @@ var notImplementedFlags = []notImplementedFlag{
 	{long: "pcre2", short: 'P', label: "-P/--pcre2"},
 	{long: "encoding", short: 'E', label: "-E/--encoding"},
 	{long: "search-zip", short: 'z', label: "-z/--search-zip"},
-	{long: "json", label: "--json"},
 	{long: "binary", label: "--binary"},
 }
 

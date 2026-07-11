@@ -68,6 +68,14 @@ func execute(cfg *Config, stdin io.Reader, stdout, stderr io.Writer) int {
 
 	econf := toEngineConfig(cfg)
 
+	// --json is a printer MODE that only applies to the standard search
+	// mode: the summary-mode flags (-c/-l/--count-matches/
+	// --files-without-match) keep their own plain output (J6/J7/J9), and
+	// --files/--type-list already returned above. -q is independent of Mode
+	// (it stays ModeStandard), so -q --json still takes this path and emits
+	// the summary-only stream (J8).
+	useJSON := cfg.JSON && cfg.Mode == ModeStandard
+
 	matcher, err := buildMatcher(cfg)
 	if err != nil {
 		fmt.Fprintf(stderr, "gg: %s\n", err)
@@ -103,6 +111,13 @@ func execute(cfg *Config, stdin io.Reader, stdout, stderr io.Writer) int {
 	lineNumbers := isTTY || column || cfg.Vimgrep
 	if cfg.LineNumbers != nil {
 		lineNumbers = *cfg.LineNumbers
+	}
+	if useJSON {
+		// rg's JSON printer always reports line numbers (its match/context
+		// messages always carry a line_number), regardless of TTY or -n/-N
+		// -- verified against the answer key, where line_number is never
+		// null. Force them on so the field is always a number.
+		lineNumbers = true
 	}
 	econf.LineNumbers = lineNumbers
 
@@ -141,15 +156,25 @@ func execute(cfg *Config, stdin io.Reader, stdout, stderr io.Writer) int {
 	standardDisplay := cfg.Mode == ModeStandard && !cfg.Quiet
 	var counter *countingWriter
 	destWriter := out
-	if cfg.Stats && standardDisplay {
+	if cfg.Stats && standardDisplay && !useJSON {
 		counter = &countingWriter{w: out}
 		destWriter = counter
 	}
 
 	dest := printer.NewDest(destWriter)
 
+	// --json carries its own stats (in every end message and the trailing
+	// summary), so --stats adds nothing under it (J11) and the text
+	// StatsAccumulator/countingWriter machinery is bypassed entirely. The
+	// JSON accumulator collects the run-level summary totals instead, folded
+	// in by each worker's JSON sink at Finish and written once after the walk.
+	var jsonAcc *printer.JSONAccumulator
+	if useJSON {
+		jsonAcc = printer.NewJSONAccumulator()
+	}
+
 	var statsAcc *engine.StatsAccumulator
-	if cfg.Stats {
+	if cfg.Stats && !useJSON {
 		statsAcc = engine.NewStatsAccumulator()
 	}
 
@@ -159,12 +184,12 @@ func execute(cfg *Config, stdin io.Reader, stdout, stderr io.Writer) int {
 	// discardSink (selected in buildCLISink) -- no QuitSink, no walk-level
 	// early stop.
 	var quiet *printer.Quiet
-	if cfg.Quiet && !cfg.Stats {
+	if cfg.Quiet && !cfg.Stats && !useJSON {
 		quiet = printer.NewQuiet()
 	}
 
 	newWorker := func() *engine.Worker {
-		return newEngineWorker(cfg, econf, matcher, dest, color, heading, showPath, column)
+		return newEngineWorker(cfg, econf, matcher, dest, jsonAcc, color, heading, showPath, column)
 	}
 
 	// quietSink is passed to Run as an engine.QuitSink only when -q was
@@ -202,7 +227,18 @@ func execute(cfg *Config, stdin io.Reader, stdout, stderr io.Writer) int {
 	// above the counter; --files/--type-list never reach here (they return
 	// from execute's dispatch above), matching rg's no-block behavior for
 	// modes that run no search.
-	if cfg.Stats {
+	if useJSON {
+		// The "summary" message is always the last line of a --json run
+		// (verified: it appears even for a zero-match run, J2, and a run with
+		// a per-file error, both of which still exit non-zero below). Written
+		// to out, after every per-file block; elapsed_total is the whole-run
+		// wall clock.
+		if werr := jsonAcc.WriteSummary(out, time.Since(started)); werr != nil {
+			flush()
+			fmt.Fprintf(stderr, "gg: %s\n", werr)
+			return 2
+		}
+	} else if cfg.Stats {
 		var bytesPrinted int64
 		if counter != nil {
 			bytesPrinted = counter.n
@@ -413,8 +449,28 @@ func buildMatcher(cfg *Config) (match.Matcher, error) {
 // FilesWithMatches printer's per-file buffer, are single-goroutine only
 // (see their doc comments) -- exactly the sharing unit sync.Pool exists
 // for.
-func newEngineWorker(cfg *Config, econf engine.Config, matcher match.Matcher, dest *printer.Dest, color, heading, showPath, column bool) *engine.Worker {
+func newEngineWorker(cfg *Config, econf engine.Config, matcher match.Matcher, dest *printer.Dest, jsonAcc *printer.JSONAccumulator, color, heading, showPath, column bool) *engine.Worker {
 	searcher := engine.NewSearcher(econf, matcher)
+
+	// --json replaces the standard sink entirely (jsonAcc non-nil only when
+	// execute resolved useJSON). Its JSON flag tells matchTracker to leave
+	// binary handling to the sink -- the JSON printer records binary_offset
+	// and clamps bytes_searched itself, and must never emit the plain-text
+	// "binary file matches" message (verified, J15) -- while still folding
+	// every searched file (even a quarantined binary one) into the summary.
+	if jsonAcc != nil {
+		j := printer.NewJSON(dest, jsonAcc)
+		j.Matcher = matcher
+		j.Invert = cfg.Invert
+		j.Quiet = cfg.Quiet
+		return &engine.Worker{
+			Searcher:          searcher,
+			Sink:              j,
+			Standard:          false,
+			JSON:              true,
+			InvertMatchSignal: false,
+		}
+	}
 
 	sink, isStandard := buildCLISink(cfg, dest, matcher, color, heading, showPath, column)
 	return &engine.Worker{
