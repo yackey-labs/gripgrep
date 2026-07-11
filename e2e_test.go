@@ -1381,6 +1381,175 @@ func TestGoldenVsRipgrep_ExplicitFileBinaryFarNULUntouched(t *testing.T) {
 	}
 }
 
+// runGoldenCompare runs args against both the real rg binary and gg,
+// asserting byte-identical stdout and matching exit codes -- the same
+// single-file, -j1, order-sensitive comparison every TestGoldenVsRipgrep_*
+// test above performs by hand, factored out for round #40's flag cluster
+// (summary/separator flags, where field/separator ORDERING within a row
+// is exactly what's under test -- a sorted/set comparison would hide a
+// wrong-order bug).
+func runGoldenCompare(t *testing.T, ggBin string, args []string) {
+	t.Helper()
+	rgOut, rgErr, rgCode := run(t, "rg", args)
+	ggOut, ggErr, ggCode := run(t, ggBin, args)
+	if rgCode != ggCode {
+		t.Errorf("exit code mismatch: rg=%d gg=%d\nrg stderr: %s\ngg stderr: %s", rgCode, ggCode, rgErr, ggErr)
+	}
+	if !bytes.Equal(rgOut, ggOut) {
+		t.Errorf("raw (unsorted, -j1, single-file) stdout mismatch:\n--- rg stdout ---\n%s\n--- gg stdout ---\n%s", rgOut, ggOut)
+	}
+}
+
+// TestGoldenVsRipgrep_CountMatches covers round #40's --count-matches:
+// counts OCCURRENCES, not matched lines (3, not -c's 2, on a line with
+// two "cat"s), and falls back to line-counting under -v exactly like -c
+// does.
+func TestGoldenVsRipgrep_CountMatches(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "multi.txt")
+	content := "one cat two cat\nno match here\ncat at start\n"
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, thisFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("could not determine test file location")
+	}
+	ggBin := buildGG(t, filepath.Dir(thisFile))
+
+	runGoldenCompare(t, ggBin, []string{"-j1", "--count-matches", "cat", path})
+	runGoldenCompare(t, ggBin, []string{"-j1", "--count-matches", "-v", "cat", path})
+}
+
+// TestGoldenVsRipgrep_FilesWithoutMatchIncludeZero covers round #40's
+// --files-without-match (inverted exit-code polarity: 0 iff a zero-match
+// file was printed) and --include-zero (prints "path:0" for a zero-match
+// file under -c, never changes the exit code).
+func TestGoldenVsRipgrep_FilesWithoutMatchIncludeZero(t *testing.T) {
+	dir := t.TempDir()
+	matchPath := filepath.Join(dir, "has_match.txt")
+	zeroPath := filepath.Join(dir, "zero.txt")
+	if err := os.WriteFile(matchPath, []byte("cat here\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(zeroPath, []byte("nothing relevant\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, thisFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("could not determine test file location")
+	}
+	ggBin := buildGG(t, filepath.Dir(thisFile))
+
+	// Single-file cases avoid this repo's pre-existing, round-#40-
+	// unrelated multi-file walk-ordering divergence (see round #40's
+	// report) -- each of these targets exactly one explicit file, so
+	// there is no ordering ambiguity to filter out.
+	runGoldenCompare(t, ggBin, []string{"-j1", "--files-without-match", "cat", zeroPath})
+	runGoldenCompare(t, ggBin, []string{"-j1", "--files-without-match", "cat", matchPath})
+	runGoldenCompare(t, ggBin, []string{"-j1", "-c", "--include-zero", "cat", zeroPath})
+}
+
+// TestGoldenVsRipgrep_NullStandardMode covers round #40's -0/--null in
+// Standard mode: the path's own prelude separator becomes NUL, every
+// OTHER separator (line number to text) stays ':'.
+func TestGoldenVsRipgrep_NullStandardMode(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "multi.txt")
+	content := "one cat two cat\nno match here\ncat at start\n"
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, thisFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("could not determine test file location")
+	}
+	ggBin := buildGG(t, filepath.Dir(thisFile))
+
+	// -H forces the path prefix even for this single explicit file, so
+	// --null's NUL substitution is actually exercised.
+	runGoldenCompare(t, ggBin, []string{"-j1", "--null", "-H", "-n", "cat", path})
+}
+
+// TestGoldenVsRipgrep_PassThruContextOrdering covers round #40's
+// --passthru in the plain case (-n): every line prints, matched lines
+// colon-rendered, everything else dash-rendered, in file order.
+func TestGoldenVsRipgrep_PassThruContextOrdering(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "many.txt")
+	content := "a\ncat\nb\ncat\nc\ncat\nd\ncat\ne\n"
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, thisFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("could not determine test file location")
+	}
+	ggBin := buildGG(t, filepath.Dir(thisFile))
+
+	runGoldenCompare(t, ggBin, []string{"-j1", "--passthru", "-n", "cat", path})
+	runGoldenCompare(t, ggBin, []string{"-j1", "--passthru", "-v", "-n", "cat", path})
+}
+
+// TestGoldenVsRipgrep_PassThruMaxCountInvertFlip covers round #40's
+// single most surprising verified rg quirk: --passthru -v -m N -- once
+// the limit is exceeded, EVERY remaining line (matching the literal
+// pattern or not) renders as a match, not context, because rg's own
+// shortest_match forces "no match" unconditionally past the limit, which
+// XORs with Invert=true into success=true. A byte-exact single-row
+// comparison is essential here -- a sorted/count-only check would not
+// catch a colon/dash rendering mistake on the exact right lines.
+func TestGoldenVsRipgrep_PassThruMaxCountInvertFlip(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "many.txt")
+	content := "a\ncat\nb\ncat\nc\ncat\n"
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, thisFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("could not determine test file location")
+	}
+	ggBin := buildGG(t, filepath.Dir(thisFile))
+
+	runGoldenCompare(t, ggBin, []string{"-j1", "--passthru", "-v", "-m2", "-n", "cat", path})
+	runGoldenCompare(t, ggBin, []string{"-j1", "--passthru", "-m0", "-n", "cat", path})
+}
+
+// TestGoldenVsRipgrep_CustomSeparatorsWithContext covers round #40's
+// --context-separator/--field-match-separator/--field-context-separator,
+// exercised TOGETHER with -A context so the intra-file gap separator,
+// match-line field separator, and context-line field separator are all
+// live in the same output -- their exact ordering and composition
+// (--null overriding just the path field, when combined) is what's
+// under test.
+func TestGoldenVsRipgrep_CustomSeparatorsWithContext(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "gap.txt")
+	content := "cat\nx\ny\nz\nw\nv\ncat\n"
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, thisFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("could not determine test file location")
+	}
+	ggBin := buildGG(t, filepath.Dir(thisFile))
+
+	runGoldenCompare(t, ggBin, []string{
+		"-j1", "-A1", "-n",
+		"--field-match-separator", "|",
+		"--field-context-separator", "%",
+		"--context-separator", "SEP",
+		"cat", path,
+	})
+	runGoldenCompare(t, ggBin, []string{"-j1", "-A1", "-n", "--no-context-separator", "cat", path})
+	runGoldenCompare(t, ggBin, []string{
+		"-j1", "-H", "-n", "--field-match-separator", "|", "--null",
+		"cat", path,
+	})
+}
+
 // sortedLines splits out on '\n', drops the single trailing empty
 // element a terminal newline produces, and sorts the result so that
 // nondeterministic parallel-search completion order doesn't cause a
