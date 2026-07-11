@@ -17,7 +17,7 @@ document is regenerated).
 | ripgrep binary (golden suite + CI benchmarks) | **rg 15.1.0** (single pin: `internal/bench/rg-version.txt`, enforced by the suite itself) | every implemented flag is byte-diff-verified against this binary (17-case e2e suite + full-tree diffs) |
 | gripgrep | `4243295` / pending release | the status column below |
 
-<!-- BEGIN GENERATED: score -->**Score: 69 of 104 rg flags implemented.**<!-- END GENERATED --> The gap is
+<!-- BEGIN GENERATED: score -->**Score: 72 of 104 rg flags implemented.**<!-- END GENERATED --> The gap is
 dominated by a few feature clusters (see the notes after the table):
 the file-type system, PCRE2/multiline, encodings, output decoration,
 and replacement.
@@ -104,7 +104,7 @@ unknown-flag error, exit 2)
 |---|---|---|---|
 | `--after-context` | `-A` | ✅ | Show NUM lines after each match. |
 | `--before-context` | `-B` | ✅ | Show NUM lines before each match. |
-| `--block-buffered` (+`--no-block-buffered`) |  | ❌ | Force block buffering. |
+| `--block-buffered` (+`--no-block-buffered`) |  | ✅ | Force block buffering. |
 | `--byte-offset` (+`--no-byte-offset`) | `-b` | ✅ | Print the byte offset for each matching line. |
 | `--color` |  | ✅ | When to use color. |
 | `--colors` |  | ❌ | Configure color settings and styles. |
@@ -118,7 +118,7 @@ unknown-flag error, exit 2)
 | `--hostname-bin` |  | ❌ | Run a program to get this system's hostname. |
 | `--hyperlink-format` |  | ❌ | Set the format of hyperlinks. |
 | `--include-zero` (+`--no-include-zero`) |  | ✅ | Include zero matches in summary output. |
-| `--line-buffered` (+`--no-line-buffered`) |  | ❌ | Force line buffering. |
+| `--line-buffered` (+`--no-line-buffered`) |  | ✅ | Force line buffering. |
 | `--line-number` | `-n` | ✅ | Show line numbers. |
 | `--max-columns` | `-M` | ✅ | Omit lines longer than this limit. |
 | `--max-columns-preview` (+`--no-max-columns-preview`) |  | ✅ | Show preview for lines exceeding the limit. |
@@ -155,7 +155,7 @@ unknown-flag error, exit 2)
 | `--debug` |  | ❌ | Show debug messages. |
 | `--no-ignore-messages` (+`--ignore-messages`) |  | ✅ | Suppress gitignore parse error messages. |
 | `--no-messages` (+`--messages`) |  | ✅ | Suppress some error messages. |
-| `--stats` (+`--no-stats`) |  | ❌ | Print statistics about the search. |
+| `--stats` (+`--no-stats`) |  | ✅ | Print statistics about the search. |
 | `--trace` |  | ❌ | Show trace messages. |
 
 ### Other behaviors
@@ -211,12 +211,29 @@ Not implemented (the honest list, matching the table above):
   **compressed search** (`-z`).
 - **Output decoration**: `--column`, `--vimgrep`,
   `-o/--only-matching`, `--passthru`, separators/`--field-*` knobs,
-  hyperlinks, `--stats`.
+  hyperlinks.
 - **Config file** (`RIPGREP_CONFIG_PATH`): gg reads no config;
   flags only.
 - Assorted small filters/limits (`-L/--follow`, `--one-file-system`,
   `--ignore-file`, ...): individually cheap; several are queued as
   the "compat tier" roadmap item.
+
+## Known deviations
+
+- **`--stats` "bytes searched" reports the full deterministic extent
+  where rg reports the consumed-at-stop offset.** Two cases: under
+  `-m/--max-count`, rg stops each file's scan at the limit and reports
+  the bytes consumed up to it (e.g. 46 on a fixture where gg reports 61);
+  for an explicitly-named binary file, rg reports the bytes up to the NUL
+  (12) where gg reports the whole file (37). Every other `--stats` line —
+  including the match/matched-line counts, which DO stop at the `-m` limit
+  and at the binary-detection point — matches rg exactly. Root cause: gg's
+  searcher does not thread a consumed-byte offset back out of the
+  intra-file parallel replay path, so an early-terminated byte count would
+  depend on the thread count (`-j`); gg reports a stable, deterministic
+  full extent instead of a `-j`-dependent one. Queued as a follow-up
+  (needs searcher-side consumed-offset reporting through the parallel
+  replay).
 
 ## Regenerating this document
 
