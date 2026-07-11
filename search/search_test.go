@@ -453,6 +453,141 @@ func TestSearchMaxCountInvert(t *testing.T) {
 	}
 }
 
+// TestSearchPassThru covers round #40's --passthru: every line is sunk,
+// matching lines as "match" and everything else as context (recorded as
+// "before" by recordingSink's kind mapping, since PassThru's Context
+// calls always pass after=false -- see matchByLineSlow's PassThru
+// branch doc for why that's an arbitrary, unread choice). Only the slow
+// path is exercised (fast=true is meaningless under PassThru -- see
+// isFastPath's doc), so this iterates fast just to assert the Matcher's
+// own NonMatchingLineTerm hint is overridden either way.
+func TestSearchPassThru(t *testing.T) {
+	for _, fast := range []bool{true, false} {
+		m := literalMatcher("needle", fast)
+		s := newTestSearcher(m, DefaultBufferSize, Searcher{PassThru: true})
+		sink := newRecordingSink()
+		content := "one\nneedle two\nthree\nneedle four\nfive\n"
+		if err := s.Search("f", bytes.NewReader([]byte(content)), sink); err != nil {
+			t.Fatal(err)
+		}
+		wantKinds := []string{"before", "match", "before", "match", "before"}
+		wantLines := []string{"one\n", "needle two\n", "three\n", "needle four\n", "five\n"}
+		if len(sink.events) != len(wantKinds) {
+			t.Fatalf("fast=%v: events = %+v, want kinds %v", fast, sink.events, wantKinds)
+		}
+		for i, e := range sink.events {
+			if e.kind != wantKinds[i] || e.line != wantLines[i] {
+				t.Fatalf("fast=%v: event[%d] = %+v, want kind=%s line=%q", fast, i, e, wantKinds[i], wantLines[i])
+			}
+		}
+	}
+}
+
+// TestSearchPassThruInvert covers --passthru -v: every line still
+// prints, but which ones render as "match" vs context is REVERSED --
+// verified against the real rg binary (round #40's differential sweep).
+func TestSearchPassThruInvert(t *testing.T) {
+	m := literalMatcher("needle", false)
+	s := newTestSearcher(m, DefaultBufferSize, Searcher{PassThru: true, Invert: true})
+	sink := newRecordingSink()
+	content := "one\nneedle two\nthree\n"
+	if err := s.Search("f", bytes.NewReader([]byte(content)), sink); err != nil {
+		t.Fatal(err)
+	}
+	wantKinds := []string{"match", "before", "match"}
+	wantLines := []string{"one\n", "needle two\n", "three\n"}
+	if len(sink.events) != len(wantKinds) {
+		t.Fatalf("events = %+v, want kinds %v", sink.events, wantKinds)
+	}
+	for i, e := range sink.events {
+		if e.kind != wantKinds[i] || e.line != wantLines[i] {
+			t.Fatalf("event[%d] = %+v, want kind=%s line=%q", i, e, wantKinds[i], wantLines[i])
+		}
+	}
+}
+
+// TestSearchPassThruMaxCount covers --passthru -m: rg's own
+// shortest_match unconditionally reports "no match" once the limit is
+// exceeded (regardless of passthru), so lines past the Nth real match
+// render as ordinary context instead of matches, but scanning continues
+// to EOF instead of stopping (verified against the real rg binary --
+// see matchByLineSlow's PassThru branch doc for the full trace).
+func TestSearchPassThruMaxCount(t *testing.T) {
+	m := literalMatcher("needle", false)
+	s := newTestSearcher(m, DefaultBufferSize, Searcher{PassThru: true, MaxCount: maxCountPtr(1)})
+	sink := newRecordingSink()
+	content := "needle one\nfiller\nneedle two\nneedle three\n"
+	if err := s.Search("f", bytes.NewReader([]byte(content)), sink); err != nil {
+		t.Fatal(err)
+	}
+	wantKinds := []string{"match", "before", "before", "before"}
+	wantLines := []string{"needle one\n", "filler\n", "needle two\n", "needle three\n"}
+	if len(sink.events) != len(wantKinds) {
+		t.Fatalf("events = %+v, want kinds %v", sink.events, wantKinds)
+	}
+	for i, e := range sink.events {
+		if e.kind != wantKinds[i] || e.line != wantLines[i] {
+			t.Fatalf("event[%d] = %+v, want kind=%s line=%q", i, e, wantKinds[i], wantLines[i])
+		}
+	}
+}
+
+// TestSearchPassThruMaxCountInvertFlip covers --passthru -v -m: the most
+// surprising verified rg quirk this round found. Once the limit is
+// exceeded, EVERY remaining line (matching the literal pattern or not)
+// renders as a match, because the forced "no match" (see
+// TestSearchPassThruMaxCount's doc) XORs with Invert=true into success=
+// true -- verified line-by-line against the real rg binary
+// (`--passthru -v -m2 -n`).
+func TestSearchPassThruMaxCountInvertFlip(t *testing.T) {
+	m := literalMatcher("cat", false)
+	s := newTestSearcher(m, DefaultBufferSize, Searcher{PassThru: true, Invert: true, MaxCount: maxCountPtr(2)})
+	sink := newRecordingSink()
+	content := "a\ncat\nb\ncat\nc\ncat\n"
+	if err := s.Search("f", bytes.NewReader([]byte(content)), sink); err != nil {
+		t.Fatal(err)
+	}
+	// "a" and "b" are the first two real inverted matches (limit=2,
+	// reached partway through sinking "b"); from the NEXT line ("cat" at
+	// index 3) onward, matched is forced false regardless of content,
+	// XOR Invert=true => every remaining line is a "match", INCLUDING
+	// the literal "cat" lines that would otherwise render as context.
+	wantKinds := []string{"match", "before", "match", "match", "match", "match"}
+	wantLines := []string{"a\n", "cat\n", "b\n", "cat\n", "c\n", "cat\n"}
+	if len(sink.events) != len(wantKinds) {
+		t.Fatalf("events = %+v, want kinds %v", sink.events, wantKinds)
+	}
+	for i, e := range sink.events {
+		if e.kind != wantKinds[i] || e.line != wantLines[i] {
+			t.Fatalf("event[%d] = %+v, want kind=%s line=%q", i, e, wantKinds[i], wantLines[i])
+		}
+	}
+}
+
+// TestSearchPassThruMaxCountZero covers --passthru -m0: rg's own
+// matches_possible() check skips searching entirely for MaxCount==
+// Some(0), for every mode INCLUDING passthru (verified against the real
+// rg binary: prints nothing, not "every line as context") -- this is
+// exactly TestSearchMaxCountZero's existing non-PassThru assertion,
+// extended to cover that PassThru does not change it.
+func TestSearchPassThruMaxCountZero(t *testing.T) {
+	for _, invert := range []bool{false, true} {
+		m := literalMatcher("needle", false)
+		s := newTestSearcher(m, DefaultBufferSize, Searcher{PassThru: true, Invert: invert, MaxCount: maxCountPtr(0)})
+		sink := newRecordingSink()
+		content := "needle one\nfiller\n"
+		if err := s.Search("f", bytes.NewReader([]byte(content)), sink); err != nil {
+			t.Fatal(err)
+		}
+		if len(sink.events) != 0 {
+			t.Fatalf("invert=%v: events = %+v, want none", invert, sink.events)
+		}
+		if sink.finishStats == nil || sink.finishStats.Matched {
+			t.Fatalf("invert=%v: finishStats.Matched = %v, want false", invert, sink.finishStats)
+		}
+	}
+}
+
 func TestSearchBeginSkip(t *testing.T) {
 	m := literalMatcher("x", true)
 	s := newTestSearcher(m, DefaultBufferSize, Searcher{})

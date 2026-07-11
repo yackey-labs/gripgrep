@@ -201,6 +201,7 @@ func toEngineConfig(cfg *Config) engine.Config {
 		Invert:              cfg.Invert,
 		BeforeContext:       cfg.ContextBefore,
 		AfterContext:        cfg.ContextAfter,
+		PassThru:            cfg.PassThru,
 		MaxCount:            cfg.MaxCount,
 	}
 }

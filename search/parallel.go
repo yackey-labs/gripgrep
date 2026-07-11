@@ -27,11 +27,20 @@ const defaultParallelMinBytes = 64 << 20
 // separately: its "gap between matches" bookkeeping (matchByLineFastInvert)
 // interacts with an artificial chunk boundary in ways that need their own
 // dedicated reasoning, not an extension of the context design.
+//
+// PassThru is excluded for the same reason as context: every chunk would
+// need to sink EVERY line in its range (not just matches), which is fine
+// on its own, but PassThru's -m interaction (see matchByLineSlow's
+// PassThru branch) depends on a single Searcher's matchLimitReached
+// state evolving continuously across the WHOLE file in scan order --
+// something chunkRecorder's per-chunk, run-to-completion-then-replay
+// design (see its own doc) cannot reproduce without its own dedicated
+// reasoning, exactly like Invert's chunk-boundary gap bookkeeping above.
 func (s *Searcher) parallelEligible(n int) bool {
 	if s.ParallelWorkers <= 1 {
 		return false
 	}
-	if s.Invert || s.BeforeContext > 0 || s.AfterContext > 0 {
+	if s.Invert || s.BeforeContext > 0 || s.AfterContext > 0 || s.PassThru {
 		return false
 	}
 	minBytes := s.ParallelMinBytes

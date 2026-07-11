@@ -117,6 +117,20 @@ type Searcher struct {
 	// both to the same value.
 	BeforeContext int
 	AfterContext  int
+	// PassThru is rg's --passthru: a DEDICATED mode, not merely "very
+	// large BeforeContext/AfterContext" (verified against the real rg
+	// searcher source, crates/searcher/src/searcher/mod.rs: passthru
+	// forces before_context/after_context to 0 and is checked as its own
+	// bool everywhere). Every line not otherwise sunk as a match or
+	// owed after-context is sunk as context too (see matchByLineSlow),
+	// so the whole file streams through with no gaps -- callers must
+	// leave BeforeContext/AfterContext at 0 when this is set (cmd/gg's
+	// flags.go already guarantees --passthru and -A/-B/-C are mutually
+	// exclusive at the CLI layer, mirroring rg's own ContextMode enum).
+	// Forces the slow line-by-line scan path (see isFastPath) and is
+	// deliberately excluded from intra-file parallel eligibility (see
+	// parallelEligible in parallel.go).
+	PassThru bool
 
 	// MaxCount is -m/--max-count: the maximum number of matched LINES
 	// (never context lines, never total match occurrences within a
@@ -175,6 +189,22 @@ type Searcher struct {
 	// in that case the limit is already reached before any match can
 	// ever be found.
 	matchLimitReached bool
+	// matchLimitReachedAtStart snapshots matchLimitReached's value
+	// immediately after it's computed by resetRun/runChunk -- i.e. it is
+	// true if and only if MaxCount pointed at <=0, so the limit was
+	// ALREADY exceeded before this file's scan ever processed a single
+	// line. This distinguishes that case from "the limit was reached
+	// mid-scan, after some real matches" for PassThru's purposes:
+	// verified against the real rg binary, `--passthru -m 0` prints
+	// NOTHING at all (rg's own matches_possible() check skips searching
+	// entirely for MaxCount==Some(0), for every mode including passthru
+	// -- crates/core/flags/hiargs.rs), unlike hitting the limit mid-file,
+	// where passthru keeps printing every remaining line as context (see
+	// matchByLineSlow's PassThru branch). gg has no equivalent top-level
+	// skip (see resetRun's doc), so this flag reproduces the same
+	// observable zero-output result locally, from within the ordinary
+	// per-file loop.
+	matchLimitReachedAtStart bool
 	// hasBinaryOffset/binaryOffset mirror the eventual Stats.Binary/
 	// BinaryOffset values, but are kept live (updated as detection
 	// happens, not just at Finish) so HasBinaryOffset/BinaryOffset can be
@@ -390,6 +420,7 @@ func (s *Searcher) runChunk(data []byte, sink Sink, base, lineBase int64) error 
 	s.hasMatched = false
 	s.matchCount = 0
 	s.matchLimitReached = s.MaxCount != nil && *s.MaxCount <= 0
+	s.matchLimitReachedAtStart = s.matchLimitReached
 	if len(data) == 0 {
 		return nil
 	}

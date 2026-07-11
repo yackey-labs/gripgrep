@@ -17,7 +17,7 @@ document is regenerated).
 | ripgrep binary (golden suite + CI benchmarks) | **rg 15.1.0** (single pin: `internal/bench/rg-version.txt`, enforced by the suite itself) | every implemented flag is byte-diff-verified against this binary (17-case e2e suite + full-tree diffs) |
 | gripgrep | `4243295` / pending release | the status column below |
 
-<!-- BEGIN GENERATED: score -->**Score: 52 of 104 rg flags implemented.**<!-- END GENERATED --> The gap is
+<!-- BEGIN GENERATED: score -->**Score: 53 of 104 rg flags implemented.**<!-- END GENERATED --> The gap is
 dominated by a few feature clusters (see the notes after the table):
 the file-type system, PCRE2/multiline, encodings, output decoration,
 and replacement.
@@ -126,7 +126,7 @@ unknown-flag error, exit 2)
 | `--no-line-number` | `-N` | ✅ | Suppress line numbers. |
 | `--null` | `-0` | ✅ | Print a NUL byte after file paths. |
 | `--only-matching` | `-o` | ✅ | Print only matched parts of a line. |
-| `--passthru` |  | ❌ | Print both matching and non-matching lines. |
+| `--passthru` |  | ✅ | Print both matching and non-matching lines. |
 | `--path-separator` |  | ❌ | Set the path separator for printing paths. |
 | `--pretty` | `-p` | ❌ | Alias for colors, headings and line numbers. |
 | `--quiet` | `-q` | ✅ | Do not print anything to stdout. |

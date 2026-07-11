@@ -320,9 +320,26 @@ type Config struct {
 	// ContextBefore/ContextAfter are already resolved from rg's
 	// independently-tracked -A/-B/-C (see resolveContext); -A/-B always
 	// partially override -C's corresponding side, regardless of order.
+	// Both are guaranteed 0 whenever PassThru is set (see PassThru's doc
+	// and resolveContext).
 	ContextBefore int
 	ContextAfter  int
-	Invert        bool // -v/--invert-match
+	// PassThru is rg's --passthru/--passthrough: mutually exclusive with
+	// -A/-B/-C, in the specific sense that whichever of --passthru or an
+	// -A/-B/-C flag appears LAST on the command line wins outright,
+	// discarding whatever context state came before it -- mirrors rg's
+	// own ContextMode enum exactly (crates/core/flags/lowargs.rs:
+	// ContextMode::Passthru vs ::Limited are one mutable value, and
+	// set_before/set_after/set_both each construct a FRESH Limited value
+	// with only their own side set when transitioning away from
+	// Passthru, discarding any Limited state that existed before
+	// --passthru was given). See resolveContext for the exact state
+	// machine, verified against the real rg binary (`-A5 --passthru`:
+	// full passthru, prints every line; `--passthru -A5`: PLAIN -A5,
+	// passthru is entirely gone, not "passthru with 5 lines of after-
+	// context" -- there is no such combined mode in rg).
+	PassThru bool
+	Invert   bool // -v/--invert-match
 	// MaxCount is -m/--max-count: nil = unset/unlimited. A non-nil 0 is
 	// a real, legal value (rg parity, verified against the real binary:
 	// `rg -m 0 pat file` searches nothing and reports no match) -- NOT
@@ -355,6 +372,17 @@ type parseState struct {
 	// -A/-B/-C write is tracked independently and only resolved into
 	// Config.ContextBefore/After at the very end (see resolveContext).
 	before, after, both *int
+	// passthru mirrors rg's ContextMode::Passthru variant: true exactly
+	// when --passthru is the LAST of {--passthru, -A, -B, -C} given so
+	// far. Set true by --passthru's own applySwitch (which also clears
+	// before/after/both, discarding any prior -A/-B/-C state -- ContextMode
+	// is one mutable value in rg, not independent fields); set back to
+	// false by -A/-B/-C's own applyValue when it was true (which ALSO
+	// clears the other two of before/after/both, since transitioning out
+	// of Passthru constructs a fresh ContextModeLimited with only the
+	// triggering side set -- see Config.PassThru's doc). See
+	// resolveContext for the final read of this flag.
+	passthru bool
 }
 
 type flagKind int
@@ -819,6 +847,13 @@ func buildV1Flags() []*flagSpec {
 				if err != nil {
 					return err
 				}
+				// Transitioning out of Passthru discards whatever before/
+				// both state existed before it (see parseState.passthru's
+				// doc) -- only after ends up set.
+				if ps.passthru {
+					ps.passthru = false
+					ps.before, ps.both = nil, nil
+				}
 				ps.after = &n
 				return nil
 			},
@@ -829,6 +864,10 @@ func buildV1Flags() []*flagSpec {
 				n, err := parseNonNegInt(val)
 				if err != nil {
 					return err
+				}
+				if ps.passthru {
+					ps.passthru = false
+					ps.after, ps.both = nil, nil
 				}
 				ps.before = &n
 				return nil
@@ -841,7 +880,23 @@ func buildV1Flags() []*flagSpec {
 				if err != nil {
 					return err
 				}
+				if ps.passthru {
+					ps.passthru = false
+					ps.before, ps.after = nil, nil
+				}
 				ps.both = &n
+				return nil
+			},
+		},
+		{
+			// --passthru has no negation in rg (defs.rs's Passthru::update
+			// asserts "--passthru has no negation") and accepts
+			// "--passthrough" as an alias (defs.rs's aliases()). See
+			// Config.PassThru's doc for its interaction with -A/-B/-C.
+			long: "passthru", kind: kindSwitch, aliases: []string{"passthrough"},
+			applySwitch: func(_ *Config, ps *parseState, _ bool) error {
+				ps.passthru = true
+				ps.before, ps.after, ps.both = nil, nil, nil
 				return nil
 			},
 		},
@@ -1102,7 +1157,17 @@ func ParseArgs(args []string) (*Config, error) {
 		cfg.Paths = ps.positionals[1:]
 	}
 
-	cfg.ContextBefore, cfg.ContextAfter = resolveContext(ps.before, ps.after, ps.both)
+	if ps.passthru {
+		// --passthru was the last of {--passthru, -A, -B, -C} given (or
+		// the only one) -- ContextBefore/After stay 0 (search.Searcher.
+		// PassThru's doc requires this), and ps.before/after/both are
+		// necessarily all nil already (every write to them clears
+		// ps.passthru -- see their applyValue funcs), so there is nothing
+		// left to resolve.
+		cfg.PassThru = true
+	} else {
+		cfg.ContextBefore, cfg.ContextAfter = resolveContext(ps.before, ps.after, ps.both)
+	}
 
 	return cfg, nil
 }

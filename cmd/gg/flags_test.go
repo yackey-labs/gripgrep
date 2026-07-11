@@ -768,6 +768,44 @@ func TestContextOverrideSemantics(t *testing.T) {
 	}
 }
 
+// TestPassThruContextInteraction covers round #40's --passthru: it is
+// mutually exclusive with -A/-B/-C in the sense that rg's own
+// ContextMode is ONE mutable value, not independent fields -- whichever
+// of --passthru or an -A/-B/-C flag came LAST wins outright, discarding
+// whatever state came before it. Verified against the real rg binary:
+// `rg -A5 --passthru` is full passthru (5 is thrown away entirely, not
+// "passthru with 5 lines of after-context" -- no such mode exists);
+// `rg --passthru -A5` is PLAIN -A5, passthru is entirely gone.
+func TestPassThruContextInteraction(t *testing.T) {
+	cases := []struct {
+		name         string
+		args         []string
+		wantPassThru bool
+		wantB, wantA int
+	}{
+		{"passthru alone", []string{"--passthru"}, true, 0, 0},
+		{"passthrough alias", []string{"--passthrough"}, true, 0, 0},
+		{"-A5 then passthru: passthru wins outright", []string{"-A5", "--passthru"}, true, 0, 0},
+		{"passthru then -A5: -A5 wins, passthru gone", []string{"--passthru", "-A5"}, false, 0, 5},
+		{"passthru then -B5: -B5 wins, passthru gone", []string{"--passthru", "-B5"}, false, 5, 0},
+		{"passthru then -C5: -C5 wins, passthru gone", []string{"--passthru", "-C5"}, false, 5, 5},
+		{"-C2 -A1 passthru: passthru wins, discards both", []string{"-C2", "-A1", "--passthru"}, true, 0, 0},
+		{"passthru -A1 -B2: -A1/-B2 apply normally, no C fallback", []string{"--passthru", "-A1", "-B2"}, false, 2, 1},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			args := append(append([]string{}, tc.args...), "pat")
+			cfg := mustParse(t, args...)
+			if cfg.PassThru != tc.wantPassThru {
+				t.Errorf("PassThru = %v, want %v", cfg.PassThru, tc.wantPassThru)
+			}
+			if cfg.ContextBefore != tc.wantB || cfg.ContextAfter != tc.wantA {
+				t.Errorf("ContextBefore=%d ContextAfter=%d, want %d/%d", cfg.ContextBefore, cfg.ContextAfter, tc.wantB, tc.wantA)
+			}
+		})
+	}
+}
+
 func TestInvertMatch(t *testing.T) {
 	if cfg := mustParse(t, "pat"); cfg.Invert {
 		t.Errorf("default Invert = true, want false")

@@ -129,6 +129,11 @@ type Config struct {
 	LineNumbers   bool
 	BeforeContext int
 	AfterContext  int
+	// PassThru is rg's --passthru, passed straight through to
+	// search.Searcher.PassThru (see its doc). cmd/gg guarantees
+	// BeforeContext/AfterContext are both 0 whenever this is set,
+	// mirroring rg's own mutually-exclusive ContextMode enum.
+	PassThru bool
 	// MaxCount is -m/--max-count, passed straight through to
 	// search.Searcher.MaxCount (see its doc): nil means unlimited; a
 	// non-nil 0 is a legitimate "match nothing" limit, which is why this

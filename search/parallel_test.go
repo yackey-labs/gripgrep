@@ -9,6 +9,29 @@ import (
 	"github.com/yackey-labs/gripgrep/match"
 )
 
+// TestParallelEligiblePassThruDisqualifies covers round #40's --passthru:
+// it must fall back to the serial path exactly like Invert/context
+// already do, since chunkRecorder's per-chunk run-to-completion-then-
+// replay design can't reproduce PassThru's -m interaction (a single
+// Searcher's matchLimitReached evolving continuously in scan order --
+// see parallelEligible's doc). An otherwise-eligible input (large enough,
+// ParallelWorkers>1, no invert/context) must still refuse to parallelize
+// once PassThru is set.
+func TestParallelEligiblePassThruDisqualifies(t *testing.T) {
+	base := Searcher{ParallelWorkers: 4, ParallelMinBytes: 1}
+	eligible := New(base)
+	if !eligible.parallelEligible(1024) {
+		t.Fatal("sanity: base config (no PassThru) should be parallel-eligible")
+	}
+
+	withPassThru := base
+	withPassThru.PassThru = true
+	s := New(withPassThru)
+	if s.parallelEligible(1024) {
+		t.Fatal("parallelEligible(PassThru=true) = true, want false")
+	}
+}
+
 // TestSplitChunksInvariants checks splitChunks's structural contract
 // directly, independent of any Searcher: ranges must cover [0, len(data))
 // contiguously with no gaps or overlaps, and no range boundary (other

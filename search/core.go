@@ -31,6 +31,7 @@ func (s *Searcher) resetRun() {
 	s.hasMatched = false
 	s.matchCount = 0
 	s.matchLimitReached = s.MaxCount != nil && *s.MaxCount <= 0
+	s.matchLimitReachedAtStart = s.matchLimitReached
 	s.hasBinaryOffset = false
 	s.binaryOffset = 0
 }
@@ -46,8 +47,15 @@ func (s *Searcher) maxContext() int {
 // scan is only sound when the pattern is provably unable to match across
 // a line terminator, and inversion needs its own (still fast-pathed, see
 // matchByLineFastInvert) bookkeeping around the gaps between matches.
+// PassThru always forces the slow path (mirrors rg's own
+// is_line_by_line_fast, which returns false unconditionally when
+// passthru is set): the fast path's candidate-scanning loop has no
+// notion of "sink every non-matching line too," and passthru's -m
+// interaction (see matchByLineSlow's PassThru branch) depends on the
+// slow path's per-line Verify call being made (or skipped) exactly
+// once per line.
 func (s *Searcher) isFastPath() bool {
-	return s.Matcher.NonMatchingLineTerm()
+	return s.Matcher.NonMatchingLineTerm() && !s.PassThru
 }
 
 // matchByLine scans buf starting at s.pos, dispatching to the fast
@@ -73,7 +81,29 @@ func (s *Searcher) matchByLine(buf []byte, sink Sink) (scanOutcome, error) {
 // any trailing after-context still owed to the last counted match. Once
 // both the limit is reached AND that trailing context is fully drained,
 // the loop returns scanStop immediately rather than continuing to Verify
-// lines that can no longer produce any output.
+// lines that can no longer produce any output -- UNLESS PassThru is set
+// (see the branch below and its own doc), which needs the scan to keep
+// running all the way to EOF, sinking every remaining line as context.
+//
+// PassThru's own -m interaction is a real, verified rg quirk, not a gg
+// invention: rg's own shortest_match (crates/searcher/src/searcher/
+// core.rs) unconditionally returns "no match" once has_exceeded_match_
+// limit() is true, REGARDLESS of passthru -- it's the surrounding
+// success/passthru dispatch that differs. Without passthru, that forced
+// "no match" is moot (the scan already stopped in the same iteration the
+// limit was first reached, well before any later line could observe it
+// -- see the bottom-of-loop check). With passthru, the scan keeps going,
+// so every line from then on computes success as `false != Invert`:
+// under normal (non-inverted) search this just means "render as context,
+// same as any other non-matching line" (matched forced false, XOR
+// Invert=false stays false) -- but under -v it means every SUBSEQUENT
+// line, matching or not, renders as a match instead (false != true =
+// true), verified directly against the real rg binary (`--passthru -v -m
+// N`: everything after the Nth real inverted match becomes ':'-rendered,
+// including literal pattern matches that would otherwise be '-'
+// context). skipVerify mirrors rg's own shortest_match short-circuit
+// (never even re-invokes the matcher once the limit is exceeded under
+// passthru, since its result is discarded either way).
 func (s *Searcher) matchByLineSlow(buf []byte, sink Sink) (scanOutcome, error) {
 	step := newLineStep(s.pos, len(buf))
 	for {
@@ -81,10 +111,27 @@ func (s *Searcher) matchByLineSlow(buf []byte, sink Sink) (scanOutcome, error) {
 		if !ok {
 			break
 		}
-		matched := s.Matcher.Verify(withoutTerminator(buf[start:end]))
 		s.pos = end
 
-		success := matched != s.Invert && !s.matchLimitReached
+		var success bool
+		if s.PassThru && s.matchLimitReached && !s.matchLimitReachedAtStart {
+			success = s.Invert
+		} else if s.PassThru && s.matchLimitReachedAtStart {
+			// MaxCount<=0: the limit was already exceeded before this
+			// scan started at all (see matchLimitReachedAtStart's doc) --
+			// success is unconditionally false here, same as the ordinary
+			// (non-PassThru) `&& !s.matchLimitReached` branch below would
+			// give, WITHOUT applying the invert-flip the mid-scan case
+			// gets: rg's own matches_possible() zero-output skip for
+			// MaxCount==Some(0) applies regardless of -v (verified against
+			// the real rg binary: `--passthru -v -m0` also prints
+			// nothing, not "every line", even though a plain --passthru
+			// -v with no -m at all inverts the render of every line).
+			success = false
+		} else {
+			matched := s.Matcher.Verify(withoutTerminator(buf[start:end]))
+			success = matched != s.Invert && !s.matchLimitReached
+		}
 		if success {
 			s.hasMatched = true
 			s.matchCount++
@@ -110,8 +157,45 @@ func (s *Searcher) matchByLineSlow(buf []byte, sink Sink) (scanOutcome, error) {
 				return scanStop, nil
 			}
 			s.afterContextLeft--
+		} else if s.PassThru && !s.matchLimitReachedAtStart {
+			// Every line that is neither a real match nor owed after-
+			// context (which never applies under pure passthru anyway --
+			// AfterContext is always 0 here, see PassThru's doc) still
+			// gets printed, rendered exactly like context (rg's own
+			// SinkContextKind::Other -- the printer doesn't distinguish
+			// context kinds, so a plain Context call reproduces this for
+			// free). after=false here is arbitrary (printer.Standard
+			// never reads it -- see Standard.Context's doc); it's neither
+			// "before" nor "after" a match in the usual sense.
+			//
+			// The matchLimitReachedAtStart exclusion is MaxCount<=0's
+			// "search never really starts" case (see its doc): without
+			// it, this branch would fire for every line, matching rg's
+			// SOURCE-LEVEL branch structure exactly -- but not rg's
+			// OBSERVABLE behavior, since rg's own CLI layer never even
+			// reaches this code for that case at all (matches_possible()
+			// skips calling the searcher entirely). Only relevant when
+			// matchLimitReached is true from the very first iteration;
+			// once matchLimitReached becomes true MID-scan (real matches
+			// happened first), matchLimitReachedAtStart is still false,
+			// so this exclusion never applies there.
+			more, err := s.sinkContext(buf, sink, start, end, false)
+			if err != nil {
+				return scanStop, err
+			}
+			if !more {
+				return scanStop, nil
+			}
 		}
-		if s.matchLimitReached && s.afterContextLeft == 0 {
+		// PassThru must keep scanning to EEOF even after the -m limit is
+		// hit (see the doc above) -- EXCEPT when the limit was already
+		// exceeded before this file's scan even started
+		// (matchLimitReachedAtStart, i.e. MaxCount<=0): that case prints
+		// NOTHING at all, matching the real rg binary (`--passthru -m 0`
+		// -- see matchLimitReachedAtStart's doc), so there is nothing
+		// left for continued scanning to ever produce and it should stop
+		// immediately, same as the non-PassThru case.
+		if s.matchLimitReached && s.afterContextLeft == 0 && (!s.PassThru || s.matchLimitReachedAtStart) {
 			return scanStop, nil
 		}
 	}
