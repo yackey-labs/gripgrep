@@ -15,9 +15,9 @@ document is regenerated).
 |---|---|---|
 | ripgrep flag authority | master `3a570990c4cf` (2026-07-09, version 15.1.0), `crates/core/flags/defs.rs` | source of the flag inventory below |
 | ripgrep binary (golden suite + CI benchmarks) | **rg 15.1.0** (single pin: `internal/bench/rg-version.txt`, enforced by the suite itself) | every implemented flag is byte-diff-verified against this binary (17-case e2e suite + full-tree diffs) |
-| gripgrep | `7140f09` / pending release | the status column below |
+| gripgrep | `c12b370` / pending release | the status column below |
 
-<!-- BEGIN GENERATED: score -->**Score: 36 of 104 rg flags implemented.**<!-- END GENERATED --> The gap is
+<!-- BEGIN GENERATED: score -->**Score: 39 of 104 rg flags implemented.**<!-- END GENERATED --> The gap is
 dominated by a few feature clusters (see the notes after the table):
 the file-type system, PCRE2/multiline, encodings, output decoration,
 and replacement.
@@ -105,10 +105,10 @@ unknown-flag error, exit 2)
 | `--after-context` | `-A` | ✅ | Show NUM lines after each match. |
 | `--before-context` | `-B` | ✅ | Show NUM lines before each match. |
 | `--block-buffered` (+`--no-block-buffered`) |  | ❌ | Force block buffering. |
-| `--byte-offset` (+`--no-byte-offset`) | `-b` | ❌ | Print the byte offset for each matching line. |
+| `--byte-offset` (+`--no-byte-offset`) | `-b` | ✅ | Print the byte offset for each matching line. |
 | `--color` |  | ✅ | When to use color. |
 | `--colors` |  | ❌ | Configure color settings and styles. |
-| `--column` (+`--no-column`) |  | ❌ | Show column numbers. |
+| `--column` (+`--no-column`) |  | ✅ | Show column numbers. |
 | `--context` | `-C` | ✅ | Show NUM lines before and after each match. |
 | `--context-separator` (+`--no-context-separator`) |  | ❌ | Set the separator for contextual chunks. |
 | `--field-context-separator` |  | ❌ | Set the field context separator. |
@@ -135,7 +135,7 @@ unknown-flag error, exit 2)
 | `--sort-files` (+`--no-sort-files`) |  | ❌ | (DEPRECATED) Sort results by file path. |
 | `--sortr` |  | ⚠️ | Sort results in descending order. |
 | `--trim` (+`--no-trim`) |  | ❌ | Trim prefix whitespace from matches. |
-| `--vimgrep` |  | ❌ | Print results in a vim compatible format. |
+| `--vimgrep` |  | ✅ | Print results in a vim compatible format. |
 | `--with-filename` | `-H` | ✅ | Print the file path with each matching line. |
 
 ### Output modes
