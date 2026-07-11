@@ -64,22 +64,29 @@ repurpose one (see "Versioning").
 | `MaxDepth` | `int` | `-d`/`--max-depth` | 0 = unlimited; the CLI's `-d 0` (roots only) is not expressible -- pass explicit file paths instead |
 | `MaxFilesize` | `int64` | `--max-filesize` | 0 = unlimited |
 | `Workers` | `int` | `-j`/`--threads` | 0 = auto |
+| `Types` | `[]string` | `-t`/`--type`, repeatable | nil (no type filter) |
+| `TypesNot` | `[]string` | `-T`/`--type-not`, repeatable | nil; a name in both `Types` and `TypesNot` resolves to excluded |
 
 Not surfaced, by design (see the SDK plan's design principles: `Options`
 controls *what matches and where we look*; output decoration doesn't
 belong here): `-H`/`-I`, `--heading`, `--color`, `--vimgrep`, `--trim`,
 `--max-columns`, and `-f` (a CLI input mechanic -- library callers already
-hold their patterns as Go values).
+hold their patterns as Go values). `--type-add`/`--type-clear` are the
+same kind of input mechanic (they edit the type *table*, `Types`/
+`TypesNot` only ever *select* from it) and stay unsurfaced too -- filter
+paths yourself, or use `Globs`, if you need a custom type definition.
 
 ## The Match struct
 
 ```go
 type Match struct {
-	Path       string   // relative to the search root, like the CLI's own output paths
+	Path       string    // relative to the search root, like the CLI's own output paths
 	LineNumber int       // 1-based
 	Line       string    // the matched line, no trailing newline
 	Before     []string  // leading context lines, oldest first; nil if none requested
 	After      []string  // trailing context lines, file order; nil if none requested
+	Column     int       // 1-based BYTE column of the first match on Line, like --column; 0 = no column
+	ByteOffset int64     // absolute byte offset of Line's first byte, like plain -b
 }
 ```
 
@@ -92,6 +99,18 @@ by the time `fn` is called for it, but if you're using early stop
 more match with incomplete-looking `After` context before the stop is
 observed. Under `Search` (which collects everything before returning),
 this is never visible -- every returned `Match` is fully populated.
+
+`Column` is the *first* match's column, computed by re-scanning `Line`
+through the same matcher that found it (the search layer never carries
+match bounds through a callback -- see `sink.go`'s `matchColumn` doc). It
+is 0 for a line reported by an `Options.InvertMatch` search: an inverted
+"match" is a line the pattern does *not* match, so there is no span to
+report a column for, exactly like the CLI's own `--column -v`. `Match`
+is line-granular -- one `Match` per matched *line*, however many times
+the pattern occurs on it -- so `ByteOffset` mirrors plain `-b` (the
+line's own start), not `-o -b`'s per-occurrence offset; a caller that
+wants an occurrence-level offset can combine `Column` with its own
+re-scan, or drop to the low-level `search`/`printer` packages directly.
 
 ## Streaming
 

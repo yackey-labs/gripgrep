@@ -164,3 +164,41 @@ func ExampleOptions_Search_lineRegexp() {
 	// Output:
 	// cat
 }
+
+// ExampleOptions_Search_types shows -t/--type filtering: of the fixture's
+// three files (one each of Go/Python/plain-text, all containing
+// "needle"), only the Go one is searched.
+func ExampleOptions_Search_types() {
+	opts := gripgrep.Options{Types: []string{"go"}}
+	matches, err := opts.Search("needle", "testdata/facade/types")
+	if err != nil {
+		fmt.Println("error:", err)
+		return
+	}
+	for _, m := range matches {
+		fmt.Println(m.Path, m.Line)
+	}
+	// Output:
+	// testdata/facade/types/main.go // needle marks the line this fixture's Types/TypesNot tests search for.
+	// testdata/facade/types/main.go var needle = "found"
+}
+
+// ExampleOptions_Search_columnAndByteOffset shows Match.Column (1-based
+// byte column of the first match on the line) and Match.ByteOffset
+// (absolute byte offset of the line's start), mirroring the CLI's
+// --column/-b. A single named file keeps result order deterministic
+// (see ExampleSearch's doc).
+func ExampleOptions_Search_columnAndByteOffset() {
+	matches, err := gripgrep.Search("needle", "testdata/facade/column.txt")
+	if err != nil {
+		fmt.Println("error:", err)
+		return
+	}
+	for _, m := range matches {
+		fmt.Println(m.LineNumber, m.Column, m.ByteOffset, m.Line)
+	}
+	// Output:
+	// 1 4 0 xx needle one
+	// 2 1 14 needle two
+	// 3 4 25    needle three
+}
