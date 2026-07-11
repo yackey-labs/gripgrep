@@ -171,6 +171,97 @@ func TestStandard_NoGapSeparatorWithoutContext(t *testing.T) {
 	}
 }
 
+// TestStandard_CustomFieldSeparators covers round #40's --field-match-
+// separator/--field-context-separator: replaces every ':'/'-' prelude
+// separator (including the path's own, when Null is false) with the
+// custom value, on match and context lines respectively -- verified
+// against the real rg binary (round #40's differential sweep).
+func TestStandard_CustomFieldSeparators(t *testing.T) {
+	dest, out := newTestDest()
+	p := NewStandard(dest)
+	p.MatchFieldSep = []byte("|")
+	p.ContextFieldSep = []byte("%")
+	p.ContextEnabled = true
+
+	p.Begin("a/b/foo.txt")
+	p.Matched(&search.Match{Line: []byte(fooLine1), LineNumber: 1, HasLineNumber: true, Offset: 0})
+	p.Context(&search.Ctx{Line: []byte(fooLine2), LineNumber: 2, HasLineNumber: true, Offset: int64(len(fooLine1) + 1), After: true})
+	p.Finish("a/b/foo.txt", &search.Stats{Matched: true})
+
+	want := "a/b/foo.txt|1|" + fooLine1 + "\n" +
+		"a/b/foo.txt%2%" + fooLine2 + "\n"
+	if got := out.String(); got != want {
+		t.Errorf("got:\n%q\nwant:\n%q", got, want)
+	}
+}
+
+// TestStandard_CustomFieldSeparatorsWithNull covers Null taking
+// precedence over MatchFieldSep for the path field specifically, while
+// every other field keeps using the custom separator -- verified
+// against the real rg binary: `--field-match-separator='|' --null -H
+// -n` renders "path\x00N|text", NUL for the path only.
+func TestStandard_CustomFieldSeparatorsWithNull(t *testing.T) {
+	dest, out := newTestDest()
+	p := NewStandard(dest)
+	p.MatchFieldSep = []byte("|")
+	p.Null = true
+
+	p.Begin("a/b/foo.txt")
+	p.Matched(&search.Match{Line: []byte(fooLine1), LineNumber: 1, HasLineNumber: true, Offset: 0})
+	p.Finish("a/b/foo.txt", &search.Stats{Matched: true})
+
+	want := "a/b/foo.txt\x001|" + fooLine1 + "\n"
+	if got := out.String(); got != want {
+		t.Errorf("got:\n%q\nwant:\n%q", got, want)
+	}
+}
+
+// TestStandard_CustomGapSeparator covers round #40's --context-separator:
+// replaces "--" with a custom value, both for the intra-file gap and the
+// inter-file separator -- verified against the real rg binary.
+func TestStandard_CustomGapSeparator(t *testing.T) {
+	dest, out := newTestDest()
+	p := NewStandard(dest)
+	p.ContextEnabled = true
+	p.GapSeparator = []byte("SEP")
+
+	p.Begin("a/b/foo.txt")
+	p.Matched(&search.Match{Line: []byte(fooLine1), LineNumber: 1, HasLineNumber: true, Offset: 0})
+	p.Context(&search.Ctx{Line: []byte(fooLine4), LineNumber: 4, HasLineNumber: true, Offset: 999})
+	p.Finish("a/b/foo.txt", &search.Stats{Matched: true})
+
+	want := "a/b/foo.txt:1:" + fooLine1 + "\n" +
+		"SEP\n" +
+		"a/b/foo.txt-4-" + fooLine4 + "\n"
+	if got := out.String(); got != want {
+		t.Errorf("got:\n%q\nwant:\n%q", got, want)
+	}
+}
+
+// TestStandard_NoGapSeparatorDisablesEntirely covers --no-context-
+// separator: GapSeparator == nil means NO separator line at all --
+// neither the intra-file gap marker nor the inter-file one -- verified
+// against the real rg binary (round #40's differential sweep: files run
+// together with no blank line and no "--" at all, unlike
+// --context-separator='' which still inserts a bare line break).
+func TestStandard_NoGapSeparatorDisablesEntirely(t *testing.T) {
+	dest, out := newTestDest()
+	p := NewStandard(dest)
+	p.ContextEnabled = true
+	p.GapSeparator = nil // --no-context-separator
+
+	p.Begin("a/b/foo.txt")
+	p.Matched(&search.Match{Line: []byte(fooLine1), LineNumber: 1, HasLineNumber: true, Offset: 0})
+	p.Context(&search.Ctx{Line: []byte(fooLine4), LineNumber: 4, HasLineNumber: true, Offset: 999})
+	p.Finish("a/b/foo.txt", &search.Stats{Matched: true})
+
+	want := "a/b/foo.txt:1:" + fooLine1 + "\n" +
+		"a/b/foo.txt-4-" + fooLine4 + "\n"
+	if got := out.String(); got != want {
+		t.Errorf("got:\n%q\nwant:\n%q (--no-context-separator must suppress the gap marker entirely)", got, want)
+	}
+}
+
 // TestStandard_ContextGapNoLineNumbers verifies gap detection falls
 // back to Offset-based contiguity when line numbers are disabled,
 // mirroring rg -C1 --no-line-number's separator placement.

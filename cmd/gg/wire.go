@@ -374,8 +374,38 @@ func buildCLISink(cfg *Config, dest *printer.Dest, matcher match.Matcher, color,
 		s.MaxColumnsPreview = cfg.MaxColumnsPreview
 		s.Trim = cfg.Trim
 		s.Null = cfg.Null
+		s.MatchFieldSep = resolveFieldSep(cfg.FieldMatchSeparator, ":")
+		s.ContextFieldSep = resolveFieldSep(cfg.FieldContextSeparator, "-")
+		s.GapSeparator = resolveGapSeparator(cfg.ContextSeparator)
 		return s, true
 	}
+}
+
+// resolveFieldSep resolves cfg.FieldMatchSeparator/FieldContextSeparator
+// (nil = --field-match-separator/--field-context-separator never given)
+// into the []byte printer.Standard needs, falling back to rg's own
+// default (":" or "-") when unset.
+func resolveFieldSep(custom []byte, def string) []byte {
+	if custom != nil {
+		return custom
+	}
+	return []byte(def)
+}
+
+// resolveGapSeparator resolves cfg.ContextSeparator (nil = --context-
+// separator/--no-context-separator never given) into the []byte
+// printer.Standard.GapSeparator needs: rg's own default "--" when unset,
+// nil (disabled) for --no-context-separator, or the explicit value
+// otherwise -- see ContextSep's doc and GapSeparator's doc for the
+// nil-means-disabled convention both share.
+func resolveGapSeparator(cs *ContextSep) []byte {
+	if cs == nil {
+		return []byte("--")
+	}
+	if cs.Disabled {
+		return nil
+	}
+	return cs.Value
 }
 
 // resolvePatternFiles implements -f/--file's actual I/O: ParseArgs only

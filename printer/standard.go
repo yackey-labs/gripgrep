@@ -109,6 +109,37 @@ type Standard struct {
 	// "path\x00N|text", NUL for the path only, '|' everywhere else. See
 	// writeLine.
 	Null bool
+	// MatchFieldSep is rg's --field-match-separator: replaces EVERY ':'
+	// field separator on a matched line -- path, line number, column,
+	// byte offset -- with this instead. Callers must always set this
+	// (there is no nil-means-default fallback here; NewStandard does NOT
+	// set it -- see wire.go's buildCLISink, which resolves rg's own ":"
+	// default before constructing Standard). Overridden for the path
+	// field specifically by Null, which wins when both are set (verified
+	// against the real rg binary: `--field-match-separator='|' --null`
+	// renders "path\x00N|text" -- NUL for the path, '|' everywhere else).
+	MatchFieldSep []byte
+	// ContextFieldSep is rg's --field-context-separator: the same idea as
+	// MatchFieldSep, but for context lines' '-' separator. Defaults to
+	// "-", resolved the same way (see MatchFieldSep's doc).
+	ContextFieldSep []byte
+	// GapSeparator is rg's --context-separator: used both for the
+	// intra-file "--" line between discontiguous matched/context runs
+	// (writeSeparatorIfGap) and as the inter-file separator in
+	// non-heading context mode (interFileSeparator) -- verified against
+	// the real rg binary, both share the exact same string. nil means
+	// --no-context-separator: NO separator line at all, in either
+	// position (verified: files just run together with no blank line
+	// and no gap marker). A non-nil, possibly EMPTY slice is the
+	// separator's own content (without a trailing '\n' -- one is always
+	// appended after it regardless of content, even when empty, per
+	// rg's own doc: "an empty string still inserts a line break").
+	// Callers must always set this explicitly (there is no nil-means-
+	// default fallback here, unlike a normal Go zero value -- nil
+	// specifically means DISABLED; wire.go resolves rg's own "--"
+	// default before constructing Standard when --context-separator was
+	// never given at all).
+	GapSeparator []byte
 
 	buf  []byte
 	path []byte
@@ -125,9 +156,22 @@ type Standard struct {
 }
 
 // NewStandard returns a Standard flushing completed files to dest, with
-// ShowPath defaulting to true (the common multi-file case).
+// ShowPath defaulting to true (the common multi-file case) and
+// MatchFieldSep/ContextFieldSep/GapSeparator defaulting to rg's own
+// defaults (":", "-", "--") -- callers only need to touch those fields
+// at all when a caller-facing flag (--field-match-separator/--field-
+// context-separator/--context-separator/--no-context-separator)
+// actually overrides them; every other Standard behaves exactly as it
+// did before those fields existed.
 func NewStandard(dest *Dest) *Standard {
-	return &Standard{dest: dest, buf: getBuf(), ShowPath: true}
+	return &Standard{
+		dest:            dest,
+		buf:             getBuf(),
+		ShowPath:        true,
+		MatchFieldSep:   []byte(":"),
+		ContextFieldSep: []byte("-"),
+		GapSeparator:    []byte("--"),
+	}
 }
 
 var _ search.Sink = (*Standard)(nil)
@@ -206,7 +250,7 @@ func (p *Standard) Matched(m *search.Match) (bool, error) {
 	}
 	text, cut := p.trimPrefix(line)
 	spans = shiftSpansAfterTrim(spans, cut)
-	p.writeLine(text, m.LineNumber, m.HasLineNumber, ':', col, m.Offset, spans, spans, 1)
+	p.writeLine(text, m.LineNumber, m.HasLineNumber, false, col, m.Offset, spans, spans, 1)
 	return true, nil
 }
 
@@ -223,7 +267,7 @@ func (p *Standard) matchedVimgrep(m *search.Match, line []byte) (bool, error) {
 	spans := p.findSpans(line)
 	text, cut := p.trimPrefix(line)
 	if len(spans) == 0 {
-		p.writeLine(text, m.LineNumber, m.HasLineNumber, ':', -1, m.Offset, nil, nil, 1)
+		p.writeLine(text, m.LineNumber, m.HasLineNumber, false, -1, m.Offset, nil, nil, 1)
 		return true, nil
 	}
 	// allSpans (every match on this line) drives -M's omitted-line
@@ -239,7 +283,7 @@ func (p *Standard) matchedVimgrep(m *search.Match, line []byte) (bool, error) {
 			col = sp.s + 1
 		}
 		row := shiftSpansAfterTrim([]matchSpan{sp}, cut)
-		p.writeLine(text, m.LineNumber, m.HasLineNumber, ':', col, m.Offset+int64(sp.s), row, allSpans, 1)
+		p.writeLine(text, m.LineNumber, m.HasLineNumber, false, col, m.Offset+int64(sp.s), row, allSpans, 1)
 	}
 	return true, nil
 }
@@ -259,7 +303,7 @@ func (p *Standard) matchedOnlyMatching(m *search.Match, line []byte) (bool, erro
 	spans := p.findSpans(line)
 	if len(spans) == 0 {
 		text, _ := p.trimPrefix(line)
-		p.writeLine(text, m.LineNumber, m.HasLineNumber, ':', -1, m.Offset, nil, nil, 1)
+		p.writeLine(text, m.LineNumber, m.HasLineNumber, false, -1, m.Offset, nil, nil, 1)
 		return true, nil
 	}
 	for _, sp := range spans {
@@ -282,7 +326,7 @@ func (p *Standard) matchedOnlyMatching(m *search.Match, line []byte) (bool, erro
 		// --max-columns boundary: `-M N -o` omits only when the match
 		// itself is STRICTLY longer than N, one byte later than the
 		// `>=` boundary every other row uses (see writeLine's doc).
-		p.writeLine(text, m.LineNumber, m.HasLineNumber, ':', col, m.Offset+int64(sp.s), only, only, 0)
+		p.writeLine(text, m.LineNumber, m.HasLineNumber, false, col, m.Offset+int64(sp.s), only, only, 0)
 	}
 	return true, nil
 }
@@ -304,7 +348,7 @@ func (p *Standard) Context(c *search.Ctx) (bool, error) {
 	}
 	text, cut := p.trimPrefix(line)
 	spans = shiftSpansAfterTrim(spans, cut)
-	p.writeLine(text, c.LineNumber, c.HasLineNumber, '-', -1, c.Offset, spans, spans, 1)
+	p.writeLine(text, c.LineNumber, c.HasLineNumber, true, -1, c.Offset, spans, spans, 1)
 	return true, nil
 }
 
@@ -322,10 +366,10 @@ func trimLineTerminator(line []byte) []byte {
 
 // Finish implements search.Sink: flushes the accumulated buffer to Dest
 // as one block (WriteBlock), preceded by a between-file separator when
-// one applies — "--\n" in --no-heading context mode, "\n" in heading
-// mode, matching rg's own inter-file separator placement exactly (see
-// interFileSeparator). Files with zero matches (stats.Matched false,
-// buffer still empty) produce no output at all.
+// one applies — GapSeparator+"\n" in --no-heading context mode, "\n" in
+// heading mode, matching rg's own inter-file separator placement exactly
+// (see interFileSeparator). Files with zero matches (stats.Matched
+// false, buffer still empty) produce no output at all.
 func (p *Standard) Finish(path string, stats *search.Stats) error {
 	return p.dest.WriteBlock(p.buf, p.interFileSeparator())
 }
@@ -334,29 +378,42 @@ func (p *Standard) Finish(path string, stats *search.Stats) error {
 // prepend before this file's block if it isn't the first block written
 // to that Dest (see Dest.WriteBlock and its hasPrinted tracking).
 // Heading mode always separates blocks with a blank line, regardless of
-// context; --no-heading mode only separates with "--" when
-// ContextEnabled (verified against real rg: two widely-separated
-// matches in plain --no-heading, non-context mode get no separator at
-// all, even across files).
+// context; --no-heading mode only separates with GapSeparator when
+// ContextEnabled AND GapSeparator isn't nil (verified against real rg:
+// two widely-separated matches in plain --no-heading, non-context mode
+// get no separator at all, even across files; --no-context-separator
+// removes the between-file separator too, not just the intra-file one).
 func (p *Standard) interFileSeparator() []byte {
 	switch {
 	case p.Heading:
 		return sepHeading
-	case p.ContextEnabled:
-		return sepContextBreak
+	case p.ContextEnabled && p.GapSeparator != nil:
+		return p.gapSepLine()
 	default:
 		return nil
 	}
 }
 
-// writeSeparatorIfGap appends a "--\n" separator line when Context is
-// enabled and this line is not contiguous with the previously emitted
-// line, within the current file. Contiguity is determined by line
-// number when available (exact, and covers every case this package's
-// tests exercise); when line numbers are disabled it falls back to byte
-// offsets, since Offset is always populated regardless of numbering.
-// Between-file separators are Finish's job (see interFileSeparator);
-// this only ever fires on gaps within one Begin/Finish sequence.
+// gapSepLine returns GapSeparator followed by '\n', freshly built each
+// call (GapSeparator's content is caller-owned and may be reused across
+// many Standard instances -- see wire.go -- so this must never mutate or
+// alias it). Only ever called when GapSeparator != nil.
+func (p *Standard) gapSepLine() []byte {
+	line := make([]byte, 0, len(p.GapSeparator)+1)
+	line = append(line, p.GapSeparator...)
+	line = append(line, '\n')
+	return line
+}
+
+// writeSeparatorIfGap appends a GapSeparator+"\n" line when Context is
+// enabled, GapSeparator isn't nil (--no-context-separator), and this
+// line is not contiguous with the previously emitted line, within the
+// current file. Contiguity is determined by line number when available
+// (exact, and covers every case this package's tests exercise); when
+// line numbers are disabled it falls back to byte offsets, since Offset
+// is always populated regardless of numbering. Between-file separators
+// are Finish's job (see interFileSeparator); this only ever fires on
+// gaps within one Begin/Finish sequence.
 func (p *Standard) writeSeparatorIfGap(lineNumber int64, hasLineNumber bool, offset int64, lineLen int) {
 	if !p.ContextEnabled {
 		return
@@ -368,8 +425,9 @@ func (p *Standard) writeSeparatorIfGap(lineNumber int64, hasLineNumber bool, off
 		} else {
 			gap = offset != p.lastOffset+int64(p.lastLen)+1
 		}
-		if gap {
-			p.buf = append(p.buf, '-', '-', '\n')
+		if gap && p.GapSeparator != nil {
+			p.buf = append(p.buf, p.GapSeparator...)
+			p.buf = append(p.buf, '\n')
 		}
 	}
 	p.haveLast = true
@@ -382,10 +440,11 @@ func (p *Standard) writeSeparatorIfGap(lineNumber int64, hasLineNumber bool, off
 // buffer: path, line number, column, byte offset, then text, in exactly
 // that order -- matching rg's own PreludeWriter field sequence
 // (write_path/write_line_number/write_column_number/write_byte_offset)
-// byte for byte, including which separator byte sits between which
-// fields. sep is ':' for a match, '-' for context, and is reused as the
-// separator for every prelude field (column, byte offset included), same
-// as rg.
+// byte for byte, including which separator sits between which fields.
+// isContext selects MatchFieldSep (false, rg default ":") or
+// ContextFieldSep (true, rg default "-"), reused as the separator for
+// every prelude field (column, byte offset included) and the path
+// itself (unless Null overrides just that one field), same as rg.
 //
 // column < 0 omits the column field entirely -- used for context lines
 // (which never carry one) and for a matched line on which no span was
@@ -421,7 +480,11 @@ func (p *Standard) writeSeparatorIfGap(lineNumber int64, hasLineNumber bool, off
 // termPad is 1 for every row shape except an OnlyMatching row (0): see
 // matchedOnlyMatching's doc for why an -o row's --max-columns boundary
 // is one byte later than every other row's.
-func (p *Standard) writeLine(text []byte, lineNumber int64, hasLineNumber bool, sep byte, column int, offset int64, colorSpans, allSpans []matchSpan, termPad int) {
+func (p *Standard) writeLine(text []byte, lineNumber int64, hasLineNumber bool, isContext bool, column int, offset int64, colorSpans, allSpans []matchSpan, termPad int) {
+	sep := p.MatchFieldSep
+	if isContext {
+		sep = p.ContextFieldSep
+	}
 	if p.Heading {
 		if !p.headingDone {
 			if p.ShowPath {
@@ -439,24 +502,24 @@ func (p *Standard) writeLine(text []byte, lineNumber int64, hasLineNumber bool, 
 		if p.Null {
 			p.buf = append(p.buf, 0)
 		} else {
-			p.buf = append(p.buf, sep)
+			p.buf = append(p.buf, sep...)
 		}
 	}
 	if hasLineNumber {
 		p.appendLineNumber(lineNumber)
-		p.buf = append(p.buf, sep)
+		p.buf = append(p.buf, sep...)
 	}
 	if column >= 0 {
 		p.appendPlainNumber(int64(column))
-		p.buf = append(p.buf, sep)
+		p.buf = append(p.buf, sep...)
 	}
 	if p.ByteOffset {
 		p.appendPlainNumber(offset)
-		p.buf = append(p.buf, sep)
+		p.buf = append(p.buf, sep...)
 	}
 	switch {
 	case p.MaxColumns > 0 && len(text)+termPad > p.MaxColumns:
-		p.writeOmittedLine(text, sep == '-', allSpans, colorSpans)
+		p.writeOmittedLine(text, isContext, allSpans, colorSpans)
 	case p.Color && len(colorSpans) > 0:
 		p.appendColoredSpans(text, colorSpans)
 	default:

@@ -17,7 +17,7 @@ document is regenerated).
 | ripgrep binary (golden suite + CI benchmarks) | **rg 15.1.0** (single pin: `internal/bench/rg-version.txt`, enforced by the suite itself) | every implemented flag is byte-diff-verified against this binary (17-case e2e suite + full-tree diffs) |
 | gripgrep | `4243295` / pending release | the status column below |
 
-<!-- BEGIN GENERATED: score -->**Score: 53 of 104 rg flags implemented.**<!-- END GENERATED --> The gap is
+<!-- BEGIN GENERATED: score -->**Score: 56 of 104 rg flags implemented.**<!-- END GENERATED --> The gap is
 dominated by a few feature clusters (see the notes after the table):
 the file-type system, PCRE2/multiline, encodings, output decoration,
 and replacement.
@@ -110,9 +110,9 @@ unknown-flag error, exit 2)
 | `--colors` |  | ❌ | Configure color settings and styles. |
 | `--column` (+`--no-column`) |  | ✅ | Show column numbers. |
 | `--context` | `-C` | ✅ | Show NUM lines before and after each match. |
-| `--context-separator` (+`--no-context-separator`) |  | ❌ | Set the separator for contextual chunks. |
-| `--field-context-separator` |  | ❌ | Set the field context separator. |
-| `--field-match-separator` |  | ❌ | Set the field match separator. |
+| `--context-separator` (+`--no-context-separator`) |  | ✅ | Set the separator for contextual chunks. |
+| `--field-context-separator` |  | ✅ | Set the field context separator. |
+| `--field-match-separator` |  | ✅ | Set the field match separator. |
 | `--heading` (+`--no-heading`) |  | ✅ | Print matches grouped by each file. |
 | `--help` | `-h` | ✅ | Show help output. |
 | `--hostname-bin` |  | ❌ | Run a program to get this system's hostname. |

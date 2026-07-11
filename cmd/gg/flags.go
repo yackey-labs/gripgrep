@@ -5,6 +5,7 @@ import (
 	"math"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 )
 
 // This file implements gg's command-line flag parser. It has no
@@ -163,6 +164,20 @@ type TypeChange struct {
 	Arg string
 }
 
+// ContextSep is the resolved state of one --context-separator/
+// --no-context-separator write: Disabled true means --no-context-
+// separator (no separator line at all, ever); Disabled false means an
+// explicit --context-separator value (Value is already unescaped by
+// unescapeSeparator, and may legitimately be empty -- rg's own doc: "an
+// empty string still inserts a line break", distinct from Disabled's "no
+// line at all"). Plain last-write-wins between the two flags, like every
+// other switch/value pair in this file -- whichever's applyX ran last
+// simply overwrites Config.ContextSeparator wholesale.
+type ContextSep struct {
+	Disabled bool
+	Value    []byte
+}
+
 // Config is the parsed, plain-data result of ParseArgs. It has no
 // dependency on any gripgrep library package.
 type Config struct {
@@ -314,9 +329,27 @@ type Config struct {
 	// the only field) -- see printer.Standard.Null's doc for the exact
 	// per-mode rule, verified against the real rg binary. No negation in
 	// rg (defs.rs's Null::update asserts "--null has no negation").
-	Null  bool
-	Quiet bool // -q/--quiet; independent of Mode, matches rg (quiet suppresses output regardless of search mode)
-	Color ColorMode
+	Null bool
+	// FieldMatchSeparator is rg's --field-match-separator: replaces EVERY
+	// ':' field separator on a matched line. nil means unset (rg's own
+	// default, ":"); a non-nil, possibly EMPTY slice is the user's
+	// explicit choice (--field-match-separator='' is legal: rg's own doc
+	// says "may be any number of bytes, including zero"). Escape
+	// sequences (\t, \xZZ, ...) are already unescaped by the flag's
+	// applyValue -- see unescapeSeparator.
+	FieldMatchSeparator []byte
+	// FieldContextSeparator is rg's --field-context-separator: the same
+	// idea as FieldMatchSeparator, but for context lines ('-'). nil
+	// means unset (rg's default, "-").
+	FieldContextSeparator []byte
+	// ContextSeparator is rg's --context-separator/--no-context-separator:
+	// nil means unset (rg's own default, "--"); non-nil represents an
+	// explicit choice -- see ContextSep's doc for the Disabled/Value
+	// split, and printer.Standard.GapSeparator's doc for how this
+	// resolves into what actually gets written.
+	ContextSeparator *ContextSep
+	Quiet            bool // -q/--quiet; independent of Mode, matches rg (quiet suppresses output regardless of search mode)
+	Color            ColorMode
 	// ContextBefore/ContextAfter are already resolved from rg's
 	// independently-tracked -A/-B/-C (see resolveContext); -A/-B always
 	// partially override -C's corresponding side, regardless of order.
@@ -406,6 +439,17 @@ type flagSpec struct {
 	// exactly one of these is set, matching kind
 	applySwitch func(cfg *Config, ps *parseState, on bool) error
 	applyValue  func(cfg *Config, ps *parseState, val string) error
+	// applyNegatedSwitch, when set, handles this flagSpec's negated
+	// spelling as a plain SWITCH (no value consumed) instead of the
+	// ordinary value-flag path -- for the rare case where a value flag's
+	// negation has a DIFFERENT shape than its primary (rg's own
+	// crates/core/flags/defs.rs: ContextSeparator::update handles
+	// FlagValue::Switch(false) as a distinct case, not a second value
+	// flag -- --context-separator=SEP takes a value, --no-context-
+	// separator takes none). Only meaningful when kind == kindValue and
+	// negated != ""; nil for every other flag, including every kindSwitch
+	// flag (which already has its own on/off dispatch via applySwitch).
+	applyNegatedSwitch func(cfg *Config, ps *parseState) error
 }
 
 // v1Flags is the registry of every flag gg actually implements in v1.
@@ -758,6 +802,45 @@ func buildV1Flags() []*flagSpec {
 			long: "trim", negated: "no-trim", kind: kindSwitch,
 			applySwitch: func(cfg *Config, _ *parseState, on bool) error {
 				cfg.Trim = on
+				return nil
+			},
+		},
+		{
+			// --field-match-separator has no short form and no negation
+			// in rg (defs.rs's FieldMatchSeparator never sets name_short/
+			// name_negated). See Config.FieldMatchSeparator's doc.
+			long: "field-match-separator", kind: kindValue,
+			applyValue: func(cfg *Config, _ *parseState, val string) error {
+				cfg.FieldMatchSeparator = unescapeSeparator(val)
+				return nil
+			},
+		},
+		{
+			long: "field-context-separator", kind: kindValue,
+			applyValue: func(cfg *Config, _ *parseState, val string) error {
+				cfg.FieldContextSeparator = unescapeSeparator(val)
+				return nil
+			},
+		},
+		{
+			// --context-separator SEP / --no-context-separator: one flag,
+			// matching rg's own defs.rs shape exactly (ContextSeparator's
+			// name_negated is "no-context-separator") -- but the negated
+			// spelling takes NO value, unlike every other value flag's
+			// negation-that-isn't in this file (there are none; every
+			// OTHER negated flag here is kindSwitch on both sides). See
+			// applyNegatedSwitch's doc for why this needs its own small
+			// parser extension rather than reusing the ordinary value
+			// path. Plain last-write-wins between the two spellings, same
+			// as any other flag pair -- both simply overwrite
+			// Config.ContextSeparator. See ContextSep's doc.
+			long: "context-separator", negated: "no-context-separator", kind: kindValue,
+			applyValue: func(cfg *Config, _ *parseState, val string) error {
+				cfg.ContextSeparator = &ContextSep{Value: unescapeSeparator(val)}
+				return nil
+			},
+			applyNegatedSwitch: func(cfg *Config, _ *parseState) error {
+				cfg.ContextSeparator = &ContextSep{Disabled: true}
 				return nil
 			},
 		},
@@ -1223,6 +1306,21 @@ func parseLongFlag(cfg *Config, ps *parseState, arg string, args []string, i int
 		return 0, nil
 	}
 
+	// A value flag's negated spelling with a different SHAPE than its
+	// primary (e.g. --no-context-separator) -- see applyNegatedSwitch's
+	// doc. Must be checked before the ordinary value-flag path below,
+	// which would otherwise try to consume an argument this spelling
+	// never takes.
+	if entry.negate && spec.applyNegatedSwitch != nil {
+		if hasInline {
+			return 0, fmt.Errorf("unexpected value for switch flag --%s", name)
+		}
+		if err := spec.applyNegatedSwitch(cfg, ps); err != nil {
+			return 0, fmt.Errorf("error parsing flag --%s: %w", name, err)
+		}
+		return 0, nil
+	}
+
 	// Value flag.
 	if hasInline {
 		if err := spec.applyValue(cfg, ps, inlineVal); err != nil {
@@ -1345,4 +1443,102 @@ func parseHumanSize(s string) (int64, error) {
 		return 0, fmt.Errorf("invalid size: value too large for size %q", s)
 	}
 	return int64(value * mult), nil
+}
+
+// unescapeSeparator processes s exactly like rg's own separator-value
+// parsing (--context-separator/--field-match-separator/--field-context-
+// separator all funnel through the SAME grep_cli::unescape, which
+// delegates to the bstr crate's ByteVec::unescape_bytes -- crates/cli/
+// src/escape.rs). Operates on s's RUNES (Go's range over a string
+// already does this), matching bstr's own char-based iteration -- never
+// return early, malformed escapes fall back to literal text one rune at
+// a time:
+//   - `\0`, `\\`, `\r`, `\n`, `\t` map to their single-byte value.
+//   - `\xZZ` (exactly two hex digits, upper or lower case) maps to that
+//     byte.
+//   - Any other backslash sequence -- including an incomplete `\x`
+//     escape (fewer than two valid hex digits following, or none at
+//     all) or a trailing lone backslash at the end of s -- is left
+//     UNTOUCHED as literal text, byte for byte.
+//
+// Verified against rg's own unescape test table (round #40's
+// differential sweep): `\\x61` unescapes to the LITERAL text `\x61`
+// (four bytes: backslash, x, 6, 1), NOT "a" -- the first `\\` consumes
+// to one literal backslash before "x61" is ever reached as plain,
+// non-escaped text; `\xZZ` (invalid hex digits) unescapes to itself
+// unchanged (backslash, x, Z, Z), not partially processed.
+//
+// Always returns a non-nil slice, even for an empty input (relied on by
+// every call site: a nil field-separator/context-separator VALUE means
+// "flag never given", never "given as empty" -- see Config.
+// FieldMatchSeparator's doc).
+func unescapeSeparator(s string) []byte {
+	out := make([]byte, 0, len(s))
+	runes := []rune(s)
+	for i := 0; i < len(runes); {
+		r := runes[i]
+		if r != '\\' {
+			out = utf8.AppendRune(out, r)
+			i++
+			continue
+		}
+		if i+1 >= len(runes) {
+			// Trailing lone backslash: literal.
+			out = append(out, '\\')
+			i++
+			continue
+		}
+		switch runes[i+1] {
+		case '0':
+			out = append(out, 0)
+			i += 2
+		case '\\':
+			out = append(out, '\\')
+			i += 2
+		case 'r':
+			out = append(out, '\r')
+			i += 2
+		case 'n':
+			out = append(out, '\n')
+			i += 2
+		case 't':
+			out = append(out, '\t')
+			i += 2
+		case 'x':
+			if i+3 < len(runes) && isHexDigit(runes[i+2]) && isHexDigit(runes[i+3]) {
+				out = append(out, hexDigit(runes[i+2])<<4|hexDigit(runes[i+3]))
+				i += 4
+			} else {
+				// Incomplete/invalid \x escape: literal "\x", NOT
+				// consuming whatever (if anything) follows -- those
+				// bytes are processed normally on the next loop
+				// iteration(s), same as any other non-escape text.
+				out = append(out, '\\', 'x')
+				i += 2
+			}
+		default:
+			// Any other backslash sequence unescapes as itself.
+			out = append(out, '\\')
+			out = utf8.AppendRune(out, runes[i+1])
+			i += 2
+		}
+	}
+	return out
+}
+
+func isHexDigit(r rune) bool {
+	return (r >= '0' && r <= '9') || (r >= 'a' && r <= 'f') || (r >= 'A' && r <= 'F')
+}
+
+// hexDigit converts one hex-digit rune (already validated by
+// isHexDigit) to its 4-bit value.
+func hexDigit(r rune) byte {
+	switch {
+	case r >= '0' && r <= '9':
+		return byte(r - '0')
+	case r >= 'a' && r <= 'f':
+		return byte(r-'a') + 10
+	default: // 'A'-'F'
+		return byte(r-'A') + 10
+	}
 }

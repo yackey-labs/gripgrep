@@ -806,6 +806,92 @@ func TestPassThruContextInteraction(t *testing.T) {
 	}
 }
 
+// TestUnescapeSeparator ports rg's own bstr::ByteVec::unescape_bytes
+// test table directly (the crate --context-separator/--field-match-
+// separator/--field-context-separator all funnel through -- see
+// unescapeSeparator's doc), since gg's separator flags must reproduce
+// exactly the same unescaping rules, byte for byte.
+func TestUnescapeSeparator(t *testing.T) {
+	cases := []struct {
+		in   string
+		want string
+	}{
+		{"", ""},
+		{`\`, `\`},
+		{`\\`, `\`},
+		{`\0`, "\x00"},
+		{`\x00`, "\x00"},
+		{`\n`, "\n"},
+		{`\r`, "\r"},
+		{`\t`, "\t"},
+		{`\a`, `\a`},   // not a recognized escape: literal
+		{`\\a`, `\a`},  // \\ -> one backslash, then plain "a"
+		{`\x`, `\x`},   // incomplete hex escape: literal
+		{`\\x`, `\x`},  // \\ -> one backslash, then plain "x"
+		{`\xz`, `\xz`}, // invalid hex digit: literal
+		{`\xzz`, `\xzz`},
+		{`\xFF`, "\xff"},
+		{`\xf0`, "\xf0"}, // lowercase hex digits too
+		{`\x61`, "a"},
+		{`\\x61`, `\x61`},        // the FIRST \\ consumes to one backslash; "x61" is then plain text, NOT re-interpreted as a hex escape
+		{`\xA`, `\xA`},           // only one hex digit before end of string: literal
+		{`\u{2603}`, `\u{2603}`}, // rg has no \u escape at all: literal
+		{"XYZ", "XYZ"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.in, func(t *testing.T) {
+			if got := string(unescapeSeparator(tc.in)); got != tc.want {
+				t.Errorf("unescapeSeparator(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestFieldSeparatorFlags(t *testing.T) {
+	if cfg := mustParse(t, "pat"); cfg.FieldMatchSeparator != nil || cfg.FieldContextSeparator != nil {
+		t.Errorf("default FieldMatchSeparator/FieldContextSeparator = %q/%q, want nil/nil (unset)", cfg.FieldMatchSeparator, cfg.FieldContextSeparator)
+	}
+	cfg := mustParse(t, "--field-match-separator", "|", "--field-context-separator", `\t`, "pat")
+	if string(cfg.FieldMatchSeparator) != "|" {
+		t.Errorf("FieldMatchSeparator = %q, want %q", cfg.FieldMatchSeparator, "|")
+	}
+	if string(cfg.FieldContextSeparator) != "\t" {
+		t.Errorf("FieldContextSeparator = %q, want tab", cfg.FieldContextSeparator)
+	}
+	// Empty is legal and distinct from unset (rg's own doc: "any number
+	// of bytes, including zero").
+	cfg = mustParse(t, "--field-match-separator=", "pat")
+	if cfg.FieldMatchSeparator == nil || len(cfg.FieldMatchSeparator) != 0 {
+		t.Errorf("--field-match-separator=: FieldMatchSeparator = %#v, want non-nil empty slice", cfg.FieldMatchSeparator)
+	}
+}
+
+func TestContextSeparatorFlag(t *testing.T) {
+	if cfg := mustParse(t, "pat"); cfg.ContextSeparator != nil {
+		t.Errorf("default ContextSeparator = %+v, want nil (unset)", cfg.ContextSeparator)
+	}
+	cfg := mustParse(t, "--context-separator", "SEP", "pat")
+	if cfg.ContextSeparator == nil || cfg.ContextSeparator.Disabled || string(cfg.ContextSeparator.Value) != "SEP" {
+		t.Errorf("--context-separator SEP: ContextSeparator = %+v, want {Disabled:false Value:SEP}", cfg.ContextSeparator)
+	}
+	cfg = mustParse(t, "--no-context-separator", "pat")
+	if cfg.ContextSeparator == nil || !cfg.ContextSeparator.Disabled {
+		t.Errorf("--no-context-separator: ContextSeparator = %+v, want {Disabled:true}", cfg.ContextSeparator)
+	}
+	// Last-wins, either order (verified against the real rg binary).
+	cfg = mustParse(t, "--context-separator", "SEP", "--no-context-separator", "pat")
+	if cfg.ContextSeparator == nil || !cfg.ContextSeparator.Disabled {
+		t.Errorf("--context-separator SEP --no-context-separator: ContextSeparator = %+v, want {Disabled:true}", cfg.ContextSeparator)
+	}
+	cfg = mustParse(t, "--no-context-separator", "--context-separator", "SEP", "pat")
+	if cfg.ContextSeparator == nil || cfg.ContextSeparator.Disabled || string(cfg.ContextSeparator.Value) != "SEP" {
+		t.Errorf("--no-context-separator --context-separator SEP: ContextSeparator = %+v, want {Disabled:false Value:SEP}", cfg.ContextSeparator)
+	}
+	// --no-context-separator takes no value (a switch, unlike its
+	// primary spelling) -- see applyNegatedSwitch's doc.
+	wantErr(t, "--no-context-separator=x", "pat")
+}
+
 func TestInvertMatch(t *testing.T) {
 	if cfg := mustParse(t, "pat"); cfg.Invert {
 		t.Errorf("default Invert = true, want false")
