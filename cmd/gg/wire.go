@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"time"
 
 	"github.com/yackey-labs/gripgrep/filetype"
 	"github.com/yackey-labs/gripgrep/internal/engine"
@@ -111,9 +112,46 @@ func execute(cfg *Config, stdin io.Reader, stdout, stderr io.Writer) int {
 	}
 	contextEnabled := cfg.ContextBefore > 0 || cfg.ContextAfter > 0
 
-	dest := printer.NewDest(stdout)
+	// Output buffering (rg's --line-buffered/--block-buffered): block mode
+	// wraps stdout in a buffer flushed once at the end; line mode (and the
+	// tty default) writes through directly. Byte-invisible either way (see
+	// resolveBlockBuffered) -- the deferred flush below guarantees the
+	// buffered bytes reach stdout on every return path.
+	out := io.Writer(stdout)
+	flush := func() error { return nil }
+	if resolveBlockBuffered(cfg.Buffer) {
+		bw := bufio.NewWriterSize(stdout, 64*1024)
+		out = bw
+		flush = bw.Flush
+	}
+
+	// bytes-printed counter: installed between Dest and stdout only under
+	// --stats in a line-displaying mode, so its total is exactly rg's
+	// "bytes printed" (see countingWriter). standardDisplay excludes
+	// -c/-l/--count-matches/--files-without-match (non-standard Mode) and
+	// -q (no output), all of which rg reports as 0 bytes printed.
+	standardDisplay := cfg.Mode == ModeStandard && !cfg.Quiet
+	var counter *countingWriter
+	destWriter := out
+	if cfg.Stats && standardDisplay {
+		counter = &countingWriter{w: out}
+		destWriter = counter
+	}
+
+	dest := printer.NewDest(destWriter)
+
+	var statsAcc *engine.StatsAccumulator
+	if cfg.Stats {
+		statsAcc = engine.NewStatsAccumulator()
+	}
+
+	// -q's early-exit QuitSink is used only WITHOUT --stats. Under --stats,
+	// rg keeps searching a -q run to completion to compute full counts, so
+	// -q instead runs an ordinary full walk whose worker sink is the silent
+	// discardSink (selected in buildCLISink) -- no QuitSink, no walk-level
+	// early stop.
 	var quiet *printer.Quiet
-	if cfg.Quiet {
+	if cfg.Quiet && !cfg.Stats {
 		quiet = printer.NewQuiet()
 	}
 
@@ -138,8 +176,32 @@ func execute(cfg *Config, stdin io.Reader, stdout, stderr io.Writer) int {
 		ContextEnabled: contextEnabled,
 	}
 
-	result, err := engine.Run(econf, newWorker, quietSink, nil, bm, stderr)
+	started := time.Now()
+	result, err := engine.Run(econf, newWorker, quietSink, nil, bm, statsAcc, stderr)
 	if err != nil {
+		// A fatal walk-setup error (bad glob) prints NO stats block, unlike
+		// a per-file error, which still leaves result usable and prints the
+		// (zeroed-or-partial) block below.
+		flush()
+		fmt.Fprintf(stderr, "gg: %s\n", err)
+		return 2
+	}
+
+	// The stats block prints for every search mode that ran (regardless of
+	// exit code -- a per-file error path still exits 2 WITH the block, and
+	// a zero-match run exits 1 WITH it), snapshotting bytes printed before
+	// writing so the block never counts its own bytes. Written to out,
+	// above the counter; --files/--type-list never reach here (they return
+	// from execute's dispatch above), matching rg's no-block behavior for
+	// modes that run no search.
+	if cfg.Stats {
+		var bytesPrinted int64
+		if counter != nil {
+			bytesPrinted = counter.n
+		}
+		writeStatsBlock(out, statsAcc.Snapshot(), bytesPrinted, time.Since(started).Seconds())
+	}
+	if err := flush(); err != nil {
 		fmt.Fprintf(stderr, "gg: %s\n", err)
 		return 2
 	}
@@ -154,9 +216,17 @@ func execute(cfg *Config, stdin io.Reader, stdout, stderr io.Writer) int {
 	// elsewhere in the same run (rg -q's contract is "yes/no as fast as
 	// possible" -- a confirmed "yes" makes the error irrelevant to the
 	// answer the caller asked for), and only falls back to error-implies-2
-	// when no match was ever found.
-	if quiet != nil {
-		if quiet.Found() {
+	// when no match was ever found. This -q precedence holds even under
+	// --stats (verified: `rg -q --stats` over a matching file plus a
+	// nonexistent path exits 0, not 2) -- there the fast QuitSink is off
+	// (quiet is nil) so the confirmed-match signal is result.Matched from
+	// the full walk instead of quiet.Found().
+	if cfg.Quiet {
+		matched := result.Matched
+		if quiet != nil {
+			matched = quiet.Found()
+		}
+		if matched {
 			return 0
 		}
 		if result.AnyError {
@@ -337,6 +407,15 @@ func newEngineWorker(cfg *Config, econf engine.Config, matcher match.Matcher, de
 // rather than internal/engine (see that package's doc): the root facade
 // builds its own, unrelated Sink implementation instead.
 func buildCLISink(cfg *Config, dest *printer.Dest, matcher match.Matcher, color, heading, showPath, column bool) (sink search.Sink, isStandard bool) {
+	if cfg.Quiet {
+		// -q produces no output regardless of Mode. Without --stats this
+		// sink is unused (engine.Run swaps in its own early-exit QuitSink);
+		// with --stats it IS the worker sink, running a silent full search
+		// so the stats accumulator sees every match. isStandard=false keeps
+		// matchTracker from doing any standard-mode display work (binary
+		// messages, byte counting) on its behalf.
+		return discardSink{}, false
+	}
 	switch cfg.Mode {
 	case ModeCount:
 		c := printer.NewCount(dest)

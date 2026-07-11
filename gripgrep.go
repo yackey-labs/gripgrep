@@ -116,7 +116,7 @@ func (o Options) SearchStream(pattern string, paths []string, fn func(Match) boo
 	}
 
 	errW := newErrCollector()
-	_, err = engine.Run(econf, newWorker, nil, stopped.Load, discardBinaryMessaging(), errW)
+	_, err = engine.Run(econf, newWorker, nil, stopped.Load, discardBinaryMessaging(), nil, errW)
 	if err != nil {
 		return err
 	}
@@ -144,7 +144,7 @@ func (o Options) FilesWithMatch(pattern string, paths ...string) ([]string, erro
 	}
 
 	errW := newErrCollector()
-	if _, err := engine.Run(econf, newWorker, nil, nil, discardBinaryMessaging(), errW); err != nil {
+	if _, err := engine.Run(econf, newWorker, nil, nil, discardBinaryMessaging(), nil, errW); err != nil {
 		return out, err
 	}
 	return out, errW.err()
@@ -171,7 +171,7 @@ func (o Options) CountMatches(pattern string, paths ...string) (map[string]int, 
 	}
 
 	errW := newErrCollector()
-	if _, err := engine.Run(econf, newWorker, nil, nil, discardBinaryMessaging(), errW); err != nil {
+	if _, err := engine.Run(econf, newWorker, nil, nil, discardBinaryMessaging(), nil, errW); err != nil {
 		return out, err
 	}
 	return out, errW.err()

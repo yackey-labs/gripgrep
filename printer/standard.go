@@ -833,6 +833,31 @@ func (p *Standard) findSpans(line []byte) []matchSpan {
 	return p.spanScratch
 }
 
+// CountMatches returns the number of match occurrences on line, using the
+// exact same greedy, non-overlapping, empty-match-aware span-finding as
+// -o/--count-matches (findMatchSpans) -- so the per-line occurrence count
+// that feeds --stats' "N matches" line agrees, byte for byte, with what
+// --count-matches would report for the same input. On a line that does not
+// match (an inverted -v line delivered as a "matched" result, for
+// instance) it returns 0, matching rg's stats accounting, which counts the
+// pattern's real occurrences and so reports 0 matches / N matched lines
+// under -v. matcher nil returns 0. A scratch slice is allocated per call;
+// this is only ever invoked when --stats is active, never on the default
+// hot path.
+//
+// line's trailing '\n' is stripped first (trimLineTerminator), exactly as
+// the -o/--count-matches sinks do before their own findSpans: an empty
+// pattern must count one position per character plus one before the line's
+// end, NOT an extra phantom occurrence at the '\n' itself, so --stats' "N
+// matches" stays identical to --count-matches for every pattern (verified:
+// empty pattern over the 3-line fixture is 26, not 29).
+func CountMatches(matcher match.Matcher, line []byte) int {
+	if matcher == nil {
+		return 0
+	}
+	return len(findMatchSpans(nil, matcher, trimLineTerminator(line)))
+}
+
 // findMatchSpans is findSpans' actual algorithm, factored out to a
 // package-level function (rather than a *Standard method) so Count can
 // share it too -- Count.Matched needs exactly this same span-finding

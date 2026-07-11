@@ -5,6 +5,7 @@ import (
 	"io"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/yackey-labs/gripgrep/printer"
 	"github.com/yackey-labs/gripgrep/search"
@@ -110,7 +111,11 @@ type Result struct {
 // covers it); the facade's SearchStream passes quiet=nil and its own
 // stop func backed by the same flag its sinks set when the caller's
 // early-stop callback returns false.
-func Run(cfg Config, newWorker NewWorkerFunc, quiet QuitSink, stop func() bool, bm BinaryMessaging, stderr io.Writer) (Result, error) {
+// stats, when non-nil, is the shared --stats accumulator every per-file
+// matchTracker adds into (see StatsAccumulator). nil disables all stats
+// bookkeeping, keeping the no-stats path cost-free. Callers with no --stats
+// need (the root facade) pass nil.
+func Run(cfg Config, newWorker NewWorkerFunc, quiet QuitSink, stop func() bool, bm BinaryMessaging, stats *StatsAccumulator, stderr io.Writer) (Result, error) {
 	typesMatcher, err := buildTypes(cfg.TypeChanges)
 	if err != nil {
 		return Result{}, err
@@ -206,7 +211,11 @@ func Run(cfg Config, newWorker NewWorkerFunc, quiet QuitSink, stop func() bool, 
 			heading:           bm.Heading,
 			contextEnabled:    bm.ContextEnabled,
 			dest:              bm.Dest,
-			searcher:       w.Searcher,
+			searcher:          w.Searcher,
+			stats:             stats,
+		}
+		if stats != nil {
+			tracked.statsStart = time.Now()
 		}
 
 		if mmapOK {

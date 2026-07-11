@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"strconv"
 	"sync/atomic"
+	"time"
 
 	"github.com/yackey-labs/gripgrep/printer"
 	"github.com/yackey-labs/gripgrep/search"
@@ -113,6 +114,52 @@ type matchTracker struct {
 	// search).
 	foundBinary       bool
 	foundBinaryOffset int64
+	// stats, when non-nil (i.e. --stats is active), receives this file's
+	// counter contributions. When nil, every stats path below is skipped
+	// entirely, keeping the default no-stats search allocation- and
+	// timing-free. statsStart is the per-file search start, set by Run
+	// just before the searcher runs, and read in Finish for the "seconds
+	// spent searching" total.
+	stats      *StatsAccumulator
+	statsStart time.Time
+}
+
+// keepSearching reports the more value matchTracker should return to the
+// searcher. With --stats active, rg keeps searching a file to completion
+// even in modes that would otherwise abort early (-l/--files-with-matches,
+// -q, and the intra-file parallel replay's early stop) so the reported
+// counts cover the whole input, not just up to the first match -- so the
+// tracker forces more=true, overriding the underlying sink's abort request.
+// The searcher's own -m/--max-count limit is enforced independently (in
+// core.go and the parallel replay loop, checked before delivery, never via
+// a sink more=false), so forcing more=true here never bypasses it. Without
+// --stats, the sink's real more value passes through unchanged.
+func (t *matchTracker) keepSearching(actual bool) bool {
+	if t.stats != nil {
+		return true
+	}
+	return actual
+}
+
+// statsBinaryTruncated reports whether a match on a line starting at
+// lineOffset falls at or beyond this file's binary-detection point and so
+// must NOT be counted toward --stats. rg stops counting the instant it
+// detects binary data -- even in convert mode, where it keeps reading to
+// EOF to reproduce the "binary file matches" message -- so a match
+// physically after the NUL, which gg's convert path still delivers to the
+// sink, contributes nothing to the totals. This mirrors rg's "1 matches"
+// for an explicitly-named binary file with a match on each side of the NUL
+// (the pre-NUL match counts, the post-NUL one does not). Only ever true
+// under a binary mode with a detected offset; a text search or a NUL-free
+// file never truncates. bytes-searched is deliberately NOT truncated to the
+// offset here (gg reports the full deterministic extent) -- see the parity
+// doc's stats deviations note.
+func (t *matchTracker) statsBinaryTruncated(lineOffset int64) bool {
+	if t.binMode == search.BinaryNone {
+		return false
+	}
+	off, ok := t.effectiveBinaryOffset()
+	return ok && lineOffset >= off
 }
 
 // noteLineNUL checks a just-delivered Matched/Context line's own bytes for
@@ -200,13 +247,25 @@ func (t *matchTracker) binaryConvertSuppressed(lineEnd int64) bool {
 // suppression must live above that shared path, applied only to the
 // standard-mode display sink.
 func (t *matchTracker) Matched(m *search.Match) (bool, error) {
+	if t.stats != nil && !t.statsBinaryTruncated(m.Offset) {
+		// Count occurrences on this line the same way -o/--count-matches
+		// does, so the "N matches" total agrees with --count-matches; an
+		// inverted line yields 0 (see StatsAccumulator's doc). Counting
+		// here, above the binary-suppression early return below, matches
+		// rg: a match the searcher delivered still counts toward stats even
+		// if standard-mode display later withholds its bytes -- EXCEPT past
+		// the binary-detection point, where rg stops counting entirely (see
+		// statsBinaryTruncated).
+		t.stats.AddMatchedLine(printer.CountMatches(t.searcher.Matcher, m.Line))
+	}
 	if t.standard {
 		t.noteLineNUL(m.Offset, m.Line)
 		if t.binaryConvertSuppressed(m.Offset + int64(len(m.Line))) {
-			return true, nil
+			return t.keepSearching(true), nil
 		}
 	}
-	return t.Sink.Matched(m)
+	more, err := t.Sink.Matched(m)
+	return t.keepSearching(more), err
 }
 
 // Context overrides the embedded Sink for the same reason as Matched.
@@ -214,10 +273,11 @@ func (t *matchTracker) Context(c *search.Ctx) (bool, error) {
 	if t.standard {
 		t.noteLineNUL(c.Offset, c.Line)
 		if t.binaryConvertSuppressed(c.Offset + int64(len(c.Line))) {
-			return true, nil
+			return t.keepSearching(true), nil
 		}
 	}
-	return t.Sink.Context(c)
+	more, err := t.Sink.Context(c)
+	return t.keepSearching(more), err
 }
 
 // matchSignal reports whether this file's Stats should count towards the
@@ -236,6 +296,16 @@ func (t *matchTracker) matchSignal(stats *search.Stats) bool {
 }
 
 func (t *matchTracker) Finish(path string, stats *search.Stats) error {
+	if t.stats != nil {
+		// Record this file's aggregate contribution once, up front, so it
+		// counts regardless of which binary-handling branch below returns:
+		// every file the searcher ran (and therefore called Finish on) is a
+		// "file searched", matching rg's per-search stats. filesWithMatch
+		// keys off the raw searcher matched signal (stats.Matched), not the
+		// display sink, so -v (whose inverted output lines set Matched)
+		// contributes exactly as rg's does.
+		t.stats.AddFile(stats.BytesSearched, stats.Matched, time.Since(t.statsStart))
+	}
 	if t.binMode == search.BinaryQuit && stats.Binary {
 		if !t.standard {
 			// -c/-l: discard entirely, without even calling the

@@ -133,6 +133,27 @@ const (
 	MmapNever
 )
 
+// BufferMode mirrors rg's --line-buffered/--block-buffered choice
+// (flags.rs/hiargs.rs): the default is auto -- line-buffered when stdout
+// is a terminal, block-buffered otherwise -- while --line-buffered and
+// --block-buffered force one or the other. Both flags (and their
+// negations) resolve into this single field, so the LAST one on the
+// command line wins, exactly as rg's own single BufferMode value does.
+// The choice is byte-invisible in captured output (it only changes flush
+// cadence to a live consumer), so it exists purely to be accepted with rg
+// parity and to drive gg's honest flush policy -- see cmd/gg's execute.
+type BufferMode int
+
+const (
+	// BufferAuto is the default and the state both negations restore:
+	// line-buffered to a tty, block-buffered to a pipe/file.
+	BufferAuto BufferMode = iota
+	// BufferLine forces line buffering (--line-buffered).
+	BufferLine
+	// BufferBlock forces block buffering (--block-buffered).
+	BufferBlock
+)
+
 // TypeChangeKind identifies which of -t/-T/--type-add/--type-clear one
 // TypeChange represents -- mirrors rg's own TypeChange enum (lowargs.rs).
 // Defined here, not in package filetype, so this file keeps its "no
@@ -420,6 +441,18 @@ type Config struct {
 	// the same as unset, which is why this is a pointer rather than a
 	// plain int with a 0-means-unlimited convention.
 	MaxCount *int
+
+	// Stats is rg's --stats/--no-stats: after the normal results, print
+	// an aggregate summary block (matches, matched lines, files, bytes,
+	// timing). Last flag wins (--stats then --no-stats -> off). The block
+	// is emitted for every search mode (standard, -c/-l/--count-matches,
+	// -q, ...) but NOT for --files/--type-list, which never run a search
+	// -- see execute. No pluralization is ever applied ("1 matched
+	// lines"), matching rg's fixed format. See engine.StatsAccumulator.
+	Stats bool
+	// Buffer is rg's --line-buffered/--block-buffered choice -- see
+	// BufferMode. Byte-invisible; drives execute's stdout flush policy.
+	Buffer BufferMode
 
 	Threads int        // -j/--threads; 0 = auto (rg's None)
 	Binary  BinaryMode // resolved from -a/--text and -uuu; last one processed wins
@@ -1183,6 +1216,43 @@ func buildV1Flags() []*flagSpec {
 			long: "invert-match", short: 'v', negated: "no-invert-match", kind: kindSwitch,
 			applySwitch: func(cfg *Config, _ *parseState, on bool) error {
 				cfg.Invert = on
+				return nil
+			},
+		},
+		{
+			// --stats/--no-stats: last flag wins via the switch's on value.
+			long: "stats", negated: "no-stats", kind: kindSwitch,
+			applySwitch: func(cfg *Config, _ *parseState, on bool) error {
+				cfg.Stats = on
+				return nil
+			},
+		},
+		{
+			// --line-buffered/--no-line-buffered: forces line buffering, or
+			// restores auto on negation. Shares Config.Buffer with
+			// --block-buffered, so the last of the two on the command line
+			// wins (rg's single BufferMode value) -- see BufferMode's doc.
+			long: "line-buffered", negated: "no-line-buffered", kind: kindSwitch,
+			applySwitch: func(cfg *Config, _ *parseState, on bool) error {
+				if on {
+					cfg.Buffer = BufferLine
+				} else {
+					cfg.Buffer = BufferAuto
+				}
+				return nil
+			},
+		},
+		{
+			// --block-buffered/--no-block-buffered: forces block buffering,
+			// or restores auto on negation. See --line-buffered above for the
+			// shared-field last-wins semantics.
+			long: "block-buffered", negated: "no-block-buffered", kind: kindSwitch,
+			applySwitch: func(cfg *Config, _ *parseState, on bool) error {
+				if on {
+					cfg.Buffer = BufferBlock
+				} else {
+					cfg.Buffer = BufferAuto
+				}
 				return nil
 			},
 		},
