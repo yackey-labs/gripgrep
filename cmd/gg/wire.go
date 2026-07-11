@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 
+	"github.com/yackey-labs/gripgrep/filetype"
 	"github.com/yackey-labs/gripgrep/internal/engine"
 	"github.com/yackey-labs/gripgrep/match"
 	"github.com/yackey-labs/gripgrep/printer"
@@ -33,6 +34,12 @@ func execute(cfg *Config, stdin io.Reader, stdout, stderr io.Writer) int {
 		// here too (--files takes no PATTERN of any kind), so
 		// resolvePatternFiles is never called on this path.
 		return executeFiles(cfg, stdout, stderr)
+	}
+	if cfg.Mode == ModeTypes {
+		// --type-list skips the matcher/searcher/walk pipeline entirely
+		// (see executeTypes' doc) -- dispatched before buildMatcher runs
+		// since --type-list needs no pattern at all.
+		return executeTypes(cfg, stdout, stderr)
 	}
 
 	if err := resolvePatternFiles(cfg, stdin); err != nil {
@@ -185,6 +192,7 @@ func toEngineConfig(cfg *Config) engine.Config {
 		Globs:               cfg.Globs,
 		IGlobs:              cfg.IGlobs,
 		GlobCaseInsensitive: cfg.GlobCaseInsensitive,
+		TypeChanges:         convertTypeChanges(cfg.TypeChanges),
 		MaxFilesize:         cfg.MaxFilesize,
 		MaxDepth:            cfg.MaxDepth,
 		Threads:             cfg.Threads,
@@ -194,6 +202,35 @@ func toEngineConfig(cfg *Config) engine.Config {
 		BeforeContext:       cfg.ContextBefore,
 		AfterContext:        cfg.ContextAfter,
 		MaxCount:            cfg.MaxCount,
+	}
+}
+
+// convertTypeChanges translates cfg.TypeChanges (cmd/gg's own, dependency-
+// free TypeChange -- see its doc) into []filetype.Change, ORDER PRESERVED:
+// -t/-T/--type-add/--type-clear precedence depends on their exact relative
+// CLI order (see filetype.Builder's doc), which this is a 1:1 element-wise
+// mapping of, never a regrouping.
+func convertTypeChanges(changes []TypeChange) []filetype.Change {
+	if len(changes) == 0 {
+		return nil
+	}
+	out := make([]filetype.Change, len(changes))
+	for i, c := range changes {
+		out[i] = filetype.Change{Kind: convertTypeChangeKind(c.Kind), Arg: c.Arg}
+	}
+	return out
+}
+
+func convertTypeChangeKind(k TypeChangeKind) filetype.ChangeKind {
+	switch k {
+	case TypeNegate:
+		return filetype.Negate
+	case TypeAdd:
+		return filetype.Add
+	case TypeClear:
+		return filetype.Clear
+	default:
+		return filetype.Select
 	}
 }
 

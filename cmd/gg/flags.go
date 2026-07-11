@@ -64,6 +64,16 @@ const (
 	// last-flag-wins interaction with -c/-l, and ParseArgs for how it
 	// exempts positionals from the "at least one pattern" requirement.
 	ModeFiles
+	// ModeTypes is --type-list: print rg's file-type table and exit,
+	// without searching or walking anything. Same last-flag-wins and
+	// no-pattern-required treatment as ModeFiles (see both docs above);
+	// -t/-T/--type-add/--type-clear are FILTER flags (Config.TypeChanges),
+	// not mode flags, so combining them with --type-list is legal and
+	// still fails closed on a bad -t/--type-add (verified against the
+	// real rg binary: `rg -t bogus --type-list` still exits 2 with
+	// "unrecognized file type: bogus" -- rg builds its Types matcher
+	// unconditionally, before dispatching on Mode).
+	ModeTypes
 )
 
 // BinaryMode mirrors rg's BinaryMode.
@@ -102,6 +112,37 @@ const (
 	MmapAlways
 	MmapNever
 )
+
+// TypeChangeKind identifies which of -t/-T/--type-add/--type-clear one
+// TypeChange represents -- mirrors rg's own TypeChange enum (lowargs.rs).
+// Defined here, not in package filetype, so this file keeps its "no
+// dependency on any other gripgrep package" property (see the top doc
+// comment): wire.go translates a []TypeChange into []filetype.Change at
+// the cmd/gg -> engine boundary, the same pattern convertCaseMode/
+// convertBinaryMode already use for CaseMode/BinaryMode.
+type TypeChangeKind int
+
+const (
+	// TypeSelect is -t/--type NAME.
+	TypeSelect TypeChangeKind = iota
+	// TypeNegate is -T/--type-not NAME.
+	TypeNegate
+	// TypeAdd is --type-add TYPESPEC.
+	TypeAdd
+	// TypeClear is --type-clear NAME.
+	TypeClear
+)
+
+// TypeChange is one -t/-T/--type-add/--type-clear flag occurrence, in the
+// exact order it appeared on the command line -- order is significant
+// (see filetype.Builder's doc, which Config.TypeChanges is threaded into
+// unchanged via wire.go).
+type TypeChange struct {
+	Kind TypeChangeKind
+	// Arg is the type NAME for TypeSelect/TypeNegate/TypeClear, or the
+	// raw TYPESPEC string for TypeAdd.
+	Arg string
+}
 
 // Config is the parsed, plain-data result of ParseArgs. It has no
 // dependency on any gripgrep library package.
@@ -145,8 +186,14 @@ type Config struct {
 	// insensitive: makes every Globs (not IGlobs, already always
 	// case-insensitive) pattern match case-insensitively.
 	GlobCaseInsensitive bool
-	Unrestricted        int   // 0-3: the -u/-uu/-uuu level actually given, kept for diagnostics even though NoIgnore/Hidden/Binary already reflect its effect
-	MaxFilesize         int64 // 0 = unlimited (rg's None)
+	// TypeChanges are -t/--type, -T/--type-not, --type-add, and
+	// --type-clear, each APPENDED in the exact order given on the command
+	// line (never grouped by flag) -- see TypeChange's doc for why order
+	// is significant. wire.go translates this verbatim into
+	// []filetype.Change.
+	TypeChanges  []TypeChange
+	Unrestricted int   // 0-3: the -u/-uu/-uuu level actually given, kept for diagnostics even though NoIgnore/Hidden/Binary already reflect its effect
+	MaxFilesize  int64 // 0 = unlimited (rg's None)
 	// MaxDepth is -d/--max-depth: nil = unset/unlimited. A non-nil 0 is a
 	// real, legal value (rg parity, verified against the real rg binary:
 	// `rg --max-depth 0 dir/` searches nothing) -- NOT the same as
@@ -233,10 +280,10 @@ type Config struct {
 	// still reports the position in the UNTRIMMED line -- trimming only
 	// ever changes what TEXT gets printed, never the numbers around it.
 	// See printer.Standard.Trim's doc for the full breakdown.
-	Trim bool
-	Mode SearchMode
-	Quiet      bool // -q/--quiet; independent of Mode, matches rg (quiet suppresses output regardless of search mode)
-	Color      ColorMode
+	Trim  bool
+	Mode  SearchMode
+	Quiet bool // -q/--quiet; independent of Mode, matches rg (quiet suppresses output regardless of search mode)
+	Color ColorMode
 	// ContextBefore/ContextAfter are already resolved from rg's
 	// independently-tracked -A/-B/-C (see resolveContext); -A/-B always
 	// partially override -C's corresponding side, regardless of order.
@@ -478,6 +525,54 @@ func buildV1Flags() []*flagSpec {
 					return err
 				}
 				cfg.MaxFilesize = n
+				return nil
+			},
+		},
+		{
+			// -t/--type TYPE: repeatable, appended to the SAME ordered
+			// TypeChanges list -T/--type-add/--type-clear also append to
+			// (see TypeChange's doc) -- never resolved to a Config field of
+			// its own the way -c/-g/etc. are, since -t/-T's own precedence
+			// against each other depends on this cross-flag order.
+			long: "type", short: 't', kind: kindValue,
+			applyValue: func(cfg *Config, _ *parseState, val string) error {
+				cfg.TypeChanges = append(cfg.TypeChanges, TypeChange{Kind: TypeSelect, Arg: val})
+				return nil
+			},
+		},
+		{
+			// -T/--type-not TYPE: see -t/--type above.
+			long: "type-not", short: 'T', kind: kindValue,
+			applyValue: func(cfg *Config, _ *parseState, val string) error {
+				cfg.TypeChanges = append(cfg.TypeChanges, TypeChange{Kind: TypeNegate, Arg: val})
+				return nil
+			},
+		},
+		{
+			// --type-add TYPESPEC: "name:glob" or "name:include:list" --
+			// TYPESPEC syntax is validated downstream (package filetype),
+			// not here (this parser has no dependency on it -- see the top
+			// doc comment).
+			long: "type-add", kind: kindValue,
+			applyValue: func(cfg *Config, _ *parseState, val string) error {
+				cfg.TypeChanges = append(cfg.TypeChanges, TypeChange{Kind: TypeAdd, Arg: val})
+				return nil
+			},
+		},
+		{
+			long: "type-clear", kind: kindValue,
+			applyValue: func(cfg *Config, _ *parseState, val string) error {
+				cfg.TypeChanges = append(cfg.TypeChanges, TypeChange{Kind: TypeClear, Arg: val})
+				return nil
+			},
+		},
+		{
+			// --type-list has no negation (rg's own TypeList::update
+			// asserts "has no negation"), same shape as --files above.
+			// Sets Mode, not a TypeChanges entry -- see ModeTypes' doc.
+			long: "type-list", kind: kindSwitch,
+			applySwitch: func(cfg *Config, _ *parseState, _ bool) error {
+				cfg.Mode = ModeTypes
 				return nil
 			},
 		},
@@ -905,7 +1000,7 @@ func ParseArgs(args []string) (*Config, error) {
 		return cfg, nil
 	}
 
-	if cfg.Mode == ModeFiles {
+	if cfg.Mode == ModeFiles || cfg.Mode == ModeTypes {
 		// --files never needs a PATTERN (verified against the real rg
 		// binary: `rg --files somepath` treats "somepath" as a PATH, not
 		// a pattern, and bare `rg --files` with zero positionals
@@ -915,6 +1010,13 @@ func ParseArgs(args []string) (*Config, error) {
 		// every file, ignoring "pat" entirely) -- cfg.Patterns may or may
 		// not be populated by -e above; ModeFiles callers must not read
 		// it.
+		//
+		// --type-list needs no PATTERN or PATH at all -- it ignores every
+		// positional outright (verified against the real rg binary: `rg
+		// --type-list foo bar` prints the type table, `foo`/`bar` are
+		// never treated as a pattern or paths) -- but populating cfg.Paths
+		// here anyway is harmless (executeTypes never reads it) and keeps
+		// this branch a single shared case with ModeFiles.
 		cfg.Paths = ps.positionals
 	} else if ps.sawPattern {
 		// -e/--regexp was given at least once: per rg (Regexp's doc

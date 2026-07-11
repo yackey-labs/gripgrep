@@ -17,7 +17,7 @@ document is regenerated).
 | ripgrep binary (golden suite + CI benchmarks) | **rg 15.1.0** (single pin: `internal/bench/rg-version.txt`, enforced by the suite itself) | every implemented flag is byte-diff-verified against this binary (17-case e2e suite + full-tree diffs) |
 | gripgrep | `4243295` / pending release | the status column below |
 
-<!-- BEGIN GENERATED: score -->**Score: 43 of 104 rg flags implemented.**<!-- END GENERATED --> The gap is
+<!-- BEGIN GENERATED: score -->**Score: 48 of 104 rg flags implemented.**<!-- END GENERATED --> The gap is
 dominated by a few feature clusters (see the notes after the table):
 the file-type system, PCRE2/multiline, encodings, output decoration,
 and replacement.
@@ -92,10 +92,10 @@ unknown-flag error, exit 2)
 | `--no-ignore-vcs` (+`--ignore-vcs`) |  | ❌ | Don't use ignore files from source control. |
 | `--no-require-git` (+`--require-git`) |  | ❌ | Use .gitignore outside of git repositories. |
 | `--one-file-system` (+`--no-one-file-system`) |  | ❌ | Skip directories on other file systems. |
-| `--type` | `-t` | ❌ | Only search files matching TYPE. |
-| `--type-add` |  | ❌ | Add a new glob for a file type. |
-| `--type-clear` |  | ❌ | Clear globs for a file type. |
-| `--type-not` | `-T` | ❌ | Do not search files matching TYPE. |
+| `--type` | `-t` | ✅ | Only search files matching TYPE. |
+| `--type-add` |  | ✅ | Add a new glob for a file type. |
+| `--type-clear` |  | ✅ | Clear globs for a file type. |
+| `--type-not` | `-T` | ✅ | Do not search files matching TYPE. |
 | `--unrestricted` | `-u` | ✅ | Reduce the level of "smart" filtering. |
 
 ### Output
@@ -166,7 +166,7 @@ unknown-flag error, exit 2)
 | `--generate` |  | ❌ | Generate man pages and completion scripts. |
 | `--no-config` |  | ❌ | Never read configuration files. |
 | `--pcre2-version` |  | ❌ | Print the version of PCRE2 that ripgrep uses. |
-| `--type-list` |  | ❌ | Show all supported file types. |
+| `--type-list` |  | ✅ | Show all supported file types. |
 | `--version` | `-V` | ✅ | Print ripgrep's version. |
 
 <!-- END GENERATED -->
