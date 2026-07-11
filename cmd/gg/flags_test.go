@@ -911,6 +911,55 @@ func TestPassThruContextInteraction(t *testing.T) {
 	}
 }
 
+// TestStatsFlag covers --stats/--no-stats last-flag-wins parsing.
+func TestStatsFlag(t *testing.T) {
+	cases := []struct {
+		name string
+		args []string
+		want bool
+	}{
+		{"absent", []string{"pat"}, false},
+		{"stats", []string{"--stats", "pat"}, true},
+		{"no-stats", []string{"--no-stats", "pat"}, false},
+		{"stats then no-stats", []string{"--stats", "--no-stats", "pat"}, false},
+		{"no-stats then stats", []string{"--no-stats", "--stats", "pat"}, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := mustParse(t, tc.args...).Stats; got != tc.want {
+				t.Errorf("Stats = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestBufferFlags covers --line-buffered/--block-buffered (and their
+// negations) resolving into the single Buffer field, last flag winning --
+// mirroring rg's one BufferMode value. The negations restore auto.
+func TestBufferFlags(t *testing.T) {
+	cases := []struct {
+		name string
+		args []string
+		want BufferMode
+	}{
+		{"default auto", []string{"pat"}, BufferAuto},
+		{"line", []string{"--line-buffered", "pat"}, BufferLine},
+		{"block", []string{"--block-buffered", "pat"}, BufferBlock},
+		{"line then block: block wins", []string{"--line-buffered", "--block-buffered", "pat"}, BufferBlock},
+		{"block then line: line wins", []string{"--block-buffered", "--line-buffered", "pat"}, BufferLine},
+		{"line then no-line: auto", []string{"--line-buffered", "--no-line-buffered", "pat"}, BufferAuto},
+		{"block then no-block: auto", []string{"--block-buffered", "--no-block-buffered", "pat"}, BufferAuto},
+		{"no-line alone: auto", []string{"--no-line-buffered", "pat"}, BufferAuto},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := mustParse(t, tc.args...).Buffer; got != tc.want {
+				t.Errorf("Buffer = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 // TestUnescapeSeparator ports rg's own bstr::ByteVec::unescape_bytes
 // test table directly (the crate --context-separator/--field-match-
 // separator/--field-context-separator all funnel through -- see
