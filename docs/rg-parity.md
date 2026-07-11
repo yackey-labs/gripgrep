@@ -17,7 +17,7 @@ document is regenerated).
 | ripgrep binary (golden suite + CI benchmarks) | **rg 15.1.0** (single pin: `internal/bench/rg-version.txt`, enforced by the suite itself) | every implemented flag is byte-diff-verified against this binary (17-case e2e suite + full-tree diffs) |
 | gripgrep | `4243295` / pending release | the status column below |
 
-<!-- BEGIN GENERATED: score -->**Score: 74 of 104 rg flags implemented.**<!-- END GENERATED --> The gap is
+<!-- BEGIN GENERATED: score -->**Score: 76 of 104 rg flags implemented.**<!-- END GENERATED --> The gap is
 dominated by a few feature clusters (see the notes after the table):
 the file-type system, PCRE2/multiline, encodings, output decoration,
 and replacement.
@@ -131,9 +131,9 @@ unknown-flag error, exit 2)
 | `--pretty` | `-p` | ❌ | Alias for colors, headings and line numbers. |
 | `--quiet` | `-q` | ✅ | Do not print anything to stdout. |
 | `--replace` | `-r` | ⚠️ | Replace matches with the given text. |
-| `--sort` |  | ⚠️ | Sort results in ascending order. |
+| `--sort` |  | ✅ | Sort results in ascending order. |
 | `--sort-files` (+`--no-sort-files`) |  | ❌ | (DEPRECATED) Sort results by file path. |
-| `--sortr` |  | ⚠️ | Sort results in descending order. |
+| `--sortr` |  | ✅ | Sort results in descending order. |
 | `--trim` (+`--no-trim`) |  | ✅ | Trim prefix whitespace from matches. |
 | `--vimgrep` |  | ✅ | Print results in a vim compatible format. |
 | `--with-filename` | `-H` | ✅ | Print the file path with each matching line. |
@@ -207,8 +207,7 @@ Not implemented (the honest list, matching the table above):
 - **Encodings** (`-E/--encoding`): gg searches bytes/UTF-8 (+BOM strip)
   only; no transcoding.
 - **Replacement** (`-r/--replace`), **JSON output** (`--json`),
-  **sorting** (`--sort/--sortr`), **preprocessors** (`--pre`),
-  **compressed search** (`-z`).
+  **preprocessors** (`--pre`), **compressed search** (`-z`).
 - **Output decoration**: `--column`, `--vimgrep`,
   `-o/--only-matching`, `--passthru`, separators/`--field-*` knobs,
   hyperlinks.
