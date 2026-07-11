@@ -1,6 +1,9 @@
 package gripgrep
 
-import "github.com/yackey-labs/gripgrep/internal/engine"
+import (
+	"github.com/yackey-labs/gripgrep/filetype"
+	"github.com/yackey-labs/gripgrep/internal/engine"
+)
 
 // Match is one matched line, returned by Search/SearchStream. Every
 // field is an independent copy -- see the package doc's memory-safety
@@ -117,6 +120,58 @@ type Options struct {
 
 	MaxFilesize int64 // 0 = unlimited, like the CLI's default
 	Workers     int   // -j/--threads; 0 = auto, like the CLI's default
+
+	// Types is -t/--type NAME, repeatable: restrict the search to files
+	// gg/rg recognizes as one of these types (e.g. "go", "py" -- the same
+	// names -t accepts; see the filetype package's default table). nil =
+	// no type filtering (CLI default). See TypesNot for the combined-
+	// ordering rule when a name appears in both.
+	//
+	// --type-add/--type-clear (which MODIFY the type table, rather than
+	// select from it) are deliberately not surfaced: they're CLI input
+	// mechanics, not a "what matches or where we look" concern (see the
+	// SDK plan's design principles, the same reasoning that keeps -f out
+	// of this struct) -- a library caller already holds its own paths as
+	// values and can pre-filter them, or use Globs instead. An
+	// unrecognized name in Types or TypesNot surfaces as an error from
+	// the verb that used them, with the exact same "unrecognized file
+	// type: NAME" text the CLI itself reports (this package builds the
+	// same filetype.Matcher the CLI does, so the error is never forked).
+	Types []string
+	// TypesNot is -T/--type-not NAME, repeatable: excludes files whose
+	// type matches one of these names. nil = no exclusion (CLI default).
+	//
+	// When the SAME type name appears in both Types and TypesNot, the
+	// exclusion wins: this package always applies every Types entry
+	// before every TypesNot entry when building the underlying type
+	// table, and the filetype package's last-entry-wins precedence (see
+	// filetype.Builder's doc) means TypesNot's entries -- applied last --
+	// take precedence on a collision. The CLI can express either order by
+	// interleaving -t/-T on the command line, which two independent
+	// slice fields can't reproduce; this package picks that one
+	// deterministic resolution rather than leaving the outcome dependent
+	// on which field happens to come first in the struct literal.
+	TypesNot []string
+}
+
+// typeChanges converts o.Types/o.TypesNot into the []filetype.Change
+// buildTypes needs, always emitting every Types (Select) entry before
+// every TypesNot (Negate) entry -- see TypesNot's doc for why, and for
+// the resulting "exclusion wins on a name collision" resolution. nil
+// when neither field is set, matching buildTypes' own nil-changes fast
+// path (internal/engine/build.go's buildTypes doc).
+func (o Options) typeChanges() []filetype.Change {
+	if len(o.Types) == 0 && len(o.TypesNot) == 0 {
+		return nil
+	}
+	changes := make([]filetype.Change, 0, len(o.Types)+len(o.TypesNot))
+	for _, t := range o.Types {
+		changes = append(changes, filetype.Change{Kind: filetype.Select, Arg: t})
+	}
+	for _, t := range o.TypesNot {
+		changes = append(changes, filetype.Change{Kind: filetype.Negate, Arg: t})
+	}
+	return changes
 }
 
 // resolveContext mirrors cmd/gg's resolveContext (flags.go) as closely
@@ -204,5 +259,6 @@ func (o Options) toEngineConfig(pattern string, paths []string) engine.Config {
 		BeforeContext:       before,
 		AfterContext:        after,
 		MaxCount:            intPtrIfSet(o.MaxCount),
+		TypeChanges:         o.typeChanges(),
 	}
 }
