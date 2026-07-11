@@ -9,7 +9,7 @@ import (
 // Set is a compiled collection of gitignore-style glob patterns, queried
 // as one combined unit per path.
 //
-// Patterns are dispatched through nine fast classes before falling back
+// Patterns are dispatched through ten fast classes before falling back
 // to regexp: an exact full-path literal map, a basename literal map, an
 // extension map (for patterns of the exact shape `**/*.ext`), a suffix
 // list (`**/*<literal tail>` whose tail isn't a single dot-segment, e.g.
@@ -19,14 +19,17 @@ import (
 // list (`**/<prefix>*<suffix>`, e.g. `#*#` -- see betweenOfTokens), a
 // path-between list for rooted single-wildcard patterns matched against
 // the whole path rather than just the basename (e.g. `/*.spec` or
-// `/arch/*/include/generated/` -- see pathBetweenOfTokens), and a chain
+// `/arch/*/include/generated/` -- see pathBetweenOfTokens), a chain
 // list for basename patterns with two or more wildcards separating
-// literal runs (e.g. `*.c.0*.*` -- see chainOfTokens). The
-// prefix/contains/between classes were added by M3 #23's
-// evaluation-count census of real-world .gitignore files (the Linux
-// kernel's own); path-between and chain were added by round #27's
-// follow-up census once those three no longer left much regex-fallback
-// weight to find. Every one of them was landing in the regex fallback
+// literal runs (e.g. `*.c.0*.*` -- see chainOfTokens), and a suffix-path
+// list for `**/`-prefixed multi-segment literal tails matched against the
+// whole path (e.g. `**/.claude/settings.local.json` -- see
+// suffixPathOfTokens). The prefix/contains/between classes were added by
+// an evaluation-count census of real-world .gitignore files (the Linux
+// kernel's own); path-between and chain were added by a follow-up census
+// once those three no longer left much regex-fallback weight to find; the
+// suffix-path class was added once a real global core.excludesFile pattern
+// was in play. Every one of them was landing in the regex fallback
 // and being evaluated on nearly every path in the entire tree. Every
 // other pattern (containing `?`, character classes, alternates, or more
 // wildcards than a class here handles) compiles to a regexp and is tried
@@ -42,6 +45,7 @@ type Set struct {
 	betweens     []betweenEntry
 	pathBetweens []pathBetweenEntry
 	chains       []chainEntry
+	suffixPaths  []suffixPathEntry
 	regexes      []regexEntry
 }
 
@@ -109,6 +113,19 @@ type chainEntry struct {
 	chunks        [][]byte
 	anchoredStart bool
 	anchoredEnd   bool
+}
+
+// suffixPathEntry is a compiled kindSuffixPath pattern: `**/S` for a pure
+// literal S containing '/' (a multi-segment tail like
+// ".claude/settings.local.json" -- see suffixPathOfTokens). literal is S
+// and slashLiteral is "/"+S, both precomputed as []byte once at Build time
+// so Match's Equal/HasSuffix checks never allocate or convert. See
+// Set.Match's suffixPaths loop for the predicate these encode (faithful to
+// the regex `^(?:/?|.*/)S$` this class replaces).
+type suffixPathEntry struct {
+	patternRef
+	literal      []byte
+	slashLiteral []byte
 }
 
 type regexEntry struct {
@@ -197,6 +214,8 @@ func (b *Builder) Build() (*Set, error) {
 					chunks[i] = []byte(c)
 				}
 				s.chains = append(s.chains, chainEntry{patternRef: ref, chunks: chunks, anchoredStart: cp.chainAnchoredStart, anchoredEnd: cp.chainAnchoredEnd})
+			case kindSuffixPath:
+				s.suffixPaths = append(s.suffixPaths, suffixPathEntry{patternRef: ref, literal: []byte(cp.literal), slashLiteral: []byte("/" + cp.literal)})
 			case kindRegex:
 				s.regexes = append(s.regexes, regexEntry{patternRef: ref, re: cp.re})
 			}
@@ -369,6 +388,30 @@ func (s *Set) Match(path []byte, isDir bool) MatchResult {
 		}
 		if chainMatches(base, c.chunks, c.anchoredStart, c.anchoredEnd) {
 			bestIdx, bestWhitelist = c.index, c.isWhitelist
+		}
+	}
+
+	for i := range s.suffixPaths {
+		sp := &s.suffixPaths[i]
+		if sp.index <= bestIdx {
+			continue
+		}
+		if sp.isOnlyDir && !isDir {
+			continue
+		}
+		// Matched against the whole path (not base): `**/S` for a
+		// multi-segment literal S compiles today to `^(?:/?|.*/)S$`, which
+		// accepts path iff either path == S (the empty branch of `/?`) or
+		// path ends with "/"+S with a '\n'-free head (the `.*/` branch --
+		// the leading-'/' `/?` case is just an empty `.*`). RE2's `.` never
+		// matches '\n', so a component containing a newline before the
+		// final "/"+S must NOT match; bytes.IndexByte reproduces that byte
+		// for byte (an invalid-UTF-8 byte decodes to U+FFFD, which `.` does
+		// match, so only '\n' stops it). See suffixPathOfTokens.
+		if bytes.Equal(path, sp.literal) ||
+			(bytes.HasSuffix(path, sp.slashLiteral) &&
+				bytes.IndexByte(path[:len(path)-len(sp.slashLiteral)], '\n') < 0) {
+			bestIdx, bestWhitelist = sp.index, sp.isWhitelist
 		}
 	}
 

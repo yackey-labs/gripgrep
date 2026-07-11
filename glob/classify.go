@@ -225,7 +225,58 @@ func classifyFast(tokens []token) (literal, literal2 string, chunks []string, ch
 	if cs, as, ae, cok := chainOfTokens(tokens); cok {
 		return "", "", cs, as, ae, kindChain, true
 	}
+	if lit, sok := suffixPathOfTokens(tokens); sok {
+		return lit, "", nil, false, false, kindSuffixPath, true
+	}
 	return "", "", nil, false, false, 0, false
+}
+
+// suffixPathOfTokens returns (lit, true) if the pattern is `**/` followed
+// by a pure literal run lit that contains at least one '/', e.g.
+// `**/.claude/settings.local.json` (lit = ".claude/settings.local.json").
+// This is the multi-segment sibling of basenameLiteralOf: the same `**/`
+// unanchored prefix, but a literal tail spanning more than one path
+// segment, which basenameTokens (and therefore every basename-relative
+// class) rejects on its first interior '/'.
+//
+// The '/' requirement is what keeps this class disjoint from
+// basenameLiteralOf and pins the class boundary: a single-segment `**/foo`
+// is always claimed by basenameLiteralOf earlier in classifyFast, so it
+// never reaches here -- which matters because basenameLiteralOf and this
+// class do NOT share match semantics on the (pathological) case of a path
+// component containing a newline. This class is faithful to the regex
+// `**/S` compiles to today (`^(?:/?|.*/)S$`, whose `.*` cannot cross a
+// '\n'); basenameLiteralOf is not (it matches purely on the last path
+// component). Requiring '/' here guarantees this class only ever owns
+// shapes whose current, pre-optimization behavior IS that regex -- see
+// Set.Match's suffixPaths loop for the exact predicate this compiles to.
+//
+// Found via an evaluation-count census on the linux tree with a real
+// global core.excludesFile in play: `**/.claude/settings.local.json` (the
+// one pattern in a typical global git ignore file) was landing in the
+// regex fallback and evaluated on essentially every one of the tree's
+// ~104k entries -- the single largest regex-fallback contributor by a wide
+// margin once the basename-anchored and rooted single-wildcard classes had
+// already landed.
+func suffixPathOfTokens(tokens []token) (string, bool) {
+	if len(tokens) < 2 || tokens[0].kind != tRecursivePrefix {
+		return "", false
+	}
+	var sb strings.Builder
+	hasSlash := false
+	for _, t := range tokens[1:] {
+		if t.kind != tLiteral {
+			return "", false
+		}
+		if t.lit == '/' {
+			hasSlash = true
+		}
+		sb.WriteRune(t.lit)
+	}
+	if !hasSlash || sb.Len() == 0 {
+		return "", false
+	}
+	return sb.String(), true
 }
 
 // prefixOfTokens returns (prefix, true) if the pattern is `**/{lit}*` for
@@ -422,7 +473,7 @@ func basenameLiteralOf(tokens []token) (string, bool) {
 // nested "sub/foo.spec": the "middle" there is "sub/foo", which contains
 // a '/'. See Set.Match's pathBetweens loop for where that check lives.
 //
-// Found via round #27's post-#23 census on the linux tree:
+// Found via the post-#23 census on the linux tree:
 // `/*.spec`, `/arch/*/include/generated/`, `/processed-schema*.yaml`,
 // `/processed-schema*.json`, `/test_fortify/*.log`, `po/*.gmo`,
 // `/*.skel.h`, `policy/*.conf`, and `/load_address_*` were the largest
@@ -485,7 +536,7 @@ func pathBetweenOfTokens(tokens []token) (prefix, suffix string, ok bool) {
 // needs to backtrack: matching each chunk as early as possible only ever
 // leaves *more* room for the chunks still to come, never less).
 //
-// Found via round #27's census: after prefixOfTokens/containsOfTokens/
+// Found via the census: after prefixOfTokens/containsOfTokens/
 // betweenOfTokens (#23) and pathBetweenOfTokens (this round) had already
 // landed, `*.c.[012]*.*` was the single largest remaining regex
 // contributor on the linux tree -- its post-char-class-expansion variants

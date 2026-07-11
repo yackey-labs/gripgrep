@@ -21,6 +21,7 @@ const (
 	kindBetween
 	kindPathBetween
 	kindChain
+	kindSuffixPath
 	kindRegex
 )
 
@@ -32,7 +33,7 @@ type compiledPattern struct {
 	isWhitelist bool
 	isOnlyDir   bool
 	kind        patternKind
-	literal     string // valid for kindLiteral / kindBasename / kindExt / kindSuffix / kindPrefix / kindContains / kindBetween / kindPathBetween (prefix half)
+	literal     string // valid for kindLiteral / kindBasename / kindExt / kindSuffix / kindPrefix / kindContains / kindBetween / kindPathBetween (prefix half) / kindSuffixPath
 	literal2    string // valid for kindBetween / kindPathBetween only (suffix half)
 
 	// chunks/chainAnchoredStart/chainAnchoredEnd are valid for kindChain
