@@ -112,7 +112,7 @@ func ExampleFiles() {
 	}
 	// Output:
 	// testdata/facade/globs/File.TXT
-	// testdata/facade/globs/file.txt
+	// testdata/facade/globs/lower.txt
 	// testdata/facade/globs/other.md
 }
 

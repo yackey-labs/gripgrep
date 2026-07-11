@@ -400,10 +400,10 @@ func TestFacadeNewOptionsVsCLI(t *testing.T) {
 		if !slicesEq(wantFiles, gotFilesRel) {
 			t.Errorf("IGlobs mismatch:\nCLI:    %v\nfacade: %v", wantFiles, gotFilesRel)
 		}
-		// --iglob is always case-insensitive: both File.TXT and file.txt
+		// --iglob is always case-insensitive: both File.TXT and lower.txt
 		// must match, other.md must not.
 		if len(gotFilesRel) != 2 {
-			t.Errorf("IGlobs *.txt: got %v, want File.TXT and file.txt (2 files)", gotFilesRel)
+			t.Errorf("IGlobs *.txt: got %v, want File.TXT and lower.txt (2 files)", gotFilesRel)
 		}
 	})
 
@@ -424,9 +424,9 @@ func TestFacadeNewOptionsVsCLI(t *testing.T) {
 			t.Errorf("GlobCaseInsensitive mismatch:\nCLI:    %v\nfacade: %v", wantFiles, gotFilesRel)
 		}
 		// Without --glob-case-insensitive, -g "*.TXT" would only match
-		// File.TXT; with it, file.txt matches too.
+		// File.TXT; with it, lower.txt matches too.
 		if len(gotFilesRel) != 2 {
-			t.Errorf("GlobCaseInsensitive -g *.TXT: got %v, want File.TXT and file.txt (2 files)", gotFilesRel)
+			t.Errorf("GlobCaseInsensitive -g *.TXT: got %v, want File.TXT and lower.txt (2 files)", gotFilesRel)
 		}
 	})
 
