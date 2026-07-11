@@ -43,6 +43,13 @@ type Count struct {
 	// Matcher locates match spans for OnlyMatching's occurrence count;
 	// unused when OnlyMatching is false.
 	Matcher match.Matcher
+	// IncludeZero is rg's --include-zero: when true, Finish writes
+	// "path:0\n" even for a file with no matches, instead of skipping it
+	// entirely. Verified against the real rg binary: this never changes
+	// the process exit code (still 1 when nothing matched anywhere,
+	// even though "path:0" lines were printed) -- it's purely a display
+	// change, so ONLY Finish's early-return guard below is affected.
+	IncludeZero bool
 
 	buf         []byte
 	path        []byte
@@ -94,9 +101,10 @@ func (p *Count) Context(c *search.Ctx) (bool, error) {
 }
 
 // Finish implements search.Sink: writes "path:count\n" if any match was
-// tallied, using strconv.AppendInt (no fmt).
+// tallied, using strconv.AppendInt (no fmt) -- or, under IncludeZero,
+// unconditionally (see its doc).
 func (p *Count) Finish(path string, stats *search.Stats) error {
-	if p.count == 0 {
+	if p.count == 0 && !p.IncludeZero {
 		return nil
 	}
 	if p.ShowPath {

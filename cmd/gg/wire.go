@@ -332,6 +332,7 @@ func buildCLISink(cfg *Config, dest *printer.Dest, matcher match.Matcher, color,
 		// -o's "count occurrences, not lines" effect on -c -- see
 		// printer.Count.OnlyMatching's doc.
 		c.OnlyMatching = cfg.OnlyMatching
+		c.IncludeZero = cfg.IncludeZero
 		c.Matcher = matcher
 		return c, false
 	case ModeCountMatches:
@@ -342,6 +343,7 @@ func buildCLISink(cfg *Config, dest *printer.Dest, matcher match.Matcher, color,
 		c.Color = color
 		c.ShowPath = showPath
 		c.OnlyMatching = true
+		c.IncludeZero = cfg.IncludeZero
 		c.Matcher = matcher
 		return c, false
 	case ModeFilesWithMatches:

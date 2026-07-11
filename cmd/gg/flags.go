@@ -301,8 +301,14 @@ type Config struct {
 	// See printer.Standard.Trim's doc for the full breakdown.
 	Trim  bool
 	Mode  SearchMode
-	Quiet bool // -q/--quiet; independent of Mode, matches rg (quiet suppresses output regardless of search mode)
-	Color ColorMode
+	// IncludeZero is rg's --include-zero: makes -c/--count-matches print
+	// "path:0" for a file with no matches instead of skipping it. No
+	// effect on any other Mode (verified against the real rg binary:
+	// silently ignored under -l/--files-without-match) and never changes
+	// the exit code -- see printer.Count.IncludeZero's doc.
+	IncludeZero bool
+	Quiet       bool // -q/--quiet; independent of Mode, matches rg (quiet suppresses output regardless of search mode)
+	Color       ColorMode
 	// ContextBefore/ContextAfter are already resolved from rg's
 	// independently-tracked -A/-B/-C (see resolveContext); -A/-B always
 	// partially override -C's corresponding side, regardless of order.
@@ -715,6 +721,13 @@ func buildV1Flags() []*flagSpec {
 			long: "count", short: 'c', kind: kindSwitch,
 			applySwitch: func(cfg *Config, _ *parseState, _ bool) error {
 				cfg.Mode = ModeCount
+				return nil
+			},
+		},
+		{
+			long: "include-zero", negated: "no-include-zero", kind: kindSwitch,
+			applySwitch: func(cfg *Config, _ *parseState, on bool) error {
+				cfg.IncludeZero = on
 				return nil
 			},
 		},
