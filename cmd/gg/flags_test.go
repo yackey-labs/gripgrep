@@ -1278,7 +1278,6 @@ func TestNotYetImplementedFlags(t *testing.T) {
 		{"--pcre2", "pat"},
 		{"-U", "pat"},
 		{"--multiline", "pat"},
-		{"--json", "pat"},
 		{"-r", "x", "pat"},
 		{"--replace", "x", "pat"},
 		{"-z", "pat"},
