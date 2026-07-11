@@ -4,6 +4,7 @@ import (
 	"strconv"
 	"sync/atomic"
 
+	"github.com/yackey-labs/gripgrep/match"
 	"github.com/yackey-labs/gripgrep/search"
 )
 
@@ -24,10 +25,29 @@ type Count struct {
 	// there is no Heading concept for -c: this is the only path-display
 	// switch Count has.
 	ShowPath bool
+	// OnlyMatching is rg's -o/--only-matching's documented effect on -c:
+	// "when --count is combined with --only-matching, ripgrep behaves as
+	// if --count-matches was given" -- i.e. count OCCURRENCES, not
+	// matched LINES. Matcher must also be set for this to take effect
+	// (mirrors Standard.Matcher's doc: required to locate spans at all).
+	//
+	// Verified against the real rg binary that this carve-out does NOT
+	// extend to an inverted search (`rg -o -c -v` prints the LINE count,
+	// same as plain `-c -v`, not 0): Matched still fires once per
+	// genuinely non-matching inverted line, on which Matcher legitimately
+	// finds zero spans (same "Invert" case Standard.Matched's doc
+	// describes), so counting max(1, spanCount) rather than raw
+	// spanCount reproduces that fallback for free, without Count needing
+	// to know whether the underlying search was inverted at all.
+	OnlyMatching bool
+	// Matcher locates match spans for OnlyMatching's occurrence count;
+	// unused when OnlyMatching is false.
+	Matcher match.Matcher
 
-	buf   []byte
-	path  []byte
-	count int64
+	buf         []byte
+	path        []byte
+	count       int64
+	spanScratch []matchSpan
 }
 
 // NewCount returns a Count printer flushing completed files to dest, with
@@ -47,8 +67,23 @@ func (p *Count) Begin(path string) (bool, error) {
 }
 
 // Matched implements search.Sink: tallies only, never formats the line.
+// Under OnlyMatching (see its doc), tallies the number of match spans on
+// the line instead of 1 -- falling back to 1 when Matcher finds none,
+// which is exactly the Invert case (see Standard.Matched's doc): there is
+// no meaningful "occurrence count" for a line reported because it did
+// NOT match, so this counts it as one line, same as without -o.
 func (p *Count) Matched(m *search.Match) (bool, error) {
-	p.count++
+	if !p.OnlyMatching || p.Matcher == nil {
+		p.count++
+		return true, nil
+	}
+	line := trimLineTerminator(m.Line)
+	p.spanScratch = findMatchSpans(p.spanScratch[:0], p.Matcher, line)
+	if n := len(p.spanScratch); n > 0 {
+		p.count += int64(n)
+	} else {
+		p.count++
+	}
 	return true, nil
 }
 

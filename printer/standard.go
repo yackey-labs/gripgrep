@@ -2,6 +2,7 @@ package printer
 
 import (
 	"strconv"
+	"unicode/utf8"
 
 	"github.com/yackey-labs/gripgrep/match"
 	"github.com/yackey-labs/gripgrep/search"
@@ -72,6 +73,31 @@ type Standard struct {
 	// offset of each line (of each match occurrence's own start, under
 	// Vimgrep) immediately before the text, after any column field.
 	ByteOffset bool
+	// OnlyMatching is rg's -o/--only-matching: renders one row per match
+	// OCCURRENCE, like Vimgrep, but with the row's text narrowed to just
+	// the matched substring (empty for a zero-width match -- still its
+	// own row, never suppressed) instead of the whole line. Has no
+	// effect when Vimgrep is also set (checked first in Matched -- see
+	// cmd/gg's Config.OnlyMatching doc, verified against the real rg
+	// binary: Vimgrep wins outright regardless of flag order) and no
+	// effect on a line reported via Invert (Matched finds zero spans
+	// there exactly as the non-OnlyMatching path does, so the whole
+	// line prints -- matches the real rg binary's `-o -v`, which is not
+	// an error).
+	OnlyMatching bool
+	// MaxColumns is rg's -M/--max-columns: 0 means unlimited (the
+	// omission check in writeLine is skipped entirely). See cmd/gg's
+	// Config.MaxColumns doc for why 0 is a safe unlimited sentinel.
+	MaxColumns int
+	// MaxColumnsPreview is rg's --max-columns-preview: see cmd/gg's
+	// Config.MaxColumnsPreview doc. No effect unless MaxColumns > 0.
+	MaxColumnsPreview bool
+	// Trim is rg's --trim: strips leading ASCII whitespace from every
+	// printed line (matched, context, and -- since a row's "line" IS
+	// the matched substring there -- OnlyMatching alike), applied before
+	// the MaxColumns length check but never changing an already-computed
+	// Column/ByteOffset field. See cmd/gg's Config.Trim doc.
+	Trim bool
 
 	buf  []byte
 	path []byte
@@ -139,6 +165,22 @@ func (p *Standard) Matched(m *search.Match) (bool, error) {
 	line := trimLineTerminator(m.Line)
 	p.writeSeparatorIfGap(m.LineNumber, m.HasLineNumber, m.Offset, len(line))
 
+	// OnlyMatching is checked BEFORE Vimgrep, not after -- verified
+	// against the real rg binary, which surprised this round's probes:
+	// `-o --vimgrep` does NOT print the whole line like plain --vimgrep
+	// does, it prints just the matched text on each row, same as plain
+	// -o. rg's own sink_slow has the same priority: only_matching and
+	// per_match (vimgrep) are alternatives in one if/else-if chain with
+	// only_matching checked first, so when both are set, only_matching's
+	// branch wins outright -- it already iterates one row per match
+	// exactly like vimgrep's own branch would have, so nothing about
+	// Vimgrep's row-splitting is lost, only its "print the whole line"
+	// content choice is overridden. Vimgrep's OTHER effects (implied
+	// --column/-H defaults, forced heading off) are resolved in cmd/gg's
+	// wire.go independently of this branch, so they still apply.
+	if p.OnlyMatching {
+		return p.matchedOnlyMatching(m, line)
+	}
 	if p.Vimgrep {
 		return p.matchedVimgrep(m, line)
 	}
@@ -151,7 +193,9 @@ func (p *Standard) Matched(m *search.Match) (bool, error) {
 	if p.Column && len(spans) > 0 {
 		col = spans[0].s + 1
 	}
-	p.writeLine(line, m.LineNumber, m.HasLineNumber, ':', col, m.Offset, spans)
+	text, cut := p.trimPrefix(line)
+	spans = shiftSpansAfterTrim(spans, cut)
+	p.writeLine(text, m.LineNumber, m.HasLineNumber, ':', col, m.Offset, spans, spans, 1)
 	return true, nil
 }
 
@@ -166,8 +210,45 @@ func (p *Standard) Matched(m *search.Match) (bool, error) {
 // still prints exactly one row, with no column, matching `--vimgrep -v`.
 func (p *Standard) matchedVimgrep(m *search.Match, line []byte) (bool, error) {
 	spans := p.findSpans(line)
+	text, cut := p.trimPrefix(line)
 	if len(spans) == 0 {
-		p.writeLine(line, m.LineNumber, m.HasLineNumber, ':', -1, m.Offset, nil)
+		p.writeLine(text, m.LineNumber, m.HasLineNumber, ':', -1, m.Offset, nil, nil, 1)
+		return true, nil
+	}
+	// allSpans (every match on this line) drives -M's omitted-line
+	// "N matches" count and preview wording; each row below still only
+	// highlights its OWN occurrence (rg's sink_slow per_match branch
+	// passes just `[m]` to the shared colored-line writer, but reports
+	// the full match count in the omission message regardless -- see
+	// writeLine's doc).
+	allSpans := shiftSpansAfterTrim(spans, cut)
+	for _, sp := range spans {
+		col := -1
+		if p.Column {
+			col = sp.s + 1
+		}
+		row := shiftSpansAfterTrim([]matchSpan{sp}, cut)
+		p.writeLine(text, m.LineNumber, m.HasLineNumber, ':', col, m.Offset+int64(sp.s), row, allSpans, 1)
+	}
+	return true, nil
+}
+
+// matchedOnlyMatching implements -o/--only-matching's format: every span
+// findSpans locates becomes its own row, like matchedVimgrep, but the
+// row's TEXT is narrowed to just that occurrence's matched bytes (an
+// empty row for a zero-width match, never suppressed -- verified against
+// the real rg binary: `-o 'x*'` prints one blank line per empty-match
+// position). Column/byte-offset are still computed from the occurrence's
+// position in the ORIGINAL line (unaffected by narrowing the printed
+// text down to the match itself), matching Vimgrep's own fields exactly.
+// A line with zero spans (the Invert case; see Matched's doc) still
+// prints exactly one row with the WHOLE line and no column, matching
+// `-o -v`.
+func (p *Standard) matchedOnlyMatching(m *search.Match, line []byte) (bool, error) {
+	spans := p.findSpans(line)
+	if len(spans) == 0 {
+		text, _ := p.trimPrefix(line)
+		p.writeLine(text, m.LineNumber, m.HasLineNumber, ':', -1, m.Offset, nil, nil, 1)
 		return true, nil
 	}
 	for _, sp := range spans {
@@ -175,7 +256,22 @@ func (p *Standard) matchedVimgrep(m *search.Match, line []byte) (bool, error) {
 		if p.Column {
 			col = sp.s + 1
 		}
-		p.writeLine(line, m.LineNumber, m.HasLineNumber, ':', col, m.Offset+int64(sp.s), []matchSpan{sp})
+		matchText := line[sp.s:sp.e]
+		text, cut := p.trimPrefix(matchText)
+		// The row's own span always covers the WHOLE (possibly trimmed)
+		// text by construction -- there is nothing else on an
+		// only-matching row to highlight or to count as a "sibling"
+		// match, so the same single span serves as both colorSpans and
+		// allSpans (rg's own sink_slow only_matching branch: `write_
+		// colored_line(&[Match::new(0, buf.len())], buf)`).
+		only := shiftSpansAfterTrim([]matchSpan{{0, len(matchText)}}, cut)
+		// termPad is 0 here, not 1: an -o row's text is a bare match
+		// with no trailing line terminator to account for, unlike every
+		// other row shape -- verified against the real rg binary's
+		// --max-columns boundary: `-M N -o` omits only when the match
+		// itself is STRICTLY longer than N, one byte later than the
+		// `>=` boundary every other row uses (see writeLine's doc).
+		p.writeLine(text, m.LineNumber, m.HasLineNumber, ':', col, m.Offset+int64(sp.s), only, only, 0)
 	}
 	return true, nil
 }
@@ -195,7 +291,9 @@ func (p *Standard) Context(c *search.Ctx) (bool, error) {
 	if p.Color && p.Matcher != nil {
 		spans = p.findSpans(line)
 	}
-	p.writeLine(line, c.LineNumber, c.HasLineNumber, '-', -1, c.Offset, spans)
+	text, cut := p.trimPrefix(line)
+	spans = shiftSpansAfterTrim(spans, cut)
+	p.writeLine(text, c.LineNumber, c.HasLineNumber, '-', -1, c.Offset, spans, spans, 1)
 	return true, nil
 }
 
@@ -280,10 +378,34 @@ func (p *Standard) writeSeparatorIfGap(lineNumber int64, hasLineNumber bool, off
 //
 // column < 0 omits the column field entirely -- used for context lines
 // (which never carry one) and for a matched line on which no span was
-// found (the Invert case; see Matched's doc). colorSpans is the set of
-// spans to highlight when Color is on; nil/empty means no highlighting
-// (Matcher absent, Color off, or -- again -- Invert).
-func (p *Standard) writeLine(line []byte, lineNumber int64, hasLineNumber bool, sep byte, column int, offset int64, colorSpans []matchSpan) {
+// found (the Invert case; see Matched's doc).
+//
+// text is the FINAL printed content -- already run through trimPrefix
+// (see Matched/Context/matchedVimgrep/matchedOnlyMatching, every one of
+// which trims once, up front, rather than leaving it to writeLine, so a
+// Vimgrep/OnlyMatching row's several writeLine calls per line never
+// re-trim the same prefix) and, under OnlyMatching, already narrowed to
+// just the matched substring. colorSpans/allSpans are both expressed as
+// positions within text, not within the original source line.
+//
+// colorSpans is what actually gets highlighted when Color is on.
+// allSpans is every match relevant to text's underlying line, used only
+// to decide -M/--max-columns' omitted-line wording (the "N matches"
+// count and the preview's "M more matches" count) -- these two DIFFER
+// under Vimgrep (colorSpans narrows to this one row's own occurrence,
+// allSpans is every match on the line: rg's sink_slow per_match branch
+// passes only `[m]` to the shared colored-line writer, but still reports
+// the line's FULL match count in the omission message) and are the same
+// single span under OnlyMatching (by construction: a row's whole text
+// IS the match, nothing else to count). nil/empty allSpans means -M
+// should use its "fast path" wording (an empty matches list is gg's
+// signal, mirroring rg's own, that no span-scan happened for this row at
+// all -- see writeOmittedLine's doc).
+//
+// termPad is 1 for every row shape except an OnlyMatching row (0): see
+// matchedOnlyMatching's doc for why an -o row's --max-columns boundary
+// is one byte later than every other row's.
+func (p *Standard) writeLine(text []byte, lineNumber int64, hasLineNumber bool, sep byte, column int, offset int64, colorSpans, allSpans []matchSpan, termPad int) {
 	if p.Heading {
 		if !p.headingDone {
 			if p.ShowPath {
@@ -308,12 +430,194 @@ func (p *Standard) writeLine(line []byte, lineNumber int64, hasLineNumber bool, 
 		p.appendPlainNumber(offset)
 		p.buf = append(p.buf, sep)
 	}
-	if p.Color && len(colorSpans) > 0 {
-		p.appendColoredSpans(line, colorSpans)
-	} else {
-		p.buf = append(p.buf, line...)
+	switch {
+	case p.MaxColumns > 0 && len(text)+termPad > p.MaxColumns:
+		p.writeOmittedLine(text, sep == '-', allSpans, colorSpans)
+	case p.Color && len(colorSpans) > 0:
+		p.appendColoredSpans(text, colorSpans)
+	default:
+		p.buf = append(p.buf, text...)
 	}
 	p.buf = append(p.buf, '\n')
+}
+
+// writeOmittedLine appends -M/--max-columns' replacement content for a
+// row whose text exceeded p.MaxColumns (no trailing newline -- writeLine
+// appends that uniformly for every row, omitted or not). matches is
+// writeLine's allSpans (every match relevant to this row's underlying
+// line -- see writeLine's doc); colorSpans is the subset actually
+// highlighted in a preview's visible prefix.
+//
+// Verified against the real rg 15.1.0 binary across every combination
+// this round's probes covered:
+//   - Without MaxColumnsPreview: a fixed placeholder. len(matches) == 0
+//     selects the plain wording (mirrors rg's own fast-path proxy: an
+//     empty matches list means no span-scan happened for this row at
+//     all, so rg/gg alike have no count to report -- true for plain -M
+//     with neither --column nor Color, and for a context line whose
+//     Color-driven re-scan found nothing). OnlyMatching ALSO forces the
+//     plain wording even though findSpans did run for -o's own
+//     rendering (verified: `rg -M N -o` never says "with 1 matches").
+//     isContext picks between "matching"/"context" wording; the
+//     "N matches" wording (the only branch NOT tense-adjusted, even at
+//     N==1 -- verified) never distinguishes context from matched at all,
+//     matching rg's own write_exceeded_line exactly.
+//   - With MaxColumnsPreview: a prefix of text cut at a whole RUNE
+//     boundary (gg's approximation of rg's actual grapheme-CLUSTER
+//     boundary -- see previewCutoff's doc for the documented, narrow
+//     divergence) followed by " [... omitted end of long line]" when
+//     matches is empty (same empty-matches signal as the non-preview
+//     branch), else " [... N more match(es)]", tense-adjusted for N==1
+//     unlike the non-preview wording above -- both verified against the
+//     real binary, not inferred from source alone.
+func (p *Standard) writeOmittedLine(text []byte, isContext bool, matches, colorSpans []matchSpan) {
+	if p.MaxColumnsPreview {
+		p.writeOmittedPreview(text, matches, colorSpans)
+		return
+	}
+	switch {
+	case len(matches) == 0 || p.OnlyMatching:
+		if isContext {
+			p.buf = append(p.buf, "[Omitted long context line]"...)
+		} else {
+			p.buf = append(p.buf, "[Omitted long matching line]"...)
+		}
+	default:
+		p.buf = append(p.buf, "[Omitted long line with "...)
+		p.buf = strconv.AppendInt(p.buf, int64(len(matches)), 10)
+		p.buf = append(p.buf, " matches]"...)
+	}
+}
+
+// writeOmittedPreview implements --max-columns-preview's replacement
+// content: see writeOmittedLine's doc for the wording rules this
+// applies, verified against the real rg binary.
+func (p *Standard) writeOmittedPreview(text []byte, matches, colorSpans []matchSpan) {
+	cut := previewCutoff(text, p.MaxColumns)
+	visible := text[:cut]
+	if p.Color && len(colorSpans) > 0 {
+		p.appendColoredSpans(visible, clipSpansTo(colorSpans, cut))
+	} else {
+		p.buf = append(p.buf, visible...)
+	}
+	if len(matches) == 0 {
+		p.buf = append(p.buf, " [... omitted end of long line]"...)
+		return
+	}
+	remaining := 0
+	for _, sp := range matches {
+		if sp.s >= cut {
+			remaining++
+		}
+	}
+	p.buf = append(p.buf, " [... "...)
+	p.buf = strconv.AppendInt(p.buf, int64(remaining), 10)
+	if remaining == 1 {
+		p.buf = append(p.buf, " more match]"...)
+	} else {
+		p.buf = append(p.buf, " more matches]"...)
+	}
+}
+
+// previewCutoff returns the byte offset of the end of the Nth full rune
+// in text (or len(text), if text has fewer than n runes) -- gg's
+// approximation of rg's actual cut point, which counts grapheme
+// CLUSTERS via unicode-segmentation, not runes or bytes. The two only
+// diverge for a combining mark or ZWJ sequence straddling the cut point
+// (multiple runes forming ONE grapheme cluster, which rg keeps whole and
+// gg may split) -- accepted as documented debt: gg has no grapheme-
+// cluster segmentation dependency, and this only affects a cosmetic
+// preview's exact truncation point on already-rare multi-rune grapheme
+// input, never which bytes are considered part of a match. Verified
+// against the real rg binary that a whole RUNE is never split (unlike a
+// naive text[:n] byte slice, which would corrupt UTF-8 output).
+func previewCutoff(text []byte, n int) int {
+	cut := 0
+	for i := 0; i < n && cut < len(text); i++ {
+		_, sz := utf8.DecodeRune(text[cut:])
+		cut += sz
+	}
+	return cut
+}
+
+// clipSpansTo returns spans (assumed sorted, non-overlapping, per
+// findSpans' contract) narrowed to [0, cut): a span starting at or past
+// cut is dropped entirely, one straddling cut is truncated to end at
+// cut. Always returns a fresh slice -- never mutates spans' backing
+// array, which may be p.spanScratch or another row's shared allSpans.
+func clipSpansTo(spans []matchSpan, cut int) []matchSpan {
+	out := make([]matchSpan, 0, len(spans))
+	for _, sp := range spans {
+		if sp.s >= cut {
+			break
+		}
+		e := sp.e
+		if e > cut {
+			e = cut
+		}
+		out = append(out, matchSpan{sp.s, e})
+	}
+	return out
+}
+
+// trimPrefix strips p.Trim's configured leading ASCII whitespace bytes
+// (tab, newline, vertical tab, form feed, carriage return, space -- rg's
+// own trim_ascii_prefix's exact set, crates/printer/src/util.rs) from
+// text, returning the trimmed slice and the number of bytes cut (0 when
+// Trim is off or there was nothing to cut) so callers can shift any
+// already-computed span positions by the same amount before using them
+// against the now-shorter text -- see shiftSpansAfterTrim.
+func (p *Standard) trimPrefix(text []byte) ([]byte, int) {
+	if !p.Trim {
+		return text, 0
+	}
+	n := 0
+	for n < len(text) && isTrimSpace(text[n]) {
+		n++
+	}
+	return text[n:], n
+}
+
+func isTrimSpace(b byte) bool {
+	switch b {
+	case '\t', '\n', '\v', '\f', '\r', ' ':
+		return true
+	}
+	return false
+}
+
+// shiftSpansAfterTrim adjusts spans (assumed sorted, located against the
+// UNTRIMMED text) onto the text trimPrefix produced after cutting n
+// leading bytes off its front: every span's bounds shift left by n and
+// clamp to stay within [0, ...) -- a span that started inside the
+// trimmed-away prefix keeps only the portion (if any) that survives past
+// the cut, since those bytes are simply no longer part of what's
+// printed (reachable in principle -- e.g. a pattern matching literal
+// leading whitespace, combined with --trim -- verified this does not
+// panic or misrender against the real rg binary, though rg's own
+// behavior for that specific corner has not been exhaustively diffed).
+//
+// Returns spans UNCHANGED (same backing array) when n == 0 -- the common
+// case, since --trim is opt-in -- never allocating on that path.
+// Otherwise always returns a fresh slice, since spans may be
+// p.spanScratch or another row's shared allSpans that must not be
+// mutated in place.
+func shiftSpansAfterTrim(spans []matchSpan, n int) []matchSpan {
+	if n == 0 || len(spans) == 0 {
+		return spans
+	}
+	out := make([]matchSpan, 0, len(spans))
+	for _, sp := range spans {
+		s, e := sp.s-n, sp.e-n
+		if e < 0 {
+			continue
+		}
+		if s < 0 {
+			s = 0
+		}
+		out = append(out, matchSpan{s, e})
+	}
+	return out
 }
 
 func (p *Standard) appendPath() {
@@ -408,11 +712,23 @@ type matchSpan struct{ s, e int }
 // one FindAt/Find call at a time; see findSpans_test.go's mixed
 // empty/non-empty regression case.
 func (p *Standard) findSpans(line []byte) []matchSpan {
-	p.spanScratch = p.spanScratch[:0]
-	if p.Matcher == nil {
-		return p.spanScratch
+	p.spanScratch = findMatchSpans(p.spanScratch[:0], p.Matcher, line)
+	return p.spanScratch
+}
+
+// findMatchSpans is findSpans' actual algorithm, factored out to a
+// package-level function (rather than a *Standard method) so Count can
+// share it too -- Count.Matched needs exactly this same span-finding
+// logic (with its own reused scratch slice, spanScratch, mirroring
+// Standard's) to implement -o's "count OCCURRENCES, not matched lines"
+// effect on -c (see Count.OnlyMatching's doc). dst is the caller's own
+// reused, len-0 scratch slice (append target); matcher nil returns dst
+// unchanged (empty).
+func findMatchSpans(dst []matchSpan, matcher match.Matcher, line []byte) []matchSpan {
+	if matcher == nil {
+		return dst
 	}
-	fa, hasFindAt := p.Matcher.(findAtMatcher)
+	fa, hasFindAt := matcher.(findAtMatcher)
 	lastEnd := -1
 	for pos := 0; pos <= len(line); {
 		var s, e int
@@ -420,7 +736,7 @@ func (p *Standard) findSpans(line []byte) []matchSpan {
 		if hasFindAt {
 			s, e, ok = fa.FindAt(line, pos)
 		} else {
-			s, e, ok = p.Matcher.Find(line[pos:])
+			s, e, ok = matcher.Find(line[pos:])
 			if ok {
 				s += pos
 				e += pos
@@ -433,7 +749,7 @@ func (p *Standard) findSpans(line []byte) []matchSpan {
 			pos = s + 1
 			continue
 		}
-		p.spanScratch = append(p.spanScratch, matchSpan{s, e})
+		dst = append(dst, matchSpan{s, e})
 		lastEnd = e
 		if e == s {
 			pos = e + 1
@@ -441,7 +757,7 @@ func (p *Standard) findSpans(line []byte) []matchSpan {
 		}
 		pos = e
 	}
-	return p.spanScratch
+	return dst
 }
 
 // appendColoredSpans appends line with every span in spans (assumed
