@@ -17,7 +17,7 @@ document is regenerated).
 | ripgrep binary (golden suite + CI benchmarks) | **rg 15.1.0** (single pin: `internal/bench/rg-version.txt`, enforced by the suite itself) | every implemented flag is byte-diff-verified against this binary (17-case e2e suite + full-tree diffs) |
 | gripgrep | `4243295` / pending release | the status column below |
 
-<!-- BEGIN GENERATED: score -->**Score: 72 of 104 rg flags implemented.**<!-- END GENERATED --> The gap is
+<!-- BEGIN GENERATED: score -->**Score: 74 of 104 rg flags implemented.**<!-- END GENERATED --> The gap is
 dominated by a few feature clusters (see the notes after the table):
 the file-type system, PCRE2/multiline, encodings, output decoration,
 and replacement.
@@ -46,7 +46,7 @@ unknown-flag error, exit 2)
 |---|---|---|---|
 | `--auto-hybrid-regex` (+`--no-auto-hybrid-regex`) |  | ❌ | (DEPRECATED) Use PCRE2 if appropriate. |
 | `--case-sensitive` | `-s` | ✅ | Search case sensitively (default). |
-| `--crlf` (+`--no-crlf`) |  | ❌ | Use CRLF line terminators (nice for Windows). |
+| `--crlf` (+`--no-crlf`) |  | ✅ | Use CRLF line terminators (nice for Windows). |
 | `--dfa-size-limit` |  | ❌ | The upper size limit of the regex DFA. |
 | `--encoding` (+`--no-encoding`) | `-E` | ⚠️ | Specify the text encoding of files to search. |
 | `--engine` |  | ❌ | Specify which regex engine to use. |
@@ -60,7 +60,7 @@ unknown-flag error, exit 2)
 | `--multiline-dotall` (+`--no-multiline-dotall`) |  | ⚠️ | Make '.' match line terminators. |
 | `--no-pcre2-unicode` (+`--pcre2-unicode`) |  | ❌ | (DEPRECATED) Disable Unicode mode for PCRE2. |
 | `--no-unicode` (+`--unicode`) |  | ❌ | Disable Unicode mode. |
-| `--null-data` |  | ❌ | Use NUL as a line terminator. |
+| `--null-data` |  | ✅ | Use NUL as a line terminator. |
 | `--pcre2` (+`--no-pcre2`) | `-P` | ⚠️ | Enable PCRE2 matching. |
 | `--regex-size-limit` |  | ❌ | The size limit of the compiled regex. |
 | `--smart-case` | `-S` | ✅ | Smart case search. |
@@ -234,6 +234,18 @@ Not implemented (the honest list, matching the table above):
   full extent instead of a `-j`-dependent one. Queued as a follow-up
   (needs searcher-side consumed-offset reporting through the parallel
   replay).
+
+- **`--crlf` diverges on interior lone `\r` (classic-Mac line endings).**
+  rg enables a regex-level CRLF mode where the line anchors `^`/`$` bind
+  around a bare `\r` (and `\r` is excluded from `.`), even for a `\r`
+  that is not followed by `\n`. gg instead strips a trailing `\r` from the
+  match window (Go's `regexp` has no CRLF mode and the pattern is never
+  rewritten), which reproduces rg exactly for every `\r\n`-terminated
+  input — the overwhelmingly common case, and every `--crlf` answer-key
+  case — but diverges on a file whose lines end in a lone `\r` with no
+  `\n` (old pre-OS X Mac text): there `foo$` won't match "foo" before an
+  interior `\r`, and `.` will match a `\r` gg leaves in the line. Accepted
+  as debt; the trigger class is effectively extinct file formats.
 
 ## Regenerating this document
 
