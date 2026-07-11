@@ -323,6 +323,18 @@ type FilesVisit func(path string)
 // same walk.Options construction; it never touches mmap, the matcher, or
 // any other search-specific concern, since there is nothing to search.
 func Files(cfg Config, visit FilesVisit, stderr io.Writer) (Result, error) {
+	return FilesStopping(cfg, visit, nil, stderr)
+}
+
+// FilesStopping is Files with an optional early-stop predicate, checked
+// before every visited directory/file exactly like Run's own stop (see
+// Run's doc): once stop returns true the walk quits promptly at the next
+// entry boundary. The root facade's FilesContext backs its ctx-cancellation
+// with it, flipping the same stopped flag its other verbs use; cmd/gg's
+// --files never cancels and keeps calling the plain Files wrapper above, so
+// this parameter costs the CLI nothing. stop == nil is the exhaustive walk
+// Files itself asks for.
+func FilesStopping(cfg Config, visit FilesVisit, stop func() bool, stderr io.Writer) (Result, error) {
 	typesMatcher, err := buildTypes(cfg.TypeChanges)
 	if err != nil {
 		return Result{}, err
@@ -353,6 +365,9 @@ func Files(cfg Config, visit FilesVisit, stderr io.Writer) (Result, error) {
 
 	var anyMatched, anyError atomic.Bool
 	visitor := func(e *walk.Entry) walk.WalkState {
+		if stop != nil && stop() {
+			return walk.Quit
+		}
 		if e.Err != nil {
 			// --no-messages gates the print only; the error still forces
 			// exit 2 (rg parity -- see Config.NoMessages). --files never

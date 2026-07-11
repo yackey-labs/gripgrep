@@ -203,17 +203,30 @@ type countingSink struct {
 
 	mu  *sync.Mutex
 	out map[string]int
+	// stopped is the shared cancellation flag CountMatchesContext flips
+	// when its ctx is done (nil-checked so nothing but the ctx variants
+	// ever pays for it). Honoring it here gives the intra-file parallel
+	// path its early-stop: chunk replay ends the moment Matched reports
+	// more=false, so a cancelled count over one huge file stops delivering
+	// tallied matches instead of replaying the whole recorded stream.
+	stopped *atomic.Bool
 }
 
 var _ search.Sink = (*countingSink)(nil)
 
 func (c *countingSink) Begin(path string) (bool, error) {
+	if c.stopped != nil && c.stopped.Load() {
+		return false, nil
+	}
 	c.path = path
 	c.count = 0
 	return true, nil
 }
 
 func (c *countingSink) Matched(m *search.Match) (bool, error) {
+	if c.stopped != nil && c.stopped.Load() {
+		return false, nil
+	}
 	c.count++
 	return true, nil
 }
@@ -242,11 +255,20 @@ type pathListSink struct {
 
 	mu  *sync.Mutex
 	out *[]string
+	// stopped is the shared cancellation flag FilesWithMatchContext flips
+	// when its ctx is done (nil-checked, so only the ctx variants pay for
+	// it). A cancelled walk already quits at the next file boundary via
+	// engine.Run's stop check; this Begin gate makes a file whose search
+	// is entered after cancellation report nothing rather than scan.
+	stopped *atomic.Bool
 }
 
 var _ search.Sink = (*pathListSink)(nil)
 
 func (p *pathListSink) Begin(path string) (bool, error) {
+	if p.stopped != nil && p.stopped.Load() {
+		return false, nil
+	}
 	p.path = path
 	p.matched = false
 	return true, nil
