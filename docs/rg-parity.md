@@ -17,7 +17,7 @@ document is regenerated).
 | ripgrep binary (golden suite + CI benchmarks) | **rg 15.1.0** (single pin: `internal/bench/rg-version.txt`, enforced by the suite itself) | every implemented flag is byte-diff-verified against this binary (17-case e2e suite + full-tree diffs) |
 | gripgrep | `c12b370` / pending release | the status column below |
 
-<!-- BEGIN GENERATED: score -->**Score: 39 of 104 rg flags implemented.**<!-- END GENERATED --> The gap is
+<!-- BEGIN GENERATED: score -->**Score: 43 of 104 rg flags implemented.**<!-- END GENERATED --> The gap is
 dominated by a few feature clusters (see the notes after the table):
 the file-type system, PCRE2/multiline, encodings, output decoration,
 and replacement.
@@ -120,12 +120,12 @@ unknown-flag error, exit 2)
 | `--include-zero` (+`--no-include-zero`) |  | ❌ | Include zero matches in summary output. |
 | `--line-buffered` (+`--no-line-buffered`) |  | ❌ | Force line buffering. |
 | `--line-number` | `-n` | ✅ | Show line numbers. |
-| `--max-columns` | `-M` | ❌ | Omit lines longer than this limit. |
-| `--max-columns-preview` (+`--no-max-columns-preview`) |  | ❌ | Show preview for lines exceeding the limit. |
+| `--max-columns` | `-M` | ✅ | Omit lines longer than this limit. |
+| `--max-columns-preview` (+`--no-max-columns-preview`) |  | ✅ | Show preview for lines exceeding the limit. |
 | `--no-filename` | `-I` | ✅ | Never print the path with each matching line. |
 | `--no-line-number` | `-N` | ✅ | Suppress line numbers. |
 | `--null` | `-0` | ❌ | Print a NUL byte after file paths. |
-| `--only-matching` | `-o` | ⚠️ | Print only matched parts of a line. |
+| `--only-matching` | `-o` | ✅ | Print only matched parts of a line. |
 | `--passthru` |  | ❌ | Print both matching and non-matching lines. |
 | `--path-separator` |  | ❌ | Set the path separator for printing paths. |
 | `--pretty` | `-p` | ❌ | Alias for colors, headings and line numbers. |
@@ -134,7 +134,7 @@ unknown-flag error, exit 2)
 | `--sort` |  | ⚠️ | Sort results in ascending order. |
 | `--sort-files` (+`--no-sort-files`) |  | ❌ | (DEPRECATED) Sort results by file path. |
 | `--sortr` |  | ⚠️ | Sort results in descending order. |
-| `--trim` (+`--no-trim`) |  | ❌ | Trim prefix whitespace from matches. |
+| `--trim` (+`--no-trim`) |  | ✅ | Trim prefix whitespace from matches. |
 | `--vimgrep` |  | ✅ | Print results in a vim compatible format. |
 | `--with-filename` | `-H` | ✅ | Print the file path with each matching line. |
 
