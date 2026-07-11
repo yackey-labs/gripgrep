@@ -55,6 +55,23 @@ type Standard struct {
 	// method (which handles one context line) to avoid a field/method
 	// name collision.
 	ContextEnabled bool
+	// Column is rg's --column, already resolved by the caller (rg
+	// defaults it to Vimgrep when neither --column nor --no-column was
+	// given -- see cmd/gg's Config.Column doc; Standard itself has no
+	// opinion on that default). Shows the 1-based byte column of the
+	// first match on a line (or, under Vimgrep, of each occurrence).
+	// Context lines never carry a column, matching rg exactly.
+	Column bool
+	// Vimgrep is rg's --vimgrep: prints one row per match OCCURRENCE
+	// rather than one row per matched line (a line with N occurrences
+	// becomes N rows, each with that occurrence's own column/byte-offset
+	// and, when Color is on, only that occurrence highlighted). Context
+	// lines are unaffected -- they still print once. See Matched's doc.
+	Vimgrep bool
+	// ByteOffset is rg's -b/--byte-offset: prints the absolute byte
+	// offset of each line (of each match occurrence's own start, under
+	// Vimgrep) immediately before the text, after any column field.
+	ByteOffset bool
 
 	buf  []byte
 	path []byte
@@ -64,6 +81,10 @@ type Standard struct {
 	lastLine    int64
 	lastOffset  int64
 	lastLen     int
+
+	// spanScratch is findSpans' pooled result buffer, reused across
+	// Matched/Context calls on this Standard -- see findSpans' doc.
+	spanScratch []matchSpan
 }
 
 // NewStandard returns a Standard flushing completed files to dest, with
@@ -93,19 +114,88 @@ func (p *Standard) Begin(path string) (bool, error) {
 // gap-detection byte-offset math in writeSeparatorIfGap (which already
 // accounts for one terminator byte via its own "+1") sees the same
 // terminator-free length convention it was written against.
+//
+// Match spans (needed for Column, Vimgrep, and match coloring alike) are
+// located here via findSpans -- the SAME re-scan of the line's bytes
+// through Matcher that computed the search layer's own match, done again
+// because the Sink interface (deliberately, see search.Match's doc)
+// never carries match bounds through from the search layer: gg's search
+// package finds candidate LINES, not exact spans, on its fast path (see
+// search/core.go's findByLineFast), and only the printer ever needs exact
+// spans, so recomputing them here -- exactly like pre-existing
+// color-highlighting already did -- keeps that cost off the no-flags hot
+// path entirely (findSpans is skipped unless Column, Vimgrep, or Color
+// is on) rather than paying it on every match regardless of whether any
+// caller wants it.
+//
+// A Matcher re-confirming zero spans on the line handed to it (found's
+// doc: this happens exactly when the underlying search was inverted --
+// see search.Searcher.Invert -- since the Sink has no other way to learn
+// that; an inverted "match" is a line the pattern does NOT match) is not
+// an error: rg's own real behavior for `--column -v` and `--vimgrep -v`
+// is to print the line with no column at all, which is exactly what
+// falls out here for free once no span is found.
 func (p *Standard) Matched(m *search.Match) (bool, error) {
 	line := trimLineTerminator(m.Line)
 	p.writeSeparatorIfGap(m.LineNumber, m.HasLineNumber, m.Offset, len(line))
-	p.writeLine(line, m.LineNumber, m.HasLineNumber, ':')
+
+	if p.Vimgrep {
+		return p.matchedVimgrep(m, line)
+	}
+
+	col := -1
+	var spans []matchSpan
+	if p.Column || (p.Color && p.Matcher != nil) {
+		spans = p.findSpans(line)
+	}
+	if p.Column && len(spans) > 0 {
+		col = spans[0].s + 1
+	}
+	p.writeLine(line, m.LineNumber, m.HasLineNumber, ':', col, m.Offset, spans)
+	return true, nil
+}
+
+// matchedVimgrep implements --vimgrep's "one row per match occurrence"
+// format: every span findSpans locates on the line becomes its own row,
+// each with that occurrence's own column (span start + 1) and byte
+// offset (m.Offset + span start -- verified against the real rg binary:
+// `-b --vimgrep` reports the OCCURRENCE's offset, not the line's, unlike
+// plain -b), and -- when Color is on -- only that occurrence highlighted
+// (rg's sink_slow per_match branch colors `&[m]`, not every span on the
+// line). A line with zero spans (the Invert case; see Matched's doc)
+// still prints exactly one row, with no column, matching `--vimgrep -v`.
+func (p *Standard) matchedVimgrep(m *search.Match, line []byte) (bool, error) {
+	spans := p.findSpans(line)
+	if len(spans) == 0 {
+		p.writeLine(line, m.LineNumber, m.HasLineNumber, ':', -1, m.Offset, nil)
+		return true, nil
+	}
+	for _, sp := range spans {
+		col := -1
+		if p.Column {
+			col = sp.s + 1
+		}
+		p.writeLine(line, m.LineNumber, m.HasLineNumber, ':', col, m.Offset+int64(sp.s), []matchSpan{sp})
+	}
 	return true, nil
 }
 
 // Context implements search.Sink. See Matched's doc for why the line is
-// trimmed before use.
+// trimmed before use, and for why spans are (re)located here rather than
+// carried from the search layer. Context lines never carry a column
+// (rg's write_prelude always passes None for context; verified against
+// the real binary) or a per-occurrence row split (Vimgrep only affects
+// Matched) -- but DO get colored like a normal line when Color is on,
+// matching rg's own context sink, which shares the same match-coloring
+// path as a matched line.
 func (p *Standard) Context(c *search.Ctx) (bool, error) {
 	line := trimLineTerminator(c.Line)
 	p.writeSeparatorIfGap(c.LineNumber, c.HasLineNumber, c.Offset, len(line))
-	p.writeLine(line, c.LineNumber, c.HasLineNumber, '-')
+	var spans []matchSpan
+	if p.Color && p.Matcher != nil {
+		spans = p.findSpans(line)
+	}
+	p.writeLine(line, c.LineNumber, c.HasLineNumber, '-', -1, c.Offset, spans)
 	return true, nil
 }
 
@@ -180,10 +270,20 @@ func (p *Standard) writeSeparatorIfGap(lineNumber int64, hasLineNumber bool, off
 }
 
 // writeLine appends one formatted line (match or context) to the
-// buffer. sep is ':' for a match, '-' for context, matching rg's field
-// separator convention for both the path prefix and the line-number
-// prefix.
-func (p *Standard) writeLine(line []byte, lineNumber int64, hasLineNumber bool, sep byte) {
+// buffer: path, line number, column, byte offset, then text, in exactly
+// that order -- matching rg's own PreludeWriter field sequence
+// (write_path/write_line_number/write_column_number/write_byte_offset)
+// byte for byte, including which separator byte sits between which
+// fields. sep is ':' for a match, '-' for context, and is reused as the
+// separator for every prelude field (column, byte offset included), same
+// as rg.
+//
+// column < 0 omits the column field entirely -- used for context lines
+// (which never carry one) and for a matched line on which no span was
+// found (the Invert case; see Matched's doc). colorSpans is the set of
+// spans to highlight when Color is on; nil/empty means no highlighting
+// (Matcher absent, Color off, or -- again -- Invert).
+func (p *Standard) writeLine(line []byte, lineNumber int64, hasLineNumber bool, sep byte, column int, offset int64, colorSpans []matchSpan) {
 	if p.Heading {
 		if !p.headingDone {
 			if p.ShowPath {
@@ -200,8 +300,16 @@ func (p *Standard) writeLine(line []byte, lineNumber int64, hasLineNumber bool, 
 		p.appendLineNumber(lineNumber)
 		p.buf = append(p.buf, sep)
 	}
-	if p.Color && p.Matcher != nil {
-		p.appendColoredLine(line)
+	if column >= 0 {
+		p.appendPlainNumber(int64(column))
+		p.buf = append(p.buf, sep)
+	}
+	if p.ByteOffset {
+		p.appendPlainNumber(offset)
+		p.buf = append(p.buf, sep)
+	}
+	if p.Color && len(colorSpans) > 0 {
+		p.appendColoredSpans(line, colorSpans)
 	} else {
 		p.buf = append(p.buf, line...)
 	}
@@ -227,89 +335,130 @@ func (p *Standard) appendLineNumber(n int64) {
 	}
 }
 
+// appendPlainNumber appends a --column or -b field. rg colors both with
+// its "column" color spec (crates/printer/src/standard.rs's
+// write_column_number/write_byte_offset both call
+// self.config().colors.column()), which has no default entry in rg's own
+// default_color_specs() -- unlike the path/line/match specs, which do --
+// so by default this only ever emits the mandatory reset wrapping, never
+// an actual color code (verified against the real rg binary under
+// --color=always: `\x1b[0m5\x1b[0m`, no color escape in between). gg has
+// no --colors flag yet (v1 scope), so that's the only case this needs to
+// handle.
+func (p *Standard) appendPlainNumber(n int64) {
+	if p.Color {
+		p.buf = append(p.buf, ansiReset...)
+		p.buf = strconv.AppendInt(p.buf, n, 10)
+		p.buf = append(p.buf, ansiReset...)
+	} else {
+		p.buf = strconv.AppendInt(p.buf, n, 10)
+	}
+}
+
 // findAtMatcher is implemented by Matchers that can resume a search
 // from an arbitrary byte offset within the ORIGINAL line — evaluating
 // anchors (^) and word boundaries (-w) relative to the whole line, not
 // a subslice of it. Standard prefers this via type assertion when
-// locating the 2nd+ match span on a line; see appendColoredLineSubslice
-// for why the naive Find(line[pos:]) loop gets those pattern classes
-// wrong. This is deliberately not part of the frozen match.Matcher
-// interface (some Matcher implementations may not need or support
-// resuming mid-line); Standard degrades gracefully when absent.
+// locating the 2nd+ match span on a line; see findSpans' subslice
+// fallback for why the naive Find(line[pos:]) loop gets those pattern
+// classes wrong. This is deliberately not part of the frozen
+// match.Matcher interface (some Matcher implementations may not need or
+// support resuming mid-line); Standard degrades gracefully when absent.
 type findAtMatcher interface {
 	FindAt(line []byte, start int) (s, e int, ok bool)
 }
 
-// appendColoredLine appends line with every match span wrapped in
-// ansiMatch, preferring Matcher.(findAtMatcher) when available (exact
-// for every pattern class) and falling back to the subslice-Find loop
-// otherwise (exact for literals; see appendColoredLineSubslice's
-// caveat).
-func (p *Standard) appendColoredLine(line []byte) {
-	if fa, ok := p.Matcher.(findAtMatcher); ok {
-		p.appendColoredLineFindAt(line, fa)
-		return
-	}
-	p.appendColoredLineSubslice(line)
-}
+// matchSpan is one match occurrence's byte bounds [s, e) within a line,
+// as located by findSpans.
+type matchSpan struct{ s, e int }
 
-// appendColoredLineFindAt colors every match span using FindAt, which
-// evaluates the pattern against the whole line at each resumed offset
-// — correct for anchored (^) and word-boundary (-w) patterns as well as
-// literals.
-func (p *Standard) appendColoredLineFindAt(line []byte, fa findAtMatcher) {
-	pos := 0
-	for pos <= len(line) {
-		s, e, ok := fa.FindAt(line, pos)
+// findSpans locates every match span in line and returns them in
+// left-to-right, non-overlapping order, using p.spanScratch as backing
+// storage (reused across calls on this Standard -- copy out anything
+// that must outlive the next findSpans/Matched/Context call). This is
+// the ONE span-finding implementation shared by match coloring,
+// --column, and --vimgrep (previously coloring had its own inline
+// FindAt/subslice loop, separate from column/vimgrep's -- unifying them
+// means all three necessarily agree on what "the match spans in this
+// line" means, which matters most for --color=always --vimgrep: it must
+// highlight the exact same span each row's column/byte-offset fields are
+// computed from).
+//
+// Prefers Matcher.(findAtMatcher) when available (exact for every
+// pattern class, including anchors and -w); falls back to repeated
+// Matcher.Find on the remaining suffix otherwise, which is exact for
+// literal patterns but can miscolor or miss a 2nd+ occurrence of an
+// anchored/word-boundary pattern (see findAtMatcher's doc) -- an existing
+// documented limitation, unchanged by this refactor. Returns an empty
+// slice (not an error) when Matcher is nil or the line has no span at
+// all — the latter is exactly what happens when the underlying search
+// was inverted (see Matched's doc), since Matcher genuinely does not
+// match an inverted "matched" line.
+//
+// An empty match starting exactly where the PREVIOUSLY REPORTED match
+// ended is skipped, not reported as its own span -- mirroring Go's own
+// regexp.FindAllIndex (verified directly against it) and rg's Rust regex
+// engine (verified against the real rg binary), both of which suppress
+// exactly this case in their all-matches iteration. Without this rule, a
+// pattern like `a?` over "aaa" would report a redundant empty match
+// glued to the end of the real "a" match right before it -- three real
+// single-char matches plus a phantom empty one after each -- which
+// neither engine actually produces when asked to find "all matches" in
+// one call; findSpans must reproduce that even though it locates spans
+// one FindAt/Find call at a time; see findSpans_test.go's mixed
+// empty/non-empty regression case.
+func (p *Standard) findSpans(line []byte) []matchSpan {
+	p.spanScratch = p.spanScratch[:0]
+	if p.Matcher == nil {
+		return p.spanScratch
+	}
+	fa, hasFindAt := p.Matcher.(findAtMatcher)
+	lastEnd := -1
+	for pos := 0; pos <= len(line); {
+		var s, e int
+		var ok bool
+		if hasFindAt {
+			s, e, ok = fa.FindAt(line, pos)
+		} else {
+			s, e, ok = p.Matcher.Find(line[pos:])
+			if ok {
+				s += pos
+				e += pos
+			}
+		}
 		if !ok {
 			break
 		}
-		p.buf = append(p.buf, line[pos:s]...)
-		p.buf = appendColoredBytes(p.buf, ansiMatch, line[s:e])
+		if s == e && s == lastEnd {
+			pos = s + 1
+			continue
+		}
+		p.spanScratch = append(p.spanScratch, matchSpan{s, e})
+		lastEnd = e
 		if e == s {
-			// Zero-width match: emit the byte at e (if any) uncolored
-			// and advance by one to guarantee forward progress.
-			if e < len(line) {
-				p.buf = append(p.buf, line[e])
-			}
 			pos = e + 1
 			continue
 		}
 		pos = e
 	}
-	p.buf = append(p.buf, line[pos:]...)
+	return p.spanScratch
 }
 
-// appendColoredLineSubslice is the fallback used when Matcher doesn't
-// implement findAtMatcher: it repeatedly calls Find on the remaining
-// suffix of line to color every occurrence (Find itself only reports
-// the leftmost match), guarding against a zero-width match looping
-// forever. This is exact for literal patterns, but Find's "leftmost
-// match within the given []byte" contract means a subslice shifts what
-// "start of line" or a word boundary means — so an anchored (^) or
-// word-boundary (-w) pattern's 2nd+ occurrence on a line can be colored
-// at the wrong span, or missed, under this fallback.
-func (p *Standard) appendColoredLineSubslice(line []byte) {
+// appendColoredSpans appends line with every span in spans (assumed
+// sorted, non-overlapping, per findSpans' contract) wrapped in
+// ansiMatch. A zero-width span (e == s) contributes no colored bytes —
+// there is nothing to color — but still marks its position: the
+// uncolored byte at that position, if any, is emitted as part of the
+// next segment (or the final trailing append), never duplicated or
+// dropped.
+func (p *Standard) appendColoredSpans(line []byte, spans []matchSpan) {
 	pos := 0
-	for pos <= len(line) {
-		s, e, ok := p.Matcher.Find(line[pos:])
-		if !ok {
-			break
+	for _, sp := range spans {
+		p.buf = append(p.buf, line[pos:sp.s]...)
+		if sp.e > sp.s {
+			p.buf = appendColoredBytes(p.buf, ansiMatch, line[sp.s:sp.e])
 		}
-		s += pos
-		e += pos
-		p.buf = append(p.buf, line[pos:s]...)
-		p.buf = appendColoredBytes(p.buf, ansiMatch, line[s:e])
-		if e == s {
-			// Zero-width match: emit the byte at e (if any) uncolored
-			// and advance by one to guarantee forward progress.
-			if e < len(line) {
-				p.buf = append(p.buf, line[e])
-			}
-			pos = e + 1
-			continue
-		}
-		pos = e
+		pos = sp.e
 	}
 	p.buf = append(p.buf, line[pos:]...)
 }

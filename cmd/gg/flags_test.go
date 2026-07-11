@@ -479,6 +479,71 @@ func TestHeadingFlag(t *testing.T) {
 	}
 }
 
+func TestColumnFlag(t *testing.T) {
+	// Verified against the real rg 15.1.0 binary:
+	//   rg --column cat f.txt        -> Column resolves true (implies -n)
+	//   rg --no-column cat f.txt     -> Column resolves false
+	//   rg --column --no-column ...  -> false (last wins)
+	//   rg --no-column --column ...  -> true (last wins)
+	if cfg := mustParse(t, "pat"); cfg.Column != nil {
+		t.Errorf("default Column = %v, want nil (unset)", cfg.Column)
+	}
+	cfg := mustParse(t, "--column", "pat")
+	if cfg.Column == nil || !*cfg.Column {
+		t.Errorf("--column: Column = %v, want true", cfg.Column)
+	}
+	cfg = mustParse(t, "--no-column", "pat")
+	if cfg.Column == nil || *cfg.Column {
+		t.Errorf("--no-column: Column = %v, want false", cfg.Column)
+	}
+	cfg = mustParse(t, "--column", "--no-column", "pat")
+	if cfg.Column == nil || *cfg.Column {
+		t.Errorf("--column --no-column: Column = %v, want false (last wins)", cfg.Column)
+	}
+	cfg = mustParse(t, "--no-column", "--column", "pat")
+	if cfg.Column == nil || !*cfg.Column {
+		t.Errorf("--no-column --column: Column = %v, want true (last wins)", cfg.Column)
+	}
+}
+
+func TestVimgrepFlag(t *testing.T) {
+	// --vimgrep has no negation (defs.rs's VimGrep::update asserts this);
+	// repeating it is a harmless no-op.
+	if cfg := mustParse(t, "pat"); cfg.Vimgrep {
+		t.Errorf("default Vimgrep = true, want false")
+	}
+	if cfg := mustParse(t, "--vimgrep", "pat"); !cfg.Vimgrep {
+		t.Errorf("--vimgrep: Vimgrep = false, want true")
+	}
+	if cfg := mustParse(t, "--vimgrep", "--vimgrep", "pat"); !cfg.Vimgrep {
+		t.Errorf("--vimgrep --vimgrep: Vimgrep = false, want true")
+	}
+	wantErr(t, "--no-vimgrep", "pat")
+}
+
+func TestByteOffsetFlag(t *testing.T) {
+	// Verified against the real rg binary:
+	//   rg -b cat f.txt                 -> ByteOffset on
+	//   rg -b --no-byte-offset cat f.txt -> off (last wins)
+	if cfg := mustParse(t, "pat"); cfg.ByteOffset {
+		t.Errorf("default ByteOffset = true, want false")
+	}
+	if cfg := mustParse(t, "-b", "pat"); !cfg.ByteOffset {
+		t.Errorf("-b: ByteOffset = false, want true")
+	}
+	if cfg := mustParse(t, "--byte-offset", "pat"); !cfg.ByteOffset {
+		t.Errorf("--byte-offset: ByteOffset = false, want true")
+	}
+	cfg := mustParse(t, "-b", "--no-byte-offset", "pat")
+	if cfg.ByteOffset {
+		t.Errorf("-b --no-byte-offset: ByteOffset = true, want false (last wins)")
+	}
+	cfg = mustParse(t, "--no-byte-offset", "-b", "pat")
+	if !cfg.ByteOffset {
+		t.Errorf("--no-byte-offset -b: ByteOffset = false, want true (last wins)")
+	}
+}
+
 func TestSearchModeLastWins(t *testing.T) {
 	if cfg := mustParse(t, "pat"); cfg.Mode != ModeStandard {
 		t.Errorf("default Mode = %v, want ModeStandard", cfg.Mode)

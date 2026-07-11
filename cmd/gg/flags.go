@@ -133,9 +133,9 @@ type Config struct {
 	Word       bool // -w/--word-regexp
 	LineRegexp bool // -x/--line-regexp
 
-	Hidden       bool     // --hidden
-	NoIgnore     bool     // --no-ignore (collapses rg's 5 no-ignore-* sub-flags into one, matching walk.Options.NoIgnore)
-	Globs        []string // -g/--glob, in the order given verbatim (leading '!' negation is glob syntax, handled by package glob, not here)
+	Hidden   bool     // --hidden
+	NoIgnore bool     // --no-ignore (collapses rg's 5 no-ignore-* sub-flags into one, matching walk.Options.NoIgnore)
+	Globs    []string // -g/--glob, in the order given verbatim (leading '!' negation is glob syntax, handled by package glob, not here)
 	// IGlobs are --iglob GLOB, repeatable, same verbatim/negation
 	// convention as Globs but always matched case-insensitively -- see
 	// internal/engine.Config.IGlobs' doc for the combined-ordering rule
@@ -170,9 +170,33 @@ type Config struct {
 	// rg's own default is isatty(stdout), which wire.go already computes
 	// (heading := isTTY) before this field can override it.
 	Heading *bool
-	Mode    SearchMode
-	Quiet       bool // -q/--quiet; independent of Mode, matches rg (quiet suppresses output regardless of search mode)
-	Color       ColorMode
+	// Column is nil when neither --column nor --no-column was given: rg's
+	// own default is Vimgrep (rg: `low.column.unwrap_or(low.vimgrep)`),
+	// which wire.go resolves -- an explicit --column/--no-column always
+	// wins over Vimgrep regardless of order (verified against the real rg
+	// binary: `rg --vimgrep --no-column` still prints one row per match
+	// occurrence, just without the column field).
+	Column *bool
+	// Vimgrep is --vimgrep: no negation exists in rg (defs.rs asserts
+	// "--vimgrep has no negation" in its own update fn), so this is a
+	// plain bool, not a pointer -- same shape as Fixed/Invert above. It
+	// implies Column (see Column's doc), forces WithFilename true unless
+	// explicitly overridden, and forces Heading false unconditionally
+	// (even overriding an explicit --heading given after it) -- all
+	// resolved in wire.go, not here, matching how LineNumbers/WithFilename/
+	// Heading's own isTTY-dependent defaults are resolved outside this
+	// dependency-free parser.
+	Vimgrep bool
+	// ByteOffset is -b/--byte-offset: prints the absolute byte offset of
+	// each matched/context line (or, under Vimgrep, of each individual
+	// match occurrence -- see printer.Standard.Matched's doc). Negated by
+	// --no-byte-offset, matching rg's own plain bool field (unlike Column,
+	// there is no Vimgrep-driven default to resolve: byte_offset defaults
+	// to false regardless of any other flag).
+	ByteOffset bool
+	Mode       SearchMode
+	Quiet      bool // -q/--quiet; independent of Mode, matches rg (quiet suppresses output regardless of search mode)
+	Color      ColorMode
 	// ContextBefore/ContextAfter are already resolved from rg's
 	// independently-tracked -A/-B/-C (see resolveContext); -A/-B always
 	// partially override -C's corresponding side, regardless of order.
@@ -464,6 +488,33 @@ func buildV1Flags() []*flagSpec {
 			long: "heading", negated: "no-heading", kind: kindSwitch,
 			applySwitch: func(cfg *Config, _ *parseState, on bool) error {
 				cfg.Heading = &on
+				return nil
+			},
+		},
+		{
+			// --column/--no-column: nil (unset) lets wire.go fall back to
+			// Vimgrep's value, matching rg's `column.unwrap_or(vimgrep)`.
+			// See Config.Column's doc.
+			long: "column", negated: "no-column", kind: kindSwitch,
+			applySwitch: func(cfg *Config, _ *parseState, on bool) error {
+				cfg.Column = &on
+				return nil
+			},
+		},
+		{
+			// --vimgrep has no negation (defs.rs's VimGrep::update asserts
+			// this); repeating it is a harmless no-op, same shape as -x
+			// above. See Config.Vimgrep's doc for the defaults it implies.
+			long: "vimgrep", kind: kindSwitch,
+			applySwitch: func(cfg *Config, _ *parseState, _ bool) error {
+				cfg.Vimgrep = true
+				return nil
+			},
+		},
+		{
+			long: "byte-offset", short: 'b', negated: "no-byte-offset", kind: kindSwitch,
+			applySwitch: func(cfg *Config, _ *parseState, on bool) error {
+				cfg.ByteOffset = on
 				return nil
 			},
 		},

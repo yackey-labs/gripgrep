@@ -150,6 +150,27 @@ func TestGoldenVsRipgrep(t *testing.T) {
 		{"heading_with_count_mode_ignored", []string{"--heading", "-c", "hello", corpus}},
 		{"heading_with_no_filename", []string{"-n", "--heading", "-I", "hello", corpus}},
 		{"heading_last_wins", []string{"-n", "--heading", "--no-heading", "hello", corpus}},
+		// Round #34: --column, --vimgrep, -b/--byte-offset. Order-sensitive
+		// (multi-occurrence row ordering, exact field placement, context
+		// interleaving) properties sort-normalization can't catch are
+		// covered separately below (TestGoldenVsRipgrep_Vimgrep*,
+		// TestGoldenVsRipgrep_ByteOffsetColumnFieldOrdering).
+		{"column", []string{"--column", "hello", corpus}},
+		{"column_no_line_number", []string{"--column", "-N", "hello", corpus}},
+		{"column_invert", []string{"--column", "-v", "hello", corpus}},
+		{"vimgrep", []string{"--vimgrep", "hello", corpus}},
+		{"vimgrep_invert", []string{"--vimgrep", "-v", "hello", corpus}},
+		{"vimgrep_no_column", []string{"--vimgrep", "--no-column", "hello", corpus}},
+		{"vimgrep_count_mode", []string{"--vimgrep", "-c", "hello", corpus}},
+		{"vimgrep_heading_ignored", []string{"--vimgrep", "--heading", "hello", corpus}},
+		{"vimgrep_explicit_no_filename_wins", []string{"--vimgrep", "-I", "hello", filepath.Join(corpus, "crlf.txt")}},
+		{"byte_offset", []string{"-b", "hello", corpus}},
+		{"byte_offset_line_number", []string{"-b", "-n", "hello", corpus}},
+		{"byte_offset_column", []string{"-b", "--column", "hello", corpus}},
+		{"byte_offset_count_mode", []string{"-b", "-c", "hello", corpus}},
+		{"byte_offset_files_with_matches", []string{"-b", "-l", "hello", corpus}},
+		{"byte_offset_vimgrep", []string{"-b", "--vimgrep", "hello", corpus}},
+		{"byte_offset_context", []string{"-b", "-C", "1", "hello", corpus}},
 	}
 
 	for _, tc := range cases {
@@ -455,6 +476,106 @@ func TestGoldenVsRipgrep_MaxCountContextOrdering(t *testing.T) {
 	ggBin := buildGG(t, filepath.Dir(thisFile))
 
 	args := []string{"-j1", "-n", "-A", "2", "-m", "2", "hello", path}
+
+	rgOut, rgErr, rgCode := run(t, "rg", args)
+	ggOut, ggErr, ggCode := run(t, ggBin, args)
+
+	if rgCode != ggCode {
+		t.Errorf("exit code mismatch: rg=%d gg=%d\nrg stderr: %s\ngg stderr: %s", rgCode, ggCode, rgErr, ggErr)
+	}
+	if !bytes.Equal(rgOut, ggOut) {
+		t.Errorf("raw (unsorted, -j1, single-file) stdout mismatch:\n--- rg stdout ---\n%s\n--- gg stdout ---\n%s", rgOut, ggOut)
+	}
+}
+
+// TestGoldenVsRipgrep_VimgrepMultiOccurrenceOrdering covers round #34's
+// --vimgrep row-per-occurrence property, which sort-normalization can't
+// catch: multiple rows from the SAME line must appear consecutively, in
+// left-to-right column order, interleaved correctly with single-
+// occurrence rows from other lines -- a set comparison would pass even
+// if the rows for line 1 came out in the wrong order or were split
+// apart by line 3's row.
+func TestGoldenVsRipgrep_VimgrepMultiOccurrenceOrdering(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "multi.txt")
+	content := "one cat two cat\nno match here\ncat at start\n"
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, thisFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("could not determine test file location")
+	}
+	ggBin := buildGG(t, filepath.Dir(thisFile))
+
+	args := []string{"-j1", "--vimgrep", "cat", path}
+
+	rgOut, rgErr, rgCode := run(t, "rg", args)
+	ggOut, ggErr, ggCode := run(t, ggBin, args)
+
+	if rgCode != ggCode {
+		t.Errorf("exit code mismatch: rg=%d gg=%d\nrg stderr: %s\ngg stderr: %s", rgCode, ggCode, rgErr, ggErr)
+	}
+	if !bytes.Equal(rgOut, ggOut) {
+		t.Errorf("raw (unsorted, -j1, single-file) stdout mismatch:\n--- rg stdout ---\n%s\n--- gg stdout ---\n%s", rgOut, ggOut)
+	}
+}
+
+// TestGoldenVsRipgrep_ByteOffsetColumnFieldOrdering covers round #34's
+// "line:col:offset:text" field ordering (-b --column together): a set
+// comparison of whole lines happens to pass even on a wrong field order
+// as long as gg is INTERNALLY consistent with itself across the corpus
+// (every line would be wrong the same way), so this needs an exact,
+// known-good fixture compared byte for byte against the real rg binary,
+// not sort-normalization.
+func TestGoldenVsRipgrep_ByteOffsetColumnFieldOrdering(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "multi.txt")
+	content := "one cat two cat\nno match here\ncat at start\n"
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, thisFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("could not determine test file location")
+	}
+	ggBin := buildGG(t, filepath.Dir(thisFile))
+
+	args := []string{"-j1", "-b", "--column", "cat", path}
+
+	rgOut, rgErr, rgCode := run(t, "rg", args)
+	ggOut, ggErr, ggCode := run(t, ggBin, args)
+
+	if rgCode != ggCode {
+		t.Errorf("exit code mismatch: rg=%d gg=%d\nrg stderr: %s\ngg stderr: %s", rgCode, ggCode, rgErr, ggErr)
+	}
+	if !bytes.Equal(rgOut, ggOut) {
+		t.Errorf("raw (unsorted, -j1, single-file) stdout mismatch:\n--- rg stdout ---\n%s\n--- gg stdout ---\n%s", rgOut, ggOut)
+	}
+}
+
+// TestGoldenVsRipgrep_VimgrepContextInterleaving covers round #34's
+// "--vimgrep -C1" property that context lines print ONCE (never
+// per-occurrence) and correctly interleave with the multi-row match
+// output, including the path-prefixed dash-separated context line
+// format --vimgrep forces even for context.
+func TestGoldenVsRipgrep_VimgrepContextInterleaving(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "multi.txt")
+	content := "one cat two cat\nno match here\ncat at start\n"
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, thisFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("could not determine test file location")
+	}
+	ggBin := buildGG(t, filepath.Dir(thisFile))
+
+	args := []string{"-j1", "--vimgrep", "-C", "1", "cat", path}
 
 	rgOut, rgErr, rgCode := run(t, "rg", args)
 	ggOut, ggErr, ggCode := run(t, ggBin, args)

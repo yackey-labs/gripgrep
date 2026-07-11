@@ -168,6 +168,87 @@ func TestSearchBytesParallelMatchesSerial(t *testing.T) {
 	}
 }
 
+// TestSearchBytesParallelByteOffsetAcrossChunks is round #34's dedicated
+// gate for -b/--byte-offset's parallel-path correctness: Match.Offset
+// was already an existing field before this round (populated via
+// s.absOffsetBase, which searchBytesParallel already seeds from each
+// chunk's own absolute start -- see runChunk's callers in
+// searchBytesParallel: `child.runChunk(chunkData, rec, int64(c.start),
+// 1)`), so parallelInvariance's existing whole-event equality check
+// (which includes offset) already covers serial-vs-parallel agreement.
+// This test adds a STRONGER, independent check that doesn't just compare
+// the two paths to each other (which would pass even if both were wrong
+// the same way): every recorded match's Offset, from BOTH the serial and
+// the parallel run, must point at the exact byte in the original data
+// slice where that match's own line actually starts -- i.e. Offset is
+// verified against ground truth, not just cross-checked between paths.
+//
+// Uses enough data and a low ParallelMinBytes to guarantee several
+// worker chunks, so at least one matched line's absolute offset can only
+// be correct if the chunk-relative offset was properly rebased by that
+// chunk's own start position (a bug here would show up as offsets that
+// are systematically low by one or more chunks' worth of bytes for
+// every match after the first chunk).
+func TestSearchBytesParallelByteOffsetAcrossChunks(t *testing.T) {
+	var b strings.Builder
+	for i := 0; i < 4000; i++ {
+		if i%17 == 0 {
+			fmt.Fprintf(&b, "needle line %d filler filler filler filler filler\n", i)
+		} else {
+			fmt.Fprintf(&b, "filler filler filler filler filler filler %d\n", i)
+		}
+	}
+	data := []byte(b.String())
+
+	checkOffsets := func(t *testing.T, sink *recordingSink) {
+		t.Helper()
+		matches := 0
+		for _, e := range sink.events {
+			if e.kind != "match" {
+				continue
+			}
+			matches++
+			if e.offset < 0 || e.offset+int64(len(e.line)) > int64(len(data)) {
+				t.Fatalf("offset %d + len %d out of range for data of length %d", e.offset, len(e.line), len(data))
+			}
+			got := string(data[e.offset : e.offset+int64(len(e.line))])
+			if got != e.line {
+				t.Fatalf("data[offset:offset+len(line)] = %q, want %q (offset=%d)", got, e.line, e.offset)
+			}
+		}
+		if matches == 0 {
+			t.Fatal("expected at least one match to actually verify offsets against")
+		}
+	}
+
+	for _, w := range []int{2, 4, 8} {
+		t.Run(fmt.Sprintf("workers=%d", w), func(t *testing.T) {
+			serial := New(Searcher{Matcher: literalMatcher("needle", true), LineNumbers: true})
+			serialSink := newRecordingSink()
+			if err := serial.SearchBytes("f", data, serialSink); err != nil {
+				t.Fatalf("serial SearchBytes: %v", err)
+			}
+			checkOffsets(t, serialSink)
+
+			parallel := New(Searcher{
+				Matcher:          literalMatcher("needle", true),
+				LineNumbers:      true,
+				ParallelWorkers:  w,
+				ParallelMinBytes: 1,
+			})
+			parallelSink := newRecordingSink()
+			if err := parallel.SearchBytes("f", data, parallelSink); err != nil {
+				t.Fatalf("parallel(%d) SearchBytes: %v", w, err)
+			}
+			checkOffsets(t, parallelSink)
+
+			// Belt and suspenders: the two paths must also agree with each
+			// other exactly, per parallelInvariance's usual contract.
+			parallelInvariance(t, data, "needle", w)
+		})
+	}
+}
+
 // TestSearchBytesParallelEarlyStopMatchesSerial covers -q/-m-style early
 // exit (Sink.Matched returning more=false): even though every chunk
 // always runs to completion internally (chunkRecorder never honors

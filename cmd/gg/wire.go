@@ -60,11 +60,31 @@ func execute(cfg *Config, stdin io.Reader, stdout, stderr io.Writer) int {
 
 	isTTY := isTerminalWriter(stdout)
 	color := cfg.Color == ColorAlways || cfg.Color == ColorAnsi || (cfg.Color == ColorAuto && isTTY)
+
+	// column resolves rg's `column.unwrap_or(vimgrep)` (hiargs.rs): an
+	// explicit --column/--no-column always wins; otherwise --vimgrep
+	// implies it. See Config.Column's doc.
+	column := cfg.Vimgrep
+	if cfg.Column != nil {
+		column = *cfg.Column
+	}
+
 	heading := isTTY
 	if cfg.Heading != nil {
 		heading = *cfg.Heading
 	}
-	lineNumbers := isTTY
+	if cfg.Vimgrep {
+		// --vimgrep always disables heading, even overriding an explicit
+		// --heading given after it (verified against the real rg binary:
+		// `rg --vimgrep --heading` still prints the flat per-match format,
+		// no heading). Mirrors hiargs.rs's `Some(true) => !low.vimgrep`.
+		heading = false
+	}
+
+	// --column/--vimgrep default line numbers on, same as rg
+	// (hiargs.rs's line_number default includes `|| column || vimgrep`),
+	// but an explicit -n/-N still wins outright.
+	lineNumbers := isTTY || column || cfg.Vimgrep
 	if cfg.LineNumbers != nil {
 		lineNumbers = *cfg.LineNumbers
 	}
@@ -72,6 +92,13 @@ func execute(cfg *Config, stdin io.Reader, stdout, stderr io.Writer) int {
 
 	statPaths, _ := engine.ResolvePaths(cfg.Paths)
 	showPath := computeShowPath(statPaths)
+	if cfg.Vimgrep {
+		// --vimgrep always forces the path prefix, even for a single
+		// explicit file (verified against the real rg binary), unless an
+		// explicit -H/-I below overrides it. Mirrors hiargs.rs's
+		// `with_filename.unwrap_or(vimgrep || !paths.is_one_file)`.
+		showPath = true
+	}
 	if cfg.WithFilename != nil {
 		showPath = *cfg.WithFilename
 	}
@@ -84,7 +111,7 @@ func execute(cfg *Config, stdin io.Reader, stdout, stderr io.Writer) int {
 	}
 
 	newWorker := func() *engine.Worker {
-		return newEngineWorker(cfg, econf, matcher, dest, color, heading, showPath)
+		return newEngineWorker(cfg, econf, matcher, dest, color, heading, showPath, column)
 	}
 
 	// quietSink is passed to Run as an engine.QuitSink only when -q was
@@ -238,20 +265,23 @@ func buildMatcher(cfg *Config) (match.Matcher, error) {
 // FilesWithMatches printer's per-file buffer, are single-goroutine only
 // (see their doc comments) -- exactly the sharing unit sync.Pool exists
 // for.
-func newEngineWorker(cfg *Config, econf engine.Config, matcher match.Matcher, dest *printer.Dest, color, heading, showPath bool) *engine.Worker {
+func newEngineWorker(cfg *Config, econf engine.Config, matcher match.Matcher, dest *printer.Dest, color, heading, showPath, column bool) *engine.Worker {
 	searcher := engine.NewSearcher(econf, matcher)
 
-	sink, isStandard := buildCLISink(cfg, dest, matcher, color, heading, showPath)
+	sink, isStandard := buildCLISink(cfg, dest, matcher, color, heading, showPath, column)
 	return &engine.Worker{Searcher: searcher, Sink: sink, Standard: isStandard}
 }
 
 // buildCLISink selects and configures the printer sink cfg.Mode calls
 // for (Standard/Count/FilesWithMatches), applying the color/heading/
-// showPath decisions execute already resolved once per invocation. This
-// is purely a display concern -- which is why it lives in cmd/gg rather
-// than internal/engine (see that package's doc): the root facade builds
-// its own, unrelated Sink implementation instead.
-func buildCLISink(cfg *Config, dest *printer.Dest, matcher match.Matcher, color, heading, showPath bool) (sink search.Sink, isStandard bool) {
+// showPath/column decisions execute already resolved once per invocation
+// (column is passed in already resolved -- see execute's `column :=
+// cfg.Vimgrep; if cfg.Column != nil {...}` -- since Config.Column is a
+// pointer and its Vimgrep-implied default can't be read off cfg alone).
+// This is purely a display concern -- which is why it lives in cmd/gg
+// rather than internal/engine (see that package's doc): the root facade
+// builds its own, unrelated Sink implementation instead.
+func buildCLISink(cfg *Config, dest *printer.Dest, matcher match.Matcher, color, heading, showPath, column bool) (sink search.Sink, isStandard bool) {
 	switch cfg.Mode {
 	case ModeCount:
 		c := printer.NewCount(dest)
@@ -269,6 +299,9 @@ func buildCLISink(cfg *Config, dest *printer.Dest, matcher match.Matcher, color,
 		s.Heading = heading
 		s.ShowPath = showPath
 		s.ContextEnabled = cfg.ContextBefore > 0 || cfg.ContextAfter > 0
+		s.Column = column
+		s.Vimgrep = cfg.Vimgrep
+		s.ByteOffset = cfg.ByteOffset
 		return s, true
 	}
 }
