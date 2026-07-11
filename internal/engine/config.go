@@ -137,6 +137,27 @@ type Config struct {
 	Binary  BinaryMode // resolved binary-detection policy
 	Mmap    MmapMode   // --mmap/--no-mmap
 
+	// FollowSymlinks is -L/--follow: follow symlinks during traversal
+	// (default off), passed straight through to walk.Options.FollowSymlinks.
+	FollowSymlinks bool
+	// OneFileSystem is --one-file-system: don't cross a file-system
+	// boundary relative to each root, passed through to
+	// walk.Options.OneFileSystem (see its doc for the per-root semantics).
+	OneFileSystem bool
+	// NoMessages is --no-messages: suppress per-file/per-path error
+	// messages (open/read failures, unreadable directories, symlink loops
+	// and broken links under -L). It gates ONLY the stderr print, never the
+	// error-exit signal -- an error still forces exit 2 (Result.AnyError),
+	// matching rg exactly. It ALSO suppresses ignore-file load warnings
+	// (see NoIgnoreMessages).
+	NoMessages bool
+	// NoIgnoreMessages is --no-ignore-messages: suppress ignore-file load/
+	// parse error messages only (e.g. a --ignore-file that can't be read).
+	// Regular file errors are unaffected. Either this OR NoMessages
+	// silences the ignore warnings, mirroring rg's ignore_message! guard
+	// (messages() && ignore_messages()). See buildIgnoreSources.
+	NoIgnoreMessages bool
+
 	// Invert/LineNumbers/BeforeContext/AfterContext are Searcher
 	// construction inputs, consumed only by NewSearcher. LineNumbers is
 	// already resolved to a concrete bool by the caller (cmd/gg derives

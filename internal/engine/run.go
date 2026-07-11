@@ -136,8 +136,20 @@ func Run(cfg Config, newWorker NewWorkerFunc, quiet QuitSink, stop func() bool, 
 	walkOpts.Globs = globSet
 	walkOpts.GlobsRequireMatch = globsRequireMatch
 	walkOpts.Types = typesMatcher
+	walkOpts.FollowSymlinks = cfg.FollowSymlinks
+	walkOpts.OneFileSystem = cfg.OneFileSystem
 
 	var anyMatched, anyError atomic.Bool
+	// reportErr writes one stderr line per per-file/per-path error and flips
+	// the error-exit signal. --no-messages gates ONLY the print: the
+	// AnyError store always happens, so an error still forces exit 2 with or
+	// without the flag (rg parity -- see Config.NoMessages).
+	reportErr := func(path string, err error) {
+		if !cfg.NoMessages {
+			fmt.Fprintf(stderr, "gg: %s: %s\n", path, err)
+		}
+		anyError.Store(true)
+	}
 	pool := &sync.Pool{
 		New: func() any { return newWorker() },
 	}
@@ -147,17 +159,18 @@ func Run(cfg Config, newWorker NewWorkerFunc, quiet QuitSink, stop func() bool, 
 			return walk.Quit
 		}
 		if e.Err != nil {
-			fmt.Fprintf(stderr, "gg: %s: %s\n", e.Path, e.Err)
-			anyError.Store(true)
+			reportErr(e.Path, e.Err)
 			return walk.Continue
 		}
 		if e.Type != walk.TypeFile {
-			// Directories recurse internally (nothing to do here);
-			// symlinks are never followed in v1 (-L not implemented, so
-			// FollowSymlinks is always false and TypeSymlink entries
-			// carry no content to search); TypeUnknown covers
-			// FIFO/socket/device entries, which must never be opened
-			// (opening a FIFO blocks forever) -- skip unconditionally.
+			// Directories recurse internally (nothing to do here). Followed
+			// symlinks (-L) never reach here AS symlinks -- the walker
+			// resolves them to a TypeFile/TypeDir target first (or a
+			// TypeSymlink WITH Err for a broken link/loop, handled above);
+			// an UNfollowed TypeSymlink carries no content to search.
+			// TypeUnknown covers FIFO/socket/device entries, which must
+			// never be opened (opening a FIFO blocks forever) -- skip
+			// unconditionally.
 			return walk.Continue
 		}
 
@@ -202,8 +215,7 @@ func Run(cfg Config, newWorker NewWorkerFunc, quiet QuitSink, stop func() bool, 
 				serr := w.Searcher.SearchBytes(e.Path, data, tracked)
 				mf.Close()
 				if serr != nil {
-					fmt.Fprintf(stderr, "gg: %s: %s\n", e.Path, serr)
-					anyError.Store(true)
+					reportErr(e.Path, serr)
 				}
 				return walk.Continue
 			}
@@ -216,8 +228,7 @@ func Run(cfg Config, newWorker NewWorkerFunc, quiet QuitSink, stop func() bool, 
 
 		f, ferr := openRaw(e.Path)
 		if ferr != nil {
-			fmt.Fprintf(stderr, "gg: %s: %s\n", e.Path, ferr)
-			anyError.Store(true)
+			reportErr(e.Path, ferr)
 			return walk.Continue
 		}
 		defer f.Close()
@@ -234,14 +245,12 @@ func Run(cfg Config, newWorker NewWorkerFunc, quiet QuitSink, stop func() bool, 
 
 		reader, rerr := stripUTF8BOM(f)
 		if rerr != nil {
-			fmt.Fprintf(stderr, "gg: %s: %s\n", e.Path, rerr)
-			anyError.Store(true)
+			reportErr(e.Path, rerr)
 			return walk.Continue
 		}
 
 		if serr := w.Searcher.Search(e.Path, reader, tracked); serr != nil {
-			fmt.Fprintf(stderr, "gg: %s: %s\n", e.Path, serr)
-			anyError.Store(true)
+			reportErr(e.Path, serr)
 		}
 		return walk.Continue
 	}
@@ -291,21 +300,31 @@ func Files(cfg Config, visit FilesVisit, stderr io.Writer) (Result, error) {
 	walkOpts.Globs = globSet
 	walkOpts.GlobsRequireMatch = globsRequireMatch
 	walkOpts.Types = typesMatcher
+	walkOpts.FollowSymlinks = cfg.FollowSymlinks
+	walkOpts.OneFileSystem = cfg.OneFileSystem
 
 	var anyMatched, anyError atomic.Bool
 	visitor := func(e *walk.Entry) walk.WalkState {
 		if e.Err != nil {
-			fmt.Fprintf(stderr, "gg: %s: %s\n", e.Path, e.Err)
+			// --no-messages gates the print only; the error still forces
+			// exit 2 (rg parity -- see Config.NoMessages). --files never
+			// reads file content, so the only errors reaching here are walk
+			// errors (unreadable directory, symlink loop / broken link
+			// under -L).
+			if !cfg.NoMessages {
+				fmt.Fprintf(stderr, "gg: %s: %s\n", e.Path, e.Err)
+			}
 			anyError.Store(true)
 			return walk.Continue
 		}
 		if e.Type != walk.TypeFile {
-			// Directories recurse internally; symlinks are never
-			// followed in v1 (-L not implemented) and carry no listable
-			// content of their own -- matches real rg's own --files
-			// output, verified directly: an unfollowed symlink never
-			// appears in the listing. TypeUnknown (FIFO/socket/device)
-			// is excluded the same way Run already excludes it.
+			// Directories recurse internally. A followed symlink (-L) is
+			// resolved to its TypeFile/TypeDir target before reaching here
+			// (a broken link / loop arrives as TypeSymlink WITH Err, handled
+			// above); an UNfollowed symlink carries no listable content --
+			// matches real rg's own --files output, verified directly.
+			// TypeUnknown (FIFO/socket/device) is excluded the same way Run
+			// already excludes it.
 			return walk.Continue
 		}
 		anyMatched.Store(true)

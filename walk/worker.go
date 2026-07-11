@@ -207,6 +207,20 @@ func (w *worker) processDir(t *dirTask) bool {
 		}
 	}
 
+	if w.opts.OneFileSystem && t.depth > 0 && t.rootDevKnown {
+		// --one-file-system: a directory whose device differs from the root
+		// it descends from is not read or descended into (rg's
+		// same_file_system == false => WalkState::Skip). Checked here, once
+		// per directory task, only when the flag is set -- the default walk
+		// never stats a directory. A depth-0 root is exempt: it defines its
+		// own device, so it is always searched (per-root semantics, matching
+		// rg's per-path root_device). The directory itself yields no output,
+		// so nothing is visited before skipping.
+		if dev, ok := statDev(t.abs); ok && dev != t.rootDev {
+			return false
+		}
+	}
+
 	f, err := os.Open(t.abs)
 	if err != nil {
 		return w.doVisit(t.path, TypeDir, t.depth, err) == Quit
@@ -309,6 +323,8 @@ func (w *worker) processDir(t *dirTask) bool {
 				depth:        t.depth + 1,
 				ignore:       node,
 				symAncestors: symAnc,
+				rootDev:      t.rootDev,
+				rootDevKnown: t.rootDevKnown,
 			}
 			if single {
 				if w.processDir(child) {
@@ -320,7 +336,7 @@ func (w *worker) processDir(t *dirTask) bool {
 
 		case TypeSymlink:
 			if w.opts.FollowSymlinks {
-				if w.followSymlink(childPath, childAbs, t.depth+1, node, symAnc, q, single) {
+				if w.followSymlink(childPath, childAbs, t.depth+1, node, symAnc, q, single, t.rootDev, t.rootDevKnown) {
 					return true
 				}
 				continue
@@ -357,7 +373,7 @@ func (w *worker) processDir(t *dirTask) bool {
 // childPath/childAbs are the worker's scratch buffers — still valid at
 // entry, since no other joinPath call has happened since they were
 // filled by the caller.
-func (w *worker) followSymlink(childPath, childAbs []byte, depth int, node *ignoreNode, symAnc *symNode, q *dirQueue, single bool) (quit bool) {
+func (w *worker) followSymlink(childPath, childAbs []byte, depth int, node *ignoreNode, symAnc *symNode, q *dirQueue, single bool, rootDev uint64, rootDevKnown bool) (quit bool) {
 	absStr := string(childAbs)
 	pathStr := bufString(childPath)
 	target, err := os.Stat(absStr)
@@ -366,7 +382,11 @@ func (w *worker) followSymlink(childPath, childAbs []byte, depth int, node *igno
 	}
 	if target.IsDir() {
 		if loops(symAnc, target) {
-			return false
+			// Following this link would revisit an ancestor: report it as a
+			// per-entry error (exit 2, one message, --no-messages-gated at
+			// the visitor) and do not descend. Results outside the loop have
+			// already been / will still be emitted -- see errSymlinkLoop.
+			return w.doVisit(pathStr, TypeSymlink, depth, errSymlinkLoop) == Quit
 		}
 		st := w.doVisit(pathStr, TypeDir, depth, nil)
 		if st == Quit {
@@ -375,7 +395,7 @@ func (w *worker) followSymlink(childPath, childAbs []byte, depth int, node *igno
 		if st == SkipDir {
 			return false
 		}
-		child := &dirTask{path: string(childPath), abs: absStr, depth: depth, ignore: node, symAncestors: symAnc}
+		child := &dirTask{path: string(childPath), abs: absStr, depth: depth, ignore: node, symAncestors: symAnc, rootDev: rootDev, rootDevKnown: rootDevKnown}
 		if single {
 			return w.processDir(child)
 		}

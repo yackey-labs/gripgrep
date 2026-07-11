@@ -1,8 +1,31 @@
 package walk
 
 import (
+	"errors"
 	"os"
 )
+
+// errSymlinkLoop is the Entry.Err reported when following a symlink would
+// revisit an ancestor directory (a file-system loop). rg treats this as a
+// non-fatal error: results outside the loop are still emitted, one message
+// goes to stderr, and the exit code becomes 2 (error overrides match). The
+// engine's visitor surfaces it exactly like any other per-entry error, so
+// --no-messages suppresses the message while the exit code stays 2.
+var errSymlinkLoop = errors.New("file system loop detected")
+
+// statDev returns the device number of the file at path (following
+// symlinks), for Options.OneFileSystem boundary checks. ok is false when
+// the path can't be stat'd or the platform doesn't expose a device number
+// (see devIno). Only ever called when OneFileSystem is set, so the default
+// walk pays for none of it.
+func statDev(path string) (dev uint64, ok bool) {
+	fi, err := os.Stat(path)
+	if err != nil {
+		return 0, false
+	}
+	dev, _, ok = devIno(fi)
+	return dev, ok
+}
 
 // symNode is an immutable link in a chain of directory identities
 // (device + inode), used to detect symlink loops when Options.FollowSymlinks

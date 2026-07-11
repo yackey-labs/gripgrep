@@ -99,6 +99,15 @@ type Options struct {
 
 	// FollowSymlinks follows symlinks during traversal (default: no).
 	FollowSymlinks bool
+	// OneFileSystem is --one-file-system: don't descend into a directory
+	// that lives on a different file system than the ROOT it was reached
+	// from (find -xdev). Applied per-root -- each top-level path captures
+	// its own device (buildRootTask), and a directory is pruned at descent
+	// time when its device differs from that root's (see worker.processDir).
+	// The device comparison costs one stat per directory, so it runs ONLY
+	// when this flag is set: the default (stat-free, d_type-based) walk
+	// gains nothing. See crates/ignore/src/walk.rs's same_file_system.
+	OneFileSystem bool
 	// MaxFileSize skips files larger than this many bytes; 0 = unlimited.
 	MaxFileSize int64
 	// MaxDepth is -d/--max-depth: nil = unlimited. A non-nil 0 is a real,
@@ -307,6 +316,17 @@ func buildRootTask(root string, opts *Options) *dirTask {
 		t.rootKind = rootDir
 		if opts.ignoreActive && !opts.NoIgnoreParent {
 			t.ignore = buildParentChain(t.abs, opts)
+		}
+		if opts.OneFileSystem {
+			// Capture this root's device so every directory descended from
+			// it can be compared against it (see processDir). info is the
+			// resolved stat here (os.Stat was used above for a symlink
+			// root), so its device is the target's, matching rg's own
+			// per-root device_num of the resolved path.
+			if dev, _, ok := devIno(info); ok {
+				t.rootDev = dev
+				t.rootDevKnown = true
+			}
 		}
 		return t
 	}

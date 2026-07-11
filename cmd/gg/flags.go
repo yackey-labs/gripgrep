@@ -253,6 +253,27 @@ type Config struct {
 	// `rg --max-depth 0 dir/` searches nothing) -- NOT the same as
 	// unset, mirroring MaxCount's pointer rationale below.
 	MaxDepth *int
+	// FollowSymlinks is -L/--follow / --no-follow: follow symbolic links
+	// discovered during traversal (default off). Explicit symlink PATH
+	// arguments are always followed regardless (walk.buildRootTask). Under
+	// -L, rg reports symlink loops and broken links as errors (exit 2);
+	// --no-messages suppresses those messages without changing the exit.
+	FollowSymlinks bool
+	// OneFileSystem is --one-file-system / --no-one-file-system: don't
+	// cross a file-system boundary while traversing each path's tree
+	// (find -xdev). Applies per root argument -- a second root on another
+	// file system is still searched fully.
+	OneFileSystem bool
+	// NoMessages is --no-messages / --messages: suppress per-file/per-path
+	// error messages (failed open/read, unreadable directories, symlink
+	// loops and broken links under -L) AND ignore-file load warnings. It
+	// never changes the exit code -- an error still forces exit 2. Last of
+	// --no-messages/--messages wins.
+	NoMessages bool
+	// NoIgnoreMessages is --no-ignore-messages / --ignore-messages:
+	// suppress ignore-file load/parse warnings only (not regular file
+	// errors). Either this or --no-messages silences those warnings.
+	NoIgnoreMessages bool
 
 	// LineNumbers is nil when neither -n nor -N was given: rg decides
 	// the default from isatty(stdout) at runtime, which is an M2/cmd
@@ -659,6 +680,52 @@ func buildV1Flags() []*flagSpec {
 			long: "no-require-git", negated: "require-git", kind: kindSwitch,
 			applySwitch: func(cfg *Config, _ *parseState, on bool) error {
 				cfg.NoRequireGit = on
+				return nil
+			},
+		},
+		{
+			// -L/--follow / --no-follow: follow symlinks during traversal.
+			// Explicit symlink PATH args are always followed regardless
+			// (walk.buildRootTask). Under -L, symlink loops and broken links
+			// are reported as errors (exit 2) -- suppressible via
+			// --no-messages -- verified against the real rg binary (round
+			// #42 L-block).
+			long: "follow", short: 'L', negated: "no-follow", kind: kindSwitch,
+			applySwitch: func(cfg *Config, _ *parseState, on bool) error {
+				cfg.FollowSymlinks = on
+				return nil
+			},
+		},
+		{
+			// --one-file-system / --no-one-file-system: don't cross a
+			// file-system boundary relative to each root (find -xdev).
+			// Per-root: a second root on another file system is still
+			// searched fully (round #42 --one-file-system facts).
+			long: "one-file-system", negated: "no-one-file-system", kind: kindSwitch,
+			applySwitch: func(cfg *Config, _ *parseState, on bool) error {
+				cfg.OneFileSystem = on
+				return nil
+			},
+		},
+		{
+			// --no-messages / --messages: rg's primary spelling is
+			// "no-messages" with the (rare) "--messages" turning a preceding
+			// --no-messages back off (last-wins). Suppresses per-file/path
+			// error messages AND ignore-file load warnings, but NEVER the
+			// exit code -- an error still forces exit 2 (round #42 M-block).
+			long: "no-messages", negated: "messages", kind: kindSwitch,
+			applySwitch: func(cfg *Config, _ *parseState, on bool) error {
+				cfg.NoMessages = on
+				return nil
+			},
+		},
+		{
+			// --no-ignore-messages / --ignore-messages: suppress ignore-file
+			// load/parse warnings only (not regular file errors). Either this
+			// or --no-messages silences them (probe M10/M11).
+			long: "no-ignore-messages", negated: "ignore-messages", kind: kindSwitch,
+			applySwitch: func(cfg *Config, _ *parseState, on bool) error {
+				cfg.NoIgnoreMessages = on
 				return nil
 			},
 		},
@@ -1208,8 +1275,8 @@ type notImplementedFlag struct {
 // PLAN.md's explicit "Not in v1" line -- replace, multiline, PCRE2,
 // non-UTF-8 encodings, compressed files, --sort, JSON -- plus a
 // handful of flags an rg user is very likely to type that aren't named
-// there: -L/--follow and --binary (reachable in v1 only indirectly via
-// -uuu, but not as a flag of its own yet). -h/--help and -V/--version
+// there: --binary (reachable in v1 only indirectly via -uuu, but not as a
+// flag of its own yet). -h/--help and -V/--version
 // are real flags (see buildV1Flags), not in this list, per M2's rg-parity
 // fix. This is intentionally not the full ~100-flag rg surface -- see
 // the M0 handoff note for why that would be scope inflation for this
@@ -1225,7 +1292,6 @@ var notImplementedFlags = []notImplementedFlag{
 	{long: "sortr", label: "--sortr"},
 	{long: "json", label: "--json"},
 	{long: "binary", label: "--binary"},
-	{long: "follow", short: 'L', label: "-L/--follow"},
 }
 
 // byLongName indexes v1Flags by every long spelling that should resolve

@@ -25,6 +25,12 @@ type dirTask struct {
 	// reached during the walk, used for symlink loop detection. Only
 	// populated when Options.FollowSymlinks is set.
 	symAncestors *symNode
+	// rootDev is the device number of the top-level root this task descends
+	// from, inherited unchanged by every child; rootDevKnown says whether it
+	// was captured (both zero unless Options.OneFileSystem is set). Used by
+	// processDir to prune directories that cross a file-system boundary.
+	rootDev      uint64
+	rootDevKnown bool
 
 	// The following fields are only meaningful for depth == 0 (root)
 	// tasks, which unlike every other task have not yet been classified

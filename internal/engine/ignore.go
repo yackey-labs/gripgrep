@@ -26,11 +26,19 @@ func buildIgnoreSources(cfg Config, stderr io.Writer) (explicit, global *glob.Se
 	// independent, so it's a single bool here, not an ordered interaction.
 	if !cfg.NoIgnoreFiles && len(cfg.IgnoreFiles) > 0 {
 		set, errs := walk.LoadExplicitIgnore(cfg.IgnoreFiles)
-		for _, e := range errs {
-			// e.Err is an *os.PathError whose text already names the path;
-			// printing it verbatim keeps this to the "one line per bad
-			// file" rg contract without duplicating the path.
-			fmt.Fprintf(stderr, "gg: %s\n", e.Err)
+		// These are ignore-file LOAD warnings, silenced by EITHER
+		// --no-ignore-messages OR --no-messages -- mirroring rg's
+		// ignore_message! guard (messages() && ignore_messages()): either
+		// flag being off suppresses them. Unlike regular file errors, they
+		// never touch the exit code (Result.AnyError) at all, with or
+		// without the flags (probes G4r-G7 / M10/M11).
+		if !cfg.NoMessages && !cfg.NoIgnoreMessages {
+			for _, e := range errs {
+				// e.Err is an *os.PathError whose text already names the
+				// path; printing it verbatim keeps this to the "one line per
+				// bad file" rg contract without duplicating the path.
+				fmt.Fprintf(stderr, "gg: %s\n", e.Err)
+			}
 		}
 		explicit = set
 	}
