@@ -80,7 +80,7 @@ func TestSplitChunksInvariants(t *testing.T) {
 				}
 				// Every boundary except the very last must land just after
 				// a newline (or at 0), i.e. never split a line in two.
-				if r.end != len(c.data) && r.end > 0 && c.data[r.end-1] != lineTerm {
+				if r.end != len(c.data) && r.end > 0 && c.data[r.end-1] != defaultLineTerm {
 					t.Errorf("range %d ends at %d, which is not just after a newline (mid-line split)", i, r.end)
 				}
 			}

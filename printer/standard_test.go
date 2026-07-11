@@ -270,12 +270,16 @@ func TestStandard_ContextGapNoLineNumbers(t *testing.T) {
 	p := NewStandard(dest)
 	p.ContextEnabled = true
 
+	// Line values carry their trailing '\n', exactly as the searcher
+	// delivers them (line terminators are part of the line) -- the
+	// offset-based gap check spans the full delivered length, so the
+	// terminator byte must be present for contiguous offsets to line up.
 	p.Begin("a/b/foo.txt")
-	p.Matched(&search.Match{Line: []byte(fooLine1), Offset: 0})
-	p.Context(&search.Ctx{Line: []byte(fooLine2), Offset: int64(len(fooLine1) + 1), After: true})
+	p.Matched(&search.Match{Line: []byte(fooLine1 + "\n"), Offset: 0})
+	p.Context(&search.Ctx{Line: []byte(fooLine2 + "\n"), Offset: int64(len(fooLine1) + 1), After: true})
 	// Gap: skip line 3 entirely, jump straight to line 4 at some later offset.
-	p.Context(&search.Ctx{Line: []byte(fooLine4), Offset: 5000})
-	p.Matched(&search.Match{Line: []byte(fooLine5), Offset: 5000 + int64(len(fooLine4)) + 1})
+	p.Context(&search.Ctx{Line: []byte(fooLine4 + "\n"), Offset: 5000})
+	p.Matched(&search.Match{Line: []byte(fooLine5 + "\n"), Offset: 5000 + int64(len(fooLine4)) + 1})
 	p.Finish("a/b/foo.txt", &search.Stats{Matched: true})
 
 	want := "a/b/foo.txt:" + fooLine1 + "\n" +
