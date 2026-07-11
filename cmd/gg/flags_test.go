@@ -544,6 +544,78 @@ func TestByteOffsetFlag(t *testing.T) {
 	}
 }
 
+func TestOnlyMatchingFlag(t *testing.T) {
+	// -o/--only-matching has no negation (defs.rs's OnlyMatching::update
+	// asserts this); repeating it is a harmless no-op.
+	if cfg := mustParse(t, "pat"); cfg.OnlyMatching {
+		t.Errorf("default OnlyMatching = true, want false")
+	}
+	if cfg := mustParse(t, "-o", "pat"); !cfg.OnlyMatching {
+		t.Errorf("-o: OnlyMatching = false, want true")
+	}
+	if cfg := mustParse(t, "--only-matching", "pat"); !cfg.OnlyMatching {
+		t.Errorf("--only-matching: OnlyMatching = false, want true")
+	}
+	if cfg := mustParse(t, "-o", "-o", "pat"); !cfg.OnlyMatching {
+		t.Errorf("-o -o: OnlyMatching = false, want true")
+	}
+	wantErr(t, "--no-only-matching", "pat")
+}
+
+func TestMaxColumnsFlag(t *testing.T) {
+	// Verified against the real rg binary:
+	//   rg -M 5 pat f.txt       -> MaxColumns = 5
+	//   rg -M5 pat f.txt        -> MaxColumns = 5 (attached short value)
+	//   rg --max-columns 5 ...  -> MaxColumns = 5
+	//   rg --max-columns 5 -M0  -> MaxColumns = 0 (0 means unlimited)
+	if cfg := mustParse(t, "pat"); cfg.MaxColumns != 0 {
+		t.Errorf("default MaxColumns = %d, want 0 (unlimited)", cfg.MaxColumns)
+	}
+	if cfg := mustParse(t, "-M", "5", "pat"); cfg.MaxColumns != 5 {
+		t.Errorf("-M 5: MaxColumns = %d, want 5", cfg.MaxColumns)
+	}
+	if cfg := mustParse(t, "-M5", "pat"); cfg.MaxColumns != 5 {
+		t.Errorf("-M5: MaxColumns = %d, want 5", cfg.MaxColumns)
+	}
+	if cfg := mustParse(t, "--max-columns", "5", "pat"); cfg.MaxColumns != 5 {
+		t.Errorf("--max-columns 5: MaxColumns = %d, want 5", cfg.MaxColumns)
+	}
+	if cfg := mustParse(t, "--max-columns", "5", "-M0", "pat"); cfg.MaxColumns != 0 {
+		t.Errorf("--max-columns 5 -M0: MaxColumns = %d, want 0", cfg.MaxColumns)
+	}
+	wantErr(t, "-M", "-5", "pat")
+}
+
+func TestMaxColumnsPreviewFlag(t *testing.T) {
+	if cfg := mustParse(t, "pat"); cfg.MaxColumnsPreview {
+		t.Errorf("default MaxColumnsPreview = true, want false")
+	}
+	if cfg := mustParse(t, "--max-columns-preview", "pat"); !cfg.MaxColumnsPreview {
+		t.Errorf("--max-columns-preview: MaxColumnsPreview = false, want true")
+	}
+	cfg := mustParse(t, "--max-columns-preview", "--no-max-columns-preview", "pat")
+	if cfg.MaxColumnsPreview {
+		t.Errorf("--max-columns-preview --no-max-columns-preview: MaxColumnsPreview = true, want false (last wins)")
+	}
+}
+
+func TestTrimFlag(t *testing.T) {
+	if cfg := mustParse(t, "pat"); cfg.Trim {
+		t.Errorf("default Trim = true, want false")
+	}
+	if cfg := mustParse(t, "--trim", "pat"); !cfg.Trim {
+		t.Errorf("--trim: Trim = false, want true")
+	}
+	cfg := mustParse(t, "--trim", "--no-trim", "pat")
+	if cfg.Trim {
+		t.Errorf("--trim --no-trim: Trim = true, want false (last wins)")
+	}
+	cfg = mustParse(t, "--no-trim", "--trim", "pat")
+	if !cfg.Trim {
+		t.Errorf("--no-trim --trim: Trim = false, want true (last wins)")
+	}
+}
+
 func TestSearchModeLastWins(t *testing.T) {
 	if cfg := mustParse(t, "pat"); cfg.Mode != ModeStandard {
 		t.Errorf("default Mode = %v, want ModeStandard", cfg.Mode)
@@ -878,8 +950,6 @@ func TestNotYetImplementedFlags(t *testing.T) {
 	// specific error distinguishing them from a bare "unrecognized
 	// flag" -- never silently ignored or reinterpreted.
 	for _, args := range [][]string{
-		{"-o", "pat"},
-		{"--only-matching", "pat"},
 		{"-P", "pat"},
 		{"--pcre2", "pat"},
 		{"-U", "pat"},

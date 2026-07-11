@@ -194,7 +194,47 @@ type Config struct {
 	// there is no Vimgrep-driven default to resolve: byte_offset defaults
 	// to false regardless of any other flag).
 	ByteOffset bool
-	Mode       SearchMode
+	// OnlyMatching is -o/--only-matching: prints only the matched
+	// (non-empty... actually empty matches DO print, as a blank row --
+	// see printer.Standard.Matched's doc) text, one row per occurrence,
+	// instead of the whole line. No negation exists in rg (defs.rs's
+	// OnlyMatching::update asserts this), same shape as Vimgrep. Verified
+	// against the real rg binary: has no effect at all once --vimgrep is
+	// also given (vimgrep already implies "one row per occurrence" and
+	// wins outright, regardless of flag order); does not error under -v
+	// (rg: inversion has no matches for -o to narrow to, so the whole
+	// non-matching line prints, same as without -o); changes -c to count
+	// OCCURRENCES rather than matched LINES (rg's docs: "when --count is
+	// combined with --only-matching, ripgrep behaves as if --count-matches
+	// was given") EXCEPT under -v, where -c still counts lines (verified:
+	// `rg -o -c -v` prints line count, not 0, matching plain `-c -v`); has
+	// no effect on -l or -q.
+	OnlyMatching bool
+	// MaxColumns is -M/--max-columns: 0 means unlimited, whether because
+	// the flag was never given or because it was explicitly given as
+	// "-M0" -- rg folds both into the same None (defs.rs's MaxColumns::
+	// update: "when max is 0 ... None"), so a single int with a
+	// 0-means-unlimited convention is exact, unlike MaxCount/MaxDepth
+	// above (where 0 is a distinct, meaningful value from "unset").
+	MaxColumns int
+	// MaxColumnsPreview is --max-columns-preview/--no-max-columns-preview:
+	// changes an omitted over-long line from a fixed placeholder message
+	// to a truncated preview of its own content. Has no effect unless
+	// MaxColumns is also set (rg's own doc: "If the max-columns flag is
+	// not set, then this has no effect").
+	MaxColumnsPreview bool
+	// Trim is --trim/--no-trim: strips leading ASCII whitespace (space,
+	// tab, and -- per rg's own trim_ascii_prefix -- \n, \v, \f, \r, though
+	// gg's line-terminator handling means only tab/space are ever
+	// actually reachable at a printed line's start) from every printed
+	// line, matched or context alike. Verified against the real rg
+	// binary: applies BEFORE the MaxColumns length check (a line trimmed
+	// under its limit is no longer omitted), but any --column/-b field
+	// still reports the position in the UNTRIMMED line -- trimming only
+	// ever changes what TEXT gets printed, never the numbers around it.
+	// See printer.Standard.Trim's doc for the full breakdown.
+	Trim bool
+	Mode SearchMode
 	Quiet      bool // -q/--quiet; independent of Mode, matches rg (quiet suppresses output regardless of search mode)
 	Color      ColorMode
 	// ContextBefore/ContextAfter are already resolved from rg's
@@ -519,6 +559,45 @@ func buildV1Flags() []*flagSpec {
 			},
 		},
 		{
+			// -o/--only-matching has no negation (defs.rs's OnlyMatching::
+			// update asserts this), same shape as -x/--vimgrep above.
+			long: "only-matching", short: 'o', kind: kindSwitch,
+			applySwitch: func(cfg *Config, _ *parseState, _ bool) error {
+				cfg.OnlyMatching = true
+				return nil
+			},
+		},
+		{
+			// -M/--max-columns NUM: no negation in rg (defs.rs's
+			// MaxColumns never sets name_negated) -- "-M0" is how it's
+			// reset to unlimited instead. See Config.MaxColumns' doc for
+			// why 0 is a safe unlimited sentinel here (unlike MaxCount/
+			// MaxDepth's pointer convention).
+			long: "max-columns", short: 'M', kind: kindValue,
+			applyValue: func(cfg *Config, _ *parseState, val string) error {
+				n, err := parseNonNegInt(val)
+				if err != nil {
+					return err
+				}
+				cfg.MaxColumns = n
+				return nil
+			},
+		},
+		{
+			long: "max-columns-preview", negated: "no-max-columns-preview", kind: kindSwitch,
+			applySwitch: func(cfg *Config, _ *parseState, on bool) error {
+				cfg.MaxColumnsPreview = on
+				return nil
+			},
+		},
+		{
+			long: "trim", negated: "no-trim", kind: kindSwitch,
+			applySwitch: func(cfg *Config, _ *parseState, on bool) error {
+				cfg.Trim = on
+				return nil
+			},
+		},
+		{
 			long: "count", short: 'c', kind: kindSwitch,
 			applySwitch: func(cfg *Config, _ *parseState, _ bool) error {
 				cfg.Mode = ModeCount
@@ -695,7 +774,7 @@ type notImplementedFlag struct {
 
 // notImplementedFlags is a curated (not exhaustive) list covering
 // PLAN.md's explicit "Not in v1" line -- replace, multiline, PCRE2,
-// non-UTF-8 encodings, compressed files, --sort, JSON, -o -- plus a
+// non-UTF-8 encodings, compressed files, --sort, JSON -- plus a
 // handful of flags an rg user is very likely to type that aren't named
 // there: -L/--follow and --binary (reachable in v1 only indirectly via
 // -uuu, but not as a flag of its own yet). -h/--help and -V/--version
@@ -713,7 +792,6 @@ var notImplementedFlags = []notImplementedFlag{
 	{long: "sort", label: "--sort"},
 	{long: "sortr", label: "--sortr"},
 	{long: "json", label: "--json"},
-	{long: "only-matching", short: 'o', label: "-o/--only-matching"},
 	{long: "binary", label: "--binary"},
 	{long: "follow", short: 'L', label: "-L/--follow"},
 }

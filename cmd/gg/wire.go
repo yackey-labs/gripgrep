@@ -287,6 +287,10 @@ func buildCLISink(cfg *Config, dest *printer.Dest, matcher match.Matcher, color,
 		c := printer.NewCount(dest)
 		c.Color = color
 		c.ShowPath = showPath
+		// -o's "count occurrences, not lines" effect on -c -- see
+		// printer.Count.OnlyMatching's doc.
+		c.OnlyMatching = cfg.OnlyMatching
+		c.Matcher = matcher
 		return c, false
 	case ModeFilesWithMatches:
 		f := printer.NewFilesWithMatches(dest)
@@ -302,6 +306,10 @@ func buildCLISink(cfg *Config, dest *printer.Dest, matcher match.Matcher, color,
 		s.Column = column
 		s.Vimgrep = cfg.Vimgrep
 		s.ByteOffset = cfg.ByteOffset
+		s.OnlyMatching = cfg.OnlyMatching
+		s.MaxColumns = cfg.MaxColumns
+		s.MaxColumnsPreview = cfg.MaxColumnsPreview
+		s.Trim = cfg.Trim
 		return s, true
 	}
 }
