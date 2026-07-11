@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/yackey-labs/gripgrep/filetype"
 	"github.com/yackey-labs/gripgrep/glob"
 	"github.com/yackey-labs/gripgrep/match"
 	"github.com/yackey-labs/gripgrep/search"
@@ -105,6 +106,28 @@ func buildGlobs(globs, iglobs []string, ci bool) (*glob.Set, bool, error) {
 		return nil, false, fmt.Errorf("invalid glob: %w", err)
 	}
 	return set, requireMatch, nil
+}
+
+// buildTypes compiles cfg's -t/-T/--type-add/--type-clear changes (round
+// #35) into a *filetype.Matcher, applied over rg's default type table.
+// Fast-paths to (nil, nil) when changes is empty -- the common case,
+// which must cost nothing beyond this one length check (see
+// walk.Options.Types' doc). Errors here (an unrecognized -t/-T name, a
+// malformed --type-add TYPESPEC) are surfaced BEFORE buildGlobs' own
+// errors at every call site in this package, matching rg's own
+// construction order (crates/core/flags/hiargs.rs builds HiArgs.types
+// before HiArgs.globs) -- verified against the real rg binary: a bad -t
+// alongside a bad -g reports the type error, round #35's probes.
+func buildTypes(changes []filetype.Change) (*filetype.Matcher, error) {
+	if len(changes) == 0 {
+		return nil, nil
+	}
+	b := filetype.NewBuilder()
+	b.AddDefaults()
+	if err := b.Apply(changes); err != nil {
+		return nil, err
+	}
+	return b.Build()
 }
 
 // ResolvePaths splits a possibly-empty cfg.Paths into the two forms Run/

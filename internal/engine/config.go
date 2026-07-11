@@ -17,7 +17,10 @@
 // into the root package" in Task #30's literal wording, for that reason.
 package engine
 
-import "github.com/yackey-labs/gripgrep/search"
+import (
+	"github.com/yackey-labs/gripgrep/filetype"
+	"github.com/yackey-labs/gripgrep/search"
+)
 
 // CaseMode mirrors cmd/gg's CaseMode (itself mirroring rg's): last of
 // -i/-s/-S wins. A separate type from cmd/gg's own CaseMode, translated at
@@ -105,6 +108,13 @@ type Config struct {
 	// through to walk.Options.MaxDepth (see its doc for the pointer
 	// rationale, identical to MaxCount below).
 	MaxDepth *int
+
+	// TypeChanges are -t/-T/--type-add/--type-clear, in exact CLI order
+	// (order matters -- see filetype.Builder's doc). Empty means no
+	// -t/-T/--type-add/--type-clear at all, which buildTypes fast-paths
+	// to a nil *filetype.Matcher (walk.Options.Types stays nil, costing
+	// nothing per entry -- see walk.Options.Types' doc).
+	TypeChanges []filetype.Change
 
 	Threads int        // -j/--threads; 0 = auto
 	Binary  BinaryMode // resolved binary-detection policy

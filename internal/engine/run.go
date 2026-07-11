@@ -103,6 +103,10 @@ type Result struct {
 // stop func backed by the same flag its sinks set when the caller's
 // early-stop callback returns false.
 func Run(cfg Config, newWorker NewWorkerFunc, quiet QuitSink, stop func() bool, bm BinaryMessaging, stderr io.Writer) (Result, error) {
+	typesMatcher, err := buildTypes(cfg.TypeChanges)
+	if err != nil {
+		return Result{}, err
+	}
 	globSet, globsRequireMatch, err := buildGlobs(cfg.Globs, cfg.IGlobs, cfg.GlobCaseInsensitive)
 	if err != nil {
 		return Result{}, err
@@ -123,6 +127,7 @@ func Run(cfg Config, newWorker NewWorkerFunc, quiet QuitSink, stop func() bool, 
 		Threads:           cfg.Threads,
 		Globs:             globSet,
 		GlobsRequireMatch: globsRequireMatch,
+		Types:             typesMatcher,
 	}
 
 	var anyMatched, anyError atomic.Bool
@@ -244,10 +249,14 @@ type FilesVisit func(path string)
 // PLAN.md's Output row: "--files mode skips matcher/searcher entirely").
 // Every discovered regular file is reported via visit. Files composes
 // with everything that shapes the walked file set (Hidden, NoIgnore,
-// Globs, MaxFilesize, Threads) exactly like Run, via the same
-// walk.Options construction; it never touches mmap, the matcher, or any
-// other search-specific concern, since there is nothing to search.
+// Globs, TypeChanges, MaxFilesize, Threads) exactly like Run, via the
+// same walk.Options construction; it never touches mmap, the matcher, or
+// any other search-specific concern, since there is nothing to search.
 func Files(cfg Config, visit FilesVisit, stderr io.Writer) (Result, error) {
+	typesMatcher, err := buildTypes(cfg.TypeChanges)
+	if err != nil {
+		return Result{}, err
+	}
 	globSet, globsRequireMatch, err := buildGlobs(cfg.Globs, cfg.IGlobs, cfg.GlobCaseInsensitive)
 	if err != nil {
 		return Result{}, err
@@ -267,6 +276,7 @@ func Files(cfg Config, visit FilesVisit, stderr io.Writer) (Result, error) {
 		Threads:           cfg.Threads,
 		Globs:             globSet,
 		GlobsRequireMatch: globsRequireMatch,
+		Types:             typesMatcher,
 	}
 
 	var anyMatched, anyError atomic.Bool
