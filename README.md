@@ -168,9 +168,13 @@ verifies.
 go install github.com/yackey-labs/gripgrep/cmd/gg@latest
 ```
 
-Releases are cut automatically: a `feat:` commit on main bumps the minor
-version, `fix:`/`perf:` bump the patch, a `!`/`BREAKING CHANGE` commit
-bumps the major (see `.github/workflows/autotag.yml`).
+Releases are driven by conventional commits via
+[release-please](https://github.com/googleapis/release-please): a `feat:`
+commit on main bumps the minor version, `fix:`/`perf:` bump the patch, a
+`!`/`BREAKING CHANGE` commit bumps the major. Pending changes accumulate
+in a release PR that maintains `CHANGELOG.md`; merging it tags the
+release and publishes binaries (see
+`.github/workflows/release-please.yml`).
 
 ## CLI usage
 
