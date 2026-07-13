@@ -1,0 +1,44 @@
+name: release-please
+
+# Release automation from conventional commits (replaces the old autotag
+# workflow). On every push to main, release-please maintains a release PR
+# that accumulates pending changes and keeps CHANGELOG.md up to date:
+#   feat!: / BREAKING CHANGE  -> major
+#   feat:                     -> minor
+#   fix: / perf: / deps       -> patch
+#   docs/test/chore/refactor  -> changelog-hidden, no release on their own
+# Merging the release PR creates the v* tag and the GitHub release with
+# grouped conventional-commit notes (Features / Bug Fixes / Performance
+# Improvements). Releases are therefore cut when the release PR is merged,
+# not on every push — commits batch up in the PR until then.
+#
+# release.yml is then dispatched on the tag ref explicitly to build and
+# attach binaries: tags/releases created with the default GITHUB_TOKEN do
+# NOT fire other workflows' triggers, so relying on `on: push: tags` would
+# silently publish a release with no binaries.
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+  pull-requests: write
+  actions: write
+
+concurrency:
+  group: release-please
+  cancel-in-progress: false
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: googleapis/release-please-action@v4
+        id: release
+      - name: Dispatch binary build on the new tag
+        if: steps.release.outputs.release_created == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.release.outputs.tag_name }}
+        run: gh workflow run release.yml --repo "$GITHUB_REPOSITORY" --ref "refs/tags/$TAG"

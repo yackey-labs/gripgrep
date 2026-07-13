@@ -234,7 +234,8 @@ its API.
 
 ## Versioning
 
-Releases are tagged via the repo's autotag workflow and follow semver.
+Releases are tagged via the repo's release-please workflow and follow
+semver.
 The facade is on the v0.x release train with real external consumers:
 fields and verbs are only ever added, never renamed or repurposed (see
 the SDK plan's design principles) -- code written against an older
